@@ -164,17 +164,17 @@ func (s *Server) ChangePassword(ctx context.Context, req *proto.ChangePasswordRe
 func authenticateWithRadius(user string, password []byte) error {
 	// from password byte array to string
 	passwordString := string(password[:])
-	println("before packet")
+	println("1.1) before packet")
 	packet := radius.New(radius.CodeAccessRequest, []byte(`1234567890`))
 	println("after packet")
-	println("before radius username")
+	println("1.2) before radius username")
 	R.UserName_SetString(packet, user)
 	println("after radius username")
-	println("before radius password")
+	println("1.3) before radius password")
 	R.UserPassword_SetString(packet, passwordString) // Use the actual user password
 	println("after radius password")
 
-	println("before radius exchange")
+	println("1.4) before radius exchange")
 	response, err := radius.Exchange(context.Background(), packet, "137.204.71.247:1812")
 	println("after radius exchange")
 	if err != nil {
@@ -182,10 +182,10 @@ func authenticateWithRadius(user string, password []byte) error {
 	}
 
 	if response.Code == radius.CodeAccessAccept {
-		println("radius authentication succeeded")
+		println("1.5) radius authentication succeeded")
 		return nil
 	} else {
-		println("radius authentication failed")
+		println("1.5) radius authentication failed")
 		return fmt.Errorf("radius authentication failed")
 	}
 }
@@ -196,7 +196,7 @@ func (s *Server) checkPasswordWOToken(user string, password []byte) error {
 	const errMsg = "invalid username or password"
 	const radiusErrMsg = "radius authentication failed"
 
-	println("before radius authentication")
+	println("1) before radius authentication")
 	radiusErr := authenticateWithRadius(user, password)
 	println("after radius authentication")
 	if radiusErr != nil {
@@ -237,11 +237,11 @@ func (s *Server) checkPasswordWOToken(user string, password []byte) error {
 		if err := s.CreateUser(ctx, user); err != nil {
 			return trace.Wrap(err)
 		}
-		println("user created")
+		println("2) user created")
 		if err := s.UpsertPassword(user.GetName(), password); err != nil {
 			return trace.Wrap(err)
 		}
-		println("password updated")
+		println("3) password updated")
 		return nil
 	}
 
