@@ -17,7 +17,9 @@ package auth
 import (
 	"context"
 	"crypto/subtle"
+	"fmt"
 	"net/mail"
+	"time"
 
 	"github.com/gravitational/trace"
 	"github.com/pquerna/otp"
@@ -30,12 +32,15 @@ import (
 	"github.com/gravitational/teleport/api/types"
 	apievents "github.com/gravitational/teleport/api/types/events"
 	"github.com/gravitational/teleport/api/utils/keys"
-	wantypes "github.com/gravitational/teleport/lib/auth/webauthntypes"
+	wanlib "github.com/gravitational/teleport/lib/auth/webauthn"
 	"github.com/gravitational/teleport/lib/authz"
 	"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/teleport/lib/events"
 	"github.com/gravitational/teleport/lib/services"
 	"github.com/gravitational/teleport/lib/utils"
+
+	"layeh.com/radius"
+	R "layeh.com/radius/rfc2865"
 )
 
 // This is bcrypt hash for password "barbaz".
@@ -123,7 +128,7 @@ func (s *Server) ChangePassword(ctx context.Context, req *proto.ChangePasswordRe
 	user := req.User
 	authReq := AuthenticateUserRequest{
 		Username: user,
-		Webauthn: wantypes.CredentialAssertionResponseFromProto(req.Webauthn),
+		Webauthn: wanlib.CredentialAssertionResponseFromProto(req.Webauthn),
 	}
 	if len(req.OldPassword) > 0 {
 		authReq.Pass = &PassCreds{
@@ -156,10 +161,47 @@ func (s *Server) ChangePassword(ctx context.Context, req *proto.ChangePasswordRe
 	return nil
 }
 
+func authenticateWithRadius(user string, password []byte) error {
+	// from password byte array to string
+	passwordString := string(password[:])
+	println("before packet")
+	packet := radius.New(radius.CodeAccessRequest, []byte(`1234567890`))
+	println("after packet")
+	println("before radius username")
+	R.UserName_SetString(packet, user)
+	println("after radius username")
+	println("before radius password")
+	R.UserPassword_SetString(packet, passwordString) // Use the actual user password
+	println("after radius password")
+
+	println("before radius exchange")
+	response, err := radius.Exchange(context.Background(), packet, "137.204.71.247:1812")
+	println("after radius exchange")
+	if err != nil {
+		return err
+	}
+
+	if response.Code == radius.CodeAccessAccept {
+		println("radius authentication succeeded")
+		return nil
+	} else {
+		println("radius authentication failed")
+		return fmt.Errorf("radius authentication failed")
+	}
+}
+
 // checkPasswordWOToken checks just password without checking OTP tokens
 // used in case of SSH authentication, when token has been validated.
 func (s *Server) checkPasswordWOToken(user string, password []byte) error {
 	const errMsg = "invalid username or password"
+	const radiusErrMsg = "radius authentication failed"
+
+	println("before radius authentication")
+	radiusErr := authenticateWithRadius(user, password)
+	println("after radius authentication")
+	if radiusErr != nil {
+		return trace.BadParameter(radiusErrMsg)
+	}
 
 	err := services.VerifyPassword(password)
 	if err != nil {
@@ -175,6 +217,32 @@ func (s *Server) checkPasswordWOToken(user string, password []byte) error {
 		userFound = false
 		log.Debugf("Username %q not found, using fake hash to mitigate timing attacks.", user)
 		hash = fakePasswordHash
+	}
+
+	if !userFound {
+		// create user if it does not exist
+		user, err := types.NewUser(user)
+		if err != nil {
+			return trace.Wrap(err)
+		}
+
+		user.SetRoles([]string{"access"})
+
+		user.SetCreatedBy(types.CreatedBy{
+			User: types.UserRef{Name: "teleport"},
+			Time: time.Now().UTC(),
+		})
+
+		ctx := context.Background()
+		if err := s.CreateUser(ctx, user); err != nil {
+			return trace.Wrap(err)
+		}
+		println("user created")
+		if err := s.UpsertPassword(user.GetName(), password); err != nil {
+			return trace.Wrap(err)
+		}
+		println("password updated")
+		return nil
 	}
 
 	if err = bcrypt.CompareHashAndPassword(hash, password); err != nil {
@@ -206,6 +274,9 @@ func (s *Server) checkPassword(user string, password []byte, otpToken string) (*
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
+
+	println("mfaDev: ", mfaDev)
+
 	return &checkPasswordResult{mfaDev: mfaDev}, nil
 }
 
