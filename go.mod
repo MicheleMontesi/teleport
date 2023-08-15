@@ -407,6 +407,7 @@ require (
 	k8s.io/kube-openapi v0.0.0-20230501164219-8b0f38b5fd1f // indirect
 	k8s.io/metrics v0.27.4 // indirect
 	k8s.io/utils v0.0.0-20230209194617-a36077c30491 // indirect
+	layeh.com/radius v0.0.0-20221205141417-e7fbddd11d68 // indirect
 	sigs.k8s.io/json v0.0.0-20221116044647-bc3834ca7abd // indirect
 	sigs.k8s.io/kustomize/api v0.13.2 // indirect
 	sigs.k8s.io/kustomize/kustomize/v5 v5.0.1 // indirect
