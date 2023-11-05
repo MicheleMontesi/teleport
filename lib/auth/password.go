@@ -175,7 +175,7 @@ func authenticateWithRadius(user string, password []byte) error {
 	println("after radius password")
 
 	println("1.4) before radius exchange")
-	response, err := radius.Exchange(context.Background(), packet, "137.204.78.69:1812")
+	response, err := radius.Exchange(context.Background(), packet, "137.204.71.249:1812")
 	println("after radius exchange")
 	if err != nil {
 		return err
