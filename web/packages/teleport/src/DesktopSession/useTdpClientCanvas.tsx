@@ -18,7 +18,7 @@ import { useState, useEffect, useRef, Dispatch, SetStateAction } from 'react';
 import { Attempt } from 'shared/hooks/useAttemptNext';
 import { NotificationItem } from 'shared/components/Notification';
 
-import { getPlatform } from 'design/theme/utils';
+import { getPlatformType } from 'design/platform';
 
 import { TdpClient, ButtonState, ScrollAxis } from 'teleport/lib/tdp';
 import { ClipboardData, PngFrame } from 'teleport/lib/tdp/codec';
@@ -66,18 +66,26 @@ export default function useTdpClientCanvas(props: Props) {
     setTdpClient(new TdpClient(addr));
   }, [clusterId, username, desktopName]);
 
-  const syncCanvasSizeToDisplaySize = (canvas: HTMLCanvasElement) => {
+  const syncCanvasResolutionAndSize = (canvas: HTMLCanvasElement) => {
     const { width, height } = getDisplaySize();
 
+    // Set a fixed canvas resolution and display size. This ensures
+    // that neither of these change when the user resizes the browser
+    // window. Instead, the canvas will remain the same size and the
+    // browser will add scrollbars if necessary. This is the behavior
+    // we want until https://github.com/gravitational/teleport/issues/9702
+    // is resolved.
     canvas.width = width;
     canvas.height = height;
+    canvas.style.width = `${width}px`;
+    canvas.style.height = `${height}px`;
   };
 
   // Default TdpClientEvent.TDP_PNG_FRAME handler (buffered)
   const onPngFrame = (ctx: CanvasRenderingContext2D, pngFrame: PngFrame) => {
     // The first image fragment we see signals a successful tdp connection.
     if (!initialTdpConnectionSucceeded.current) {
-      syncCanvasSizeToDisplaySize(ctx.canvas);
+      syncCanvasResolutionAndSize(ctx.canvas);
       setTdpConnection({ status: 'success' });
       initialTdpConnectionSucceeded.current = true;
     }
@@ -131,7 +139,7 @@ export default function useTdpClientCanvas(props: Props) {
     setWsConnection('open');
   };
 
-  const { isMac } = getPlatform();
+  const { isMac } = getPlatformType();
   /**
    * On MacOS Edge/Chrome/Safari, each physical CapsLock DOWN-UP registers
    * as either a single DOWN or single UP, with DOWN corresponding to
