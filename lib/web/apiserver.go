@@ -415,9 +415,9 @@ func NewHandler(cfg Config, opts ...HandlerOption) (*APIHandler, error) {
 	h.limiter, err = limiter.NewRateLimiter(limiter.Config{
 		Rates: []limiter.Rate{
 			{
-				Period:  defaults.LimiterPeriod,
-				Average: defaults.LimiterAverage,
-				Burst:   defaults.LimiterBurst,
+				Period:  defaults.LimiterHighPeriod,
+				Average: defaults.LimiterHighAverage,
+				Burst:   defaults.LimiterHighBurst,
 			},
 		},
 		MaxConnections:   defaults.LimiterMaxConnections,
