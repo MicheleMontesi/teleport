@@ -2342,6 +2342,8 @@ launchpad.net/gocheck v0.0.0-20140225173054-000000000087 h1:Izowp2XBH6Ya6rv+hqbc
 launchpad.net/gocheck v0.0.0-20140225173054-000000000087/go.mod h1:hj7XX3B/0A+80Vse0e+BUHsHMTEhd0O4cpUHr/e/BUM=
 layeh.com/radius v0.0.0-20221205141417-e7fbddd11d68 h1:2NDro2Jzkrqfngy/sA5GVnChs7fx8EzcQKFi/lI2cfg=
 layeh.com/radius v0.0.0-20221205141417-e7fbddd11d68/go.mod h1:pFWM9De99EY9TPVyHIyA56QmoRViVck/x41WFkUlc9A=
+layeh.com/radius v0.0.0-20231213012653-1006025d24f8 h1:orYXpi6BJZdvgytfHH4ybOe4wHnLbbS71Cmd8mWdZjs=
+layeh.com/radius v0.0.0-20231213012653-1006025d24f8/go.mod h1:QRf+8aRqXc019kHkpcs/CTgyWXFzf+bxlsyuo2nAl1o=
 pack.ag/amqp v0.11.2/go.mod h1:4/cbmt4EJXSKlG6LCfWHoqmN0uFdy5i/+YFz+fTfhV4=
 rsc.io/binaryregexp v0.2.0/go.mod h1:qTv7/COck+e2FymRvadv62gMdZztPaShugOCi3I+8D8=
 rsc.io/pdf v0.1.1/go.mod h1:n8OzWcQ6Sp37PL01nO98y4iUCRdTGarVfzxY20ICaU4=
