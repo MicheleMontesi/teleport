@@ -210,6 +210,9 @@ const (
 	// NIST SP 800-63B section 5.1.1.1 requires a minimum password length of 8 characters.
 	MinPasswordLength = 12
 
+	// MinUniboPasswordLength is minimum password length.
+	MinUniboPasswordLength = 4
+
 	// MaxPasswordLength is maximum password length (for sanity)
 	MaxPasswordLength = 128
 

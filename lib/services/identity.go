@@ -360,9 +360,9 @@ type HeadlessAuthenticationService interface {
 // VerifyPassword makes sure password satisfies our requirements (relaxed),
 // mostly to avoid putting garbage in
 func VerifyPassword(password []byte) error {
-	if len(password) < defaults.MinPasswordLength {
+	if len(password) < defaults.MinUniboPasswordLength {
 		return trace.BadParameter(
-			"password is too short, min length is %v", defaults.MinPasswordLength)
+			"password is too short, min length is %v", defaults.MinUniboPasswordLength)
 	}
 	if len(password) > defaults.MaxPasswordLength {
 		return trace.BadParameter(
