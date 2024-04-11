@@ -1,27 +1,29 @@
 /**
- * Copyright 2023 Gravitational, Inc
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
  *
- *      http://www.apache.org/licenses/LICENSE-2.0
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 import React, { useState } from 'react';
 import { ButtonBorder } from 'design';
 import { LoginItem, MenuLogin } from 'shared/components/MenuLogin';
+import { AwsLaunchButton } from 'shared/components/AwsLaunchButton';
 
 import { UnifiedResource } from 'teleport/services/agents';
 import cfg from 'teleport/config';
 
-import AwsLaunchButton from 'teleport/Apps/AppList/AwsLaunchButton';
 import useTeleport from 'teleport/useTeleport';
 import { Database } from 'teleport/services/databases';
 import { openNewTab } from 'teleport/lib/util';
@@ -30,7 +32,7 @@ import { Desktop } from 'teleport/services/desktops';
 import DbConnectDialog from 'teleport/Databases/ConnectDialog';
 import KubeConnectDialog from 'teleport/Kubes/ConnectDialog';
 import useStickyClusterId from 'teleport/useStickyClusterId';
-import { Node } from 'teleport/services/nodes';
+import { Node, sortNodeLogins } from 'teleport/services/nodes';
 import { App } from 'teleport/services/apps';
 
 type Props = {
@@ -78,7 +80,7 @@ const NodeConnect = ({ node }: { node: Node }) => {
   return (
     <MenuLogin
       width="90px"
-      textTransform="none"
+      textTransform={'none'}
       alignButtonWidthToMenu
       getLoginItems={handleOnOpen}
       onSelect={handleOnSelect}
@@ -87,7 +89,7 @@ const NodeConnect = ({ node }: { node: Node }) => {
         horizontal: 'right',
       }}
       anchorOrigin={{
-        vertical: 'center',
+        vertical: 'bottom',
         horizontal: 'right',
       }}
     />
@@ -127,7 +129,7 @@ const DesktopConnect = ({ desktop }: { desktop: Desktop }) => {
         horizontal: 'right',
       }}
       anchorOrigin={{
-        vertical: 'center',
+        vertical: 'bottom',
         horizontal: 'right',
       }}
     />
@@ -150,9 +152,14 @@ const AppLaunch = ({ app }: { app: App }) => {
     return (
       <AwsLaunchButton
         awsRoles={awsRoles}
-        fqdn={fqdn}
-        clusterId={clusterId}
-        publicAddr={publicAddr}
+        getLaunchUrl={arn =>
+          cfg.getAppLauncherRoute({
+            fqdn,
+            clusterId,
+            publicAddr,
+            arn,
+          })
+        }
       />
     );
   }
@@ -263,14 +270,6 @@ const KubeConnect = ({ kube }: { kube: Kube }) => {
       )}
     </>
   );
-};
-
-const sortNodeLogins = (logins: string[]) => {
-  const noRoot = logins.filter(l => l !== 'root').sort();
-  if (noRoot.length === logins.length) {
-    return logins;
-  }
-  return ['root', ...noRoot];
 };
 
 const makeNodeOptions = (clusterId: string, node: Node | undefined) => {

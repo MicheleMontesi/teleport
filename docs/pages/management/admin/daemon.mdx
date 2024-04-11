@@ -141,7 +141,7 @@ $ sudo systemctl reload teleport
 
 This will perform a graceful restart, i.e. the Teleport daemon will fork a new
 process to handle new incoming requests, leaving the old daemon process running
-until existing clients disconnect.
+until existing clients disconnect (with a timeout of 30 hours).
 
 <Admonition title="Upgrading" type="tip">
 
@@ -188,9 +188,6 @@ To see all commands that you can run via the `teleport` binary, see the
 While we used a minimal configuration in this guide, for a production Teleport
 cluster, you should consult our
 [Configuration Reference](../../reference/config.mdx).
-
-If you need information on how `systemctl reload teleport` works, see our guide to
-[upgrading a Teleport binary](./upgrading-the-teleport-binary.mdx).
 
 For information on unit file configurations and unit file load paths,
 see [systemd's documentation on systemd.unit configurations](https://www.freedesktop.org/software/systemd/man/systemd.unit.html)

@@ -1,18 +1,20 @@
 /*
-Copyright 2021 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package web
 
@@ -28,6 +30,7 @@ import (
 
 	"github.com/gravitational/teleport/api/client/proto"
 	kubeproto "github.com/gravitational/teleport/api/gen/proto/go/teleport/kube/v1"
+	"github.com/gravitational/teleport/api/mfa"
 	"github.com/gravitational/teleport/api/types"
 	"github.com/gravitational/teleport/lib/auth"
 	"github.com/gravitational/teleport/lib/client"
@@ -75,12 +78,19 @@ func (h *Handler) checkAccessToRegisteredResource(w http.ResponseWriter, r *http
 	}, nil
 }
 
-func (h *Handler) getRolesHandle(w http.ResponseWriter, r *http.Request, params httprouter.Params, ctx *SessionContext) (interface{}, error) {
+func (h *Handler) listRolesHandle(w http.ResponseWriter, r *http.Request, params httprouter.Params, ctx *SessionContext) (interface{}, error) {
 	clt, err := ctx.GetClient()
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
 
+	values := r.URL.Query()
+	// If limit exists as a query parameter, this means its coming from a "new" webui
+	// and can return the new paginated response.
+	// TODO(gzdunek): DELETE IN 17.0.0: remove "getRoles".
+	if values.Has("limit") {
+		return listRoles(clt, values)
+	}
 	return getRoles(clt)
 }
 
@@ -91,6 +101,39 @@ func getRoles(clt resourcesAPIGetter) ([]ui.ResourceItem, error) {
 	}
 
 	return ui.NewRoles(roles)
+}
+
+func listRoles(clt resourcesAPIGetter, values url.Values) (*listResourcesWithoutCountGetResponse, error) {
+	limit, err := QueryLimitAsInt32(values, "limit", defaults.MaxIterationLimit)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	roles, err := clt.ListRoles(context.TODO(), &proto.ListRolesRequest{
+		Limit:    limit,
+		StartKey: values.Get("startKey"),
+		Filter: &types.RoleFilter{
+			SearchKeywords: client.ParseSearchKeywords(values.Get("search"), ' '),
+		},
+	})
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	var typeRoles []types.Role
+	for _, role := range roles.GetRoles() {
+		typeRoles = append(typeRoles, role)
+	}
+
+	uiRoles, err := ui.NewRoles(typeRoles)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	return &listResourcesWithoutCountGetResponse{
+		Items:    uiRoles,
+		StartKey: roles.GetNextKey(),
+	}, nil
 }
 
 func (h *Handler) deleteRole(w http.ResponseWriter, r *http.Request, params httprouter.Params, ctx *SessionContext) (interface{}, error) {
@@ -236,7 +279,13 @@ func (h *Handler) upsertTrustedClusterHandle(w http.ResponseWriter, r *http.Requ
 
 func upsertTrustedCluster(ctx context.Context, clt resourcesAPIGetter, content, httpMethod string, params httprouter.Params) (*ui.ResourceItem, error) {
 	get := func(ctx context.Context, name string) (types.Resource, error) {
-		return clt.GetTrustedCluster(ctx, name)
+		// Remove the MFA resp from the context before getting the trusted cluster.
+		// Otherwise, it will be consumed before the Upsert which actually
+		// requires the MFA.
+		// TODO(Joerger): Explicitly provide MFA response only where it is
+		// needed instead of removing it like this.
+		getCtx := mfa.ContextWithMFAResponse(ctx, nil)
+		return clt.GetTrustedCluster(getCtx, name)
 	}
 
 	extractedRes, err := ExtractResourceAndValidate(content)
@@ -433,7 +482,7 @@ func ExtractResourceAndValidate(yaml string) (*services.UnknownResource, error) 
 func convertListResourcesRequest(r *http.Request, kind string) (*proto.ListResourcesRequest, error) {
 	values := r.URL.Query()
 
-	limit, err := queryLimitAsInt32(values, "limit", defaults.MaxIterationLimit)
+	limit, err := QueryLimitAsInt32(values, "limit", defaults.MaxIterationLimit)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
@@ -463,7 +512,7 @@ func listKubeResources(ctx context.Context, kubeClient kubeproto.KubeServiceClie
 
 // newKubeListRequest parses the request parameters into a ListKubernetesResourcesRequest.
 func newKubeListRequest(values url.Values, site, resourceKind string) (*kubeproto.ListKubernetesResourcesRequest, error) {
-	limit, err := queryLimitAsInt32(values, "limit", defaults.MaxIterationLimit)
+	limit, err := QueryLimitAsInt32(values, "limit", defaults.MaxIterationLimit)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
@@ -496,6 +545,13 @@ type listResourcesGetResponse struct {
 	TotalCount int `json:"totalCount"`
 }
 
+type listResourcesWithoutCountGetResponse struct {
+	// Items is a list of resources retrieved.
+	Items interface{} `json:"items"`
+	// StartKey is the position to resume search events.
+	StartKey string `json:"startKey"`
+}
+
 type checkAccessToRegisteredResourceResponse struct {
 	// HasResource is a flag to indicate if user has any access
 	// to a registered resource or not.
@@ -507,10 +563,10 @@ type resourcesAPIGetter interface {
 	GetRole(ctx context.Context, name string) (types.Role, error)
 	// GetRoles returns a list of roles
 	GetRoles(ctx context.Context) ([]types.Role, error)
+	// ListRoles returns a paginated list of roles.
+	ListRoles(ctx context.Context, req *proto.ListRolesRequest) (*proto.ListRolesResponse, error)
 	// UpsertRole creates or updates role
 	UpsertRole(ctx context.Context, role types.Role) (types.Role, error)
-	// UpsertGithubConnector creates or updates a Github connector
-	UpsertGithubConnector(ctx context.Context, connector types.GithubConnector) error
 	// GetGithubConnectors returns all configured Github connectors
 	GetGithubConnectors(ctx context.Context, withSecrets bool) ([]types.GithubConnector, error)
 	// GetGithubConnector returns the specified Github connector

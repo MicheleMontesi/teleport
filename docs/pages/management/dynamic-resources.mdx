@@ -24,31 +24,7 @@ There are two ways to configure a Teleport cluster:
 This approach makes it possible to incrementally adjust your Teleport
 configuration without restarting Teleport instances.
 
-```mermaid
-flowchart LR
-subgraph backend["Cluster state backend"]
-  direction LR
-  resources["Dynamic resources"]
-end
-
-subgraph cluster[Teleport cluster]
-  subgraph auth[Auth Service]
-    conf1["Static config"]
-  end
-  subgraph proxy[Proxy Service]
-    conf2["Static config"]
-  end
-end
-
-auth-->backend
-subgraph clients["API clients"]
-  terraform["Terraform Provider"]
-  operator["Kubernetes Operator"]
-  tctl
-end
-terraform & operator & tctl-->proxy
-proxy-.->auth
-```
+![Architecture of dynamic resources](../../img/dynamic-resources.png)
 
 A cluster is composed of different objects (i.e., resources) and there are three
 common operations that can be performed on them: `get` , `create` , and `remove`
@@ -62,9 +38,9 @@ Every resource in Teleport has three required fields:
 
 All other fields are specific to a resource.
 
-While Teleport Enterprise Cloud and Teleport Team do not expose the static
-configuration file to operators, they do use a static configuration file for
-certain settings. Read how Teleport [reconciles static and dynamic
+While Teleport Enterprise Cloud does not expose the static configuration file to
+operators, they do use a static configuration file for certain settings. Read
+how Teleport [reconciles static and dynamic
 resources](#reconciling-the-configuration-file-with-dynamic-resources) to
 understand how to see the values of static configuration settings that also
 appear in dynamic resources.
@@ -82,6 +58,12 @@ All three methods connect to the Teleport Auth Service's gRPC endpoint in order
 to manipulate cluster resources stored on the Auth Service backend. The design
 of Teleport's configuration interface makes it well suited for
 infrastructure-as-code and GitOps approaches.
+
+You can get started with `tctl`, the Terraform Provider, and the Kubernetes
+Operator by following: 
+- the ["Managing Users and Roles with IaC" guide](./dynamic-resources/user-and-role.mdx)
+- the ["Creating Access Lists with IaC" guide](./dynamic-resources/access-list.mdx)
+- the ["Registering Agentless OpenSSH Servers with IaC" guide](./dynamic-resources/agentless-ssh-servers.mdx)
 
 For more information on Teleport roles, including the `internal.logins`
 trait we use in these example roles, see the [Teleport Access
@@ -115,8 +97,9 @@ Teleport's Terraform provider lets you manage your Teleport resources within the
 same infrastructure-as-code source as the rest of your infrastructure. There is
 a Terraform resource for each Teleport configuration resource. For example:
 
-```text
+```hcl
 resource "teleport_role" "developer" {
+  version = "v7"
   metadata = {
     name = "developer"
   }
@@ -134,21 +117,19 @@ resource "teleport_role" "developer" {
 }
 ```
 
-- [Get started with the Terraform
-  provider](./dynamic-resources/terraform-provider.mdx).
-- [Use Teleport's Terraform provider with
-  Spacelift](./dynamic-resources/spacelift.mdx).
+[Get started with the Terraform
+provider](./dynamic-resources/terraform-provider.mdx).
 
 ### Teleport Kubernetes Operator
 
 The Teleport Kubernetes Operator lets you apply Teleport resources as Kubernetes
 resources so you can manage your Teleport settings alongside the rest of your
-Kubernetes infrastructure. Here is an example of a `TeleportRole` resource,
+Kubernetes infrastructure. Here is an example of a `TeleportRoleV7` resource,
 which is equivalent to the two roles shown above:
 
 ```yaml
-apiVersion: resources.teleport.dev/v5
-kind: TeleportRole
+apiVersion: resources.teleport.dev/v1
+kind: TeleportRoleV7
 metadata:
   name: developer
 spec:
@@ -236,6 +217,8 @@ Here are possible values of the `teleport.dev/origin` label:
 - `defaults`
 - `config-file`
 - `dynamic`
+- `terraform`
+- `kubernetes`
 
 When the Auth Service starts up, it looks up the values of static configuration
 fields that correspond to fields in dynamic configuration resources. If any of
@@ -258,9 +241,8 @@ its configuration fields to the default values and add the
 <Notice type="tip">
 
 Cloud-hosted Teleport deployments use configuration files, but these are not
-available for operators to modify. Users of Teleport Enterprise Cloud and
-Teleport Team may see configuration resources with the
-`teleport.dev/origin=config-file` label.
+available for operators to modify. Users of Teleport Enterprise Cloud may see
+configuration resources with the `teleport.dev/origin=config-file` label.
 
 </Notice>
 

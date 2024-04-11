@@ -1,27 +1,26 @@
 /*
-Copyright 2018-2019 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package teleport
 
 import (
-	"fmt"
 	"strings"
 	"time"
-
-	"github.com/coreos/go-semver/semver"
 )
 
 // WebAPIVersion is a current webapi version
@@ -70,6 +69,12 @@ const (
 )
 
 const (
+	// ComponentKey is a field that represents a component - e.g. service or
+	// function
+	ComponentKey = "teleport.ComponentKey"
+	// ComponentFields is a fields component
+	ComponentFields = "trace.fields"
+
 	// ComponentMemory is a memory backend
 	ComponentMemory = "memory"
 
@@ -225,6 +230,9 @@ const (
 	// ComponentTSH is the "tsh" binary.
 	ComponentTSH = "tsh"
 
+	// ComponentTCTL is the "tctl" binary.
+	ComponentTCTL = "tctl"
+
 	// ComponentTBot is the "tbot" binary
 	ComponentTBot = "tbot"
 
@@ -237,9 +245,6 @@ const (
 
 	// ComponentBPF is the eBPF packagae.
 	ComponentBPF = "bpf"
-
-	// ComponentRestrictedSession is restriction of user access to kernel objects
-	ComponentRestrictedSession = "restrictedsess"
 
 	// ComponentCgroup is the cgroup package.
 	ComponentCgroup = "cgroups"
@@ -493,6 +498,9 @@ const (
 	// CertExtensionDeviceCredentialID is the identifier for the credential used
 	// by the device to authenticate itself.
 	CertExtensionDeviceCredentialID = "teleport-device-credential-id"
+	// CertExtensionBotName indicates the name of the Machine ID bot this
+	// certificate was issued to, if any.
+	CertExtensionBotName = "bot-name@goteleport.com"
 
 	// CertCriticalOptionSourceAddress is a critical option that defines IP addresses (in CIDR notation)
 	// from which this certificate is accepted for authentication.
@@ -667,8 +675,18 @@ const (
 
 	// ConnectMyComputerRoleNamePrefix is the prefix used for roles prepared for individual users
 	// during the setup of Connect My Computer. The prefix is followed by the name of the cluster
-	// user. See [teleterm.connectmycomputer.RoleSetup].
+	// user. See teleterm.connectmycomputer.RoleSetup.
 	ConnectMyComputerRoleNamePrefix = "connect-my-computer-"
+
+	// SystemOktaRequesterRoleName is a name of a system role that allows
+	// for requesting access to Okta resources. This differs from the requester role
+	// in that it allows for requesting longer lived access.
+	SystemOktaRequesterRoleName = "okta-requester"
+
+	// SystemOktaAccessRoleName is the name of the system role that allows
+	// access to Okta resources. This will be used by the Okta requester role to
+	// search for Okta resources.
+	SystemOktaAccessRoleName = "okta-access"
 )
 
 var PresetRoles = []string{PresetEditorRoleName, PresetAccessRoleName, PresetAuditorRoleName}
@@ -678,16 +696,6 @@ const (
 	// an Access Request approver for access plugins
 	SystemAccessApproverUserName = "@teleport-access-approval-bot"
 )
-
-// MinClientVersion is the minimum client version required by the server.
-var MinClientVersion string
-
-func init() {
-	// Per https://github.com/gravitational/teleport/blob/master/rfd/0012-teleport-versioning.md,
-	// only one major version backwards is supported for clients.
-	ver := semver.New(Version)
-	MinClientVersion = fmt.Sprintf("%d.0.0", ver.Major-1)
-}
 
 const (
 	// RemoteClusterStatusOffline indicates that cluster is considered as
@@ -720,6 +728,14 @@ const (
 
 	// TerminalSizeRequest is a request for the terminal size of the session.
 	TerminalSizeRequest = "x-teleport-terminal-size"
+
+	// TCPIPForwardRequest is an SSH request for the server to open a listener
+	// for port forwarding.
+	TCPIPForwardRequest = "tcpip-forward"
+
+	// CancelTCPIPForwardRequest is an SSHRequest to cancel a previous
+	// TCPIPForwardRequest.
+	CancelTCPIPForwardRequest = "cancel-tcpip-forward"
 
 	// MFAPresenceRequest is an SSH request to notify clients that MFA presence is required for a session.
 	MFAPresenceRequest = "x-teleport-mfa-presence"
@@ -808,9 +824,13 @@ const (
 	// command execution (exec and shells).
 	ExecSubCommand = "exec"
 
-	// ForwardSubCommand is the sub-command Teleport uses to re-exec itself
-	// for port forwarding.
-	ForwardSubCommand = "forward"
+	// LocalForwardSubCommand is the sub-command Teleport uses to re-exec itself
+	// for local port forwarding.
+	LocalForwardSubCommand = "forwardv2"
+
+	// RemoteForwardSubCommand is the sub-command Teleport uses to re-exec itself
+	// for remote port forwarding.
+	RemoteForwardSubCommand = "remoteforward"
 
 	// CheckHomeDirSubCommand is the sub-command Teleport uses to re-exec itself
 	// to check if the user's home directory exists.
@@ -832,10 +852,13 @@ const (
 )
 
 const (
-	// ChanDirectTCPIP is a SSH channel of type "direct-tcpip".
+	// ChanDirectTCPIP is an SSH channel of type "direct-tcpip".
 	ChanDirectTCPIP = "direct-tcpip"
 
-	// ChanSession is a SSH channel of type "session".
+	// ChanForwardedTCPIP is an SSH channel of type "forwarded-tcpip".
+	ChanForwardedTCPIP = "forwarded-tcpip"
+
+	// ChanSession is an SSH channel of type "session".
 	ChanSession = "session"
 )
 

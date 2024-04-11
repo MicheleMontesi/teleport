@@ -1,29 +1,31 @@
 /*
-Copyright 2020 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package ui
 
 import (
-	"fmt"
 	"sort"
 
 	"github.com/sirupsen/logrus"
 
 	"github.com/gravitational/teleport/api/types"
 	"github.com/gravitational/teleport/lib/tlsca"
+	"github.com/gravitational/teleport/lib/utils"
 	"github.com/gravitational/teleport/lib/utils/aws"
 )
 
@@ -88,9 +90,7 @@ type MakeAppsConfig struct {
 // MakeApp creates an application object for the WebUI.
 func MakeApp(app types.Application, c MakeAppsConfig) App {
 	labels := makeLabels(app.GetAllLabels())
-	fqdn := AssembleAppFQDN(c.LocalClusterName, c.LocalProxyDNSName, c.AppClusterName, app)
-	userGroups := c.AppsToUserGroups[app.GetName()]
-	appsToUserGroups := map[string]types.UserGroups{}
+	fqdn := utils.AssembleAppFQDN(c.LocalClusterName, c.LocalProxyDNSName, c.AppClusterName, app)
 	var ugs types.UserGroups
 	for _, userGroupName := range app.GetUserGroups() {
 		userGroup := c.UserGroupLookup[userGroupName]
@@ -102,20 +102,25 @@ func MakeApp(app types.Application, c MakeAppsConfig) App {
 		ugs = append(ugs, userGroup)
 	}
 	sort.Sort(ugs)
-	appsToUserGroups[app.GetName()] = ugs
 
-	userGroupAndDescriptions := make([]UserGroupAndDescription, len(userGroups))
-	for i, userGroup := range userGroups {
+	userGroupAndDescriptions := make([]UserGroupAndDescription, len(ugs))
+	for i, userGroup := range ugs {
 		userGroupAndDescriptions[i] = UserGroupAndDescription{
 			Name:        userGroup.GetName(),
 			Description: userGroup.GetMetadata().Description,
 		}
 	}
 
+	// Use the explicitly set Okta label if it's present.
+	description := app.GetMetadata().Description
+	if oktaDescription, ok := app.GetLabel(types.OktaAppDescriptionLabel); ok {
+		description = oktaDescription
+	}
+
 	resultApp := App{
 		Kind:         types.KindApp,
 		Name:         app.GetName(),
-		Description:  app.GetDescription(),
+		Description:  description,
 		URI:          app.GetURI(),
 		PublicAddr:   app.GetPublicAddr(),
 		Labels:       labels,
@@ -135,8 +140,9 @@ func MakeApp(app types.Application, c MakeAppsConfig) App {
 	return resultApp
 }
 
-// MakeSAMLApp creates a SAMLIdPServiceProvider object for the WebUI.
-func MakeSAMLApp(app types.SAMLIdPServiceProvider, c MakeAppsConfig) App {
+// MakeAppTypeFromSAMLApp creates App type from SAMLIdPServiceProvider type for the WebUI.
+// Keep in sync with lib/teleterm/apiserver/handler/handler_apps.go.
+func MakeAppTypeFromSAMLApp(app types.SAMLIdPServiceProvider, c MakeAppsConfig) App {
 	labels := makeLabels(app.GetAllLabels())
 	resultApp := App{
 		Kind:         types.KindApp,
@@ -158,7 +164,7 @@ func MakeApps(c MakeAppsConfig) []App {
 	for _, appOrSP := range c.AppServersAndSAMLIdPServiceProviders {
 		if appOrSP.IsAppServer() {
 			app := appOrSP.GetAppServer().GetApp()
-			fqdn := AssembleAppFQDN(c.LocalClusterName, c.LocalProxyDNSName, c.AppClusterName, app)
+			fqdn := utils.AssembleAppFQDN(c.LocalClusterName, c.LocalProxyDNSName, c.AppClusterName, app)
 			labels := makeLabels(app.GetAllLabels())
 
 			userGroups := c.AppsToUserGroups[app.GetName()]
@@ -210,20 +216,4 @@ func MakeApps(c MakeAppsConfig) []App {
 	}
 
 	return result
-}
-
-// AssembleAppFQDN returns the application's FQDN.
-//
-// If the application is running within the local cluster and it has a public
-// address specified, the application's public address is used.
-//
-// In all other cases, i.e. if the public address is not set or the application
-// is running in a remote cluster, the FQDN is formatted as
-// <appName>.<localProxyDNSName>
-func AssembleAppFQDN(localClusterName string, localProxyDNSName string, appClusterName string, app types.Application) string {
-	isLocalCluster := localClusterName == appClusterName
-	if isLocalCluster && app.GetPublicAddr() != "" {
-		return app.GetPublicAddr()
-	}
-	return fmt.Sprintf("%v.%v", app.GetName(), localProxyDNSName)
 }

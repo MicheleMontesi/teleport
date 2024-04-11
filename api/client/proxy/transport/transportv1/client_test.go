@@ -192,12 +192,12 @@ func TestClient_DialCluster(t *testing.T) {
 				msg := []byte("hello")
 				n, err := conn.Write(msg)
 				require.NoError(t, err)
-				require.Equal(t, len(msg), n)
+				require.Len(t, msg, n)
 
 				out := make([]byte, n)
 				n, err = conn.Read(out)
 				require.NoError(t, err)
-				require.Equal(t, len(msg), n)
+				require.Len(t, msg, n)
 				require.Equal(t, msg, out)
 
 				require.NoError(t, conn.Close())
@@ -239,7 +239,7 @@ func TestClient_DialHost(t *testing.T) {
 				return trail.ToGRPC(trace.NotImplemented("not implemented"))
 			case req.DialTarget.Cluster == "payload-too-large":
 				// send the initial cluster details
-				if err := server.Send(&transportv1pb.ProxySSHResponse{Details: &transportv1pb.ClusterDetails{FipsEnabled: true}}); err != nil {
+				if err := server.Send(&transportv1pb.ProxySSHResponse{Details: &transportv1pb.ClusterDetails{FipsEnabled: true}}); err != nil && !errors.Is(err, io.EOF) {
 					return trail.ToGRPC(trace.Wrap(err))
 				}
 
@@ -255,7 +255,7 @@ func TestClient_DialHost(t *testing.T) {
 					if err := server.Send(&transportv1pb.ProxySSHResponse{
 						Details: nil,
 						Frame:   &transportv1pb.ProxySSHResponse_Ssh{Ssh: &transportv1pb.Frame{Payload: bytes.Repeat([]byte{0}, 1001)}},
-					}); err != nil {
+					}); err != nil && !errors.Is(err, io.EOF) {
 						return trail.ToGRPC(trace.Wrap(err))
 					}
 				case *transportv1pb.ProxySSHRequest_Agent:
@@ -265,7 +265,7 @@ func TestClient_DialHost(t *testing.T) {
 				return nil
 			case req.DialTarget.Cluster == "echo":
 				// send the initial cluster details
-				if err := server.Send(&transportv1pb.ProxySSHResponse{Details: &transportv1pb.ClusterDetails{FipsEnabled: true}}); err != nil {
+				if err := server.Send(&transportv1pb.ProxySSHResponse{Details: &transportv1pb.ClusterDetails{FipsEnabled: true}}); err != nil && !errors.Is(err, io.EOF) {
 					return trail.ToGRPC(trace.Wrap(err))
 				}
 
@@ -281,7 +281,7 @@ func TestClient_DialHost(t *testing.T) {
 					if err := server.Send(&transportv1pb.ProxySSHResponse{
 						Details: nil,
 						Frame:   &transportv1pb.ProxySSHResponse_Ssh{Ssh: &transportv1pb.Frame{Payload: f.Ssh.Payload}},
-					}); err != nil {
+					}); err != nil && !errors.Is(err, io.EOF) {
 						return trail.ToGRPC(trace.Wrap(err))
 					}
 				case *transportv1pb.ProxySSHRequest_Agent:
@@ -290,7 +290,7 @@ func TestClient_DialHost(t *testing.T) {
 				return nil
 			case req.DialTarget.Cluster == "forward":
 				// send the initial cluster details
-				if err := server.Send(&transportv1pb.ProxySSHResponse{Details: &transportv1pb.ClusterDetails{FipsEnabled: true}}); err != nil {
+				if err := server.Send(&transportv1pb.ProxySSHResponse{Details: &transportv1pb.ClusterDetails{FipsEnabled: true}}); err != nil && !errors.Is(err, io.EOF) {
 					return trail.ToGRPC(trace.Wrap(err))
 				}
 
@@ -306,7 +306,7 @@ func TestClient_DialHost(t *testing.T) {
 					if err := server.Send(&transportv1pb.ProxySSHResponse{
 						Details: nil,
 						Frame:   &transportv1pb.ProxySSHResponse_Ssh{Ssh: &transportv1pb.Frame{Payload: f.Ssh.Payload}},
-					}); err != nil {
+					}); err != nil && !errors.Is(err, io.EOF) {
 						return trail.ToGRPC(trace.Wrap(err))
 					}
 				case *transportv1pb.ProxySSHRequest_Agent:
@@ -360,7 +360,7 @@ func TestClient_DialHost(t *testing.T) {
 				if err := server.Send(&transportv1pb.ProxySSHResponse{
 					Details: nil,
 					Frame:   &transportv1pb.ProxySSHResponse_Ssh{Ssh: &transportv1pb.Frame{Payload: keys[0].Blob}},
-				}); err != nil {
+				}); err != nil && !errors.Is(err, io.EOF) {
 					return trail.ToGRPC(trace.Wrap(err))
 				}
 				return nil
@@ -407,7 +407,7 @@ func TestClient_DialHost(t *testing.T) {
 				msg := []byte("hello")
 				n, err := conn.Write(msg)
 				require.NoError(t, err)
-				require.Equal(t, len(msg), n)
+				require.Len(t, msg, n)
 
 				out := make([]byte, 10)
 				n, err = conn.Read(out)
@@ -428,12 +428,12 @@ func TestClient_DialHost(t *testing.T) {
 				msg := []byte("hello")
 				n, err := conn.Write(msg)
 				require.NoError(t, err)
-				require.Equal(t, len(msg), n)
+				require.Len(t, msg, n)
 
 				out := make([]byte, n)
 				n, err = conn.Read(out)
 				require.NoError(t, err)
-				require.Equal(t, len(msg), n)
+				require.Len(t, msg, n)
 				require.Equal(t, msg, out)
 
 				n, err = conn.Read(out)
@@ -457,13 +457,13 @@ func TestClient_DialHost(t *testing.T) {
 				msg := []byte("hello")
 				n, err := conn.Write(msg)
 				require.NoError(t, err)
-				require.Equal(t, len(msg), n)
+				require.Len(t, msg, n)
 
 				// read data via ssh frames
 				out := make([]byte, n)
 				n, err = conn.Read(out)
 				require.NoError(t, err)
-				require.Equal(t, len(msg), n)
+				require.Len(t, msg, n)
 				require.Equal(t, msg, out)
 
 				// get the keys from our local keyring
@@ -479,7 +479,7 @@ func TestClient_DialHost(t *testing.T) {
 				out = make([]byte, len(keys[0].Blob))
 				n, err = conn.Read(out)
 				require.NoError(t, err)
-				require.Equal(t, len(keys[0].Blob), n)
+				require.Len(t, keys[0].Blob, n)
 				require.Equal(t, keys[0].Blob, out)
 
 				// close the stream

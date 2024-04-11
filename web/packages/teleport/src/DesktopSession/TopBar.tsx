@@ -1,22 +1,27 @@
-/*
-Copyright 2021 Gravitational, Inc.
+/**
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
 import React from 'react';
 import { useTheme } from 'styled-components';
 import { Text, TopNav, Flex } from 'design';
 import { Clipboard, FolderShared } from 'design/Icon';
+
+import { HoverTooltip } from 'shared/components/ToolTip';
 
 import ActionMenu from './ActionMenu';
 import { WarningDropdown } from './WarningDropdown';
@@ -26,7 +31,7 @@ import type { NotificationItem } from 'shared/components/Notification';
 export default function TopBar(props: Props) {
   const {
     userHost,
-    clipboardSharingEnabled,
+    isSharingClipboard,
     onDisconnect,
     canShareDirectory,
     isSharingDirectory,
@@ -38,7 +43,7 @@ export default function TopBar(props: Props) {
 
   const primaryOnTrue = (b: boolean): any => {
     return {
-      color: b ? theme.colors.text.main : theme.colors.text.slightlyMuted,
+      color: b ? theme.colors.text.main : theme.colors.text.disabled,
     };
   };
 
@@ -56,20 +61,27 @@ export default function TopBar(props: Props) {
 
       <Flex px={3}>
         <Flex alignItems="center">
-          <FolderShared
-            style={primaryOnTrue(isSharingDirectory)}
-            pr={3}
-            title={directorySharingTitle(canShareDirectory, isSharingDirectory)}
-          />
-          <Clipboard
-            style={primaryOnTrue(clipboardSharingEnabled)}
-            pr={3}
-            title={
-              clipboardSharingEnabled
+          <HoverTooltip
+            tipContent={directorySharingToolTip(
+              canShareDirectory,
+              isSharingDirectory
+            )}
+            anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+            transformOrigin={{ vertical: 'top', horizontal: 'center' }}
+          >
+            <FolderShared style={primaryOnTrue(isSharingDirectory)} pr={3} />
+          </HoverTooltip>
+          <HoverTooltip
+            tipContent={
+              isSharingClipboard
                 ? 'Clipboard Sharing Enabled'
                 : 'Clipboard Sharing Disabled'
             }
-          />
+            anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+            transformOrigin={{ vertical: 'top', horizontal: 'center' }}
+          >
+            <Clipboard style={primaryOnTrue(isSharingClipboard)} pr={3} />
+          </HoverTooltip>
           <WarningDropdown
             warnings={warnings}
             onRemoveWarning={onRemoveWarning}
@@ -85,7 +97,10 @@ export default function TopBar(props: Props) {
   );
 }
 
-function directorySharingTitle(canShare: boolean, isSharing: boolean): string {
+function directorySharingToolTip(
+  canShare: boolean,
+  isSharing: boolean
+): string {
   if (!canShare) {
     return 'Directory Sharing Disabled';
   }
@@ -99,7 +114,7 @@ export const TopBarHeight = 40;
 
 type Props = {
   userHost: string;
-  clipboardSharingEnabled: boolean;
+  isSharingClipboard: boolean;
   canShareDirectory: boolean;
   isSharingDirectory: boolean;
   onDisconnect: VoidFunction;

@@ -1,17 +1,19 @@
 /*
- * Copyright 2023 Gravitational, Inc.
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
  *
- *     http://www.apache.org/licenses/LICENSE-2.0
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 package web
@@ -29,7 +31,6 @@ import (
 	"testing"
 
 	"github.com/gorilla/websocket"
-	"github.com/gravitational/roundtrip"
 	"github.com/gravitational/trace"
 	"github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/assert"
@@ -77,7 +78,7 @@ func Test_runAssistant(t *testing.T) {
 		require.NoError(t, err)
 
 		require.Equal(t, assist.MessageKindError, msg.Type)
-		require.Equal(t, msg.Payload, "You have reached the rate limit. Please try again later.")
+		require.Equal(t, "You have reached the rate limit. Please try again later.", msg.Payload)
 	}
 
 	testCases := []struct {
@@ -113,7 +114,7 @@ func Test_runAssistant(t *testing.T) {
 			setup: func(t *testing.T, s *WebSuite) {
 				// Assert that rate limiter is set up when Cloud feature is active,
 				// before replacing with a lower capacity rate-limiter for test purposes
-				require.Equal(t, assistantLimiterRate, s.webHandler.handler.assistantLimiter.Limit())
+				require.InEpsilon(t, float64(assistantLimiterRate), float64(s.webHandler.handler.assistantLimiter.Limit()), 0.0)
 
 				// 101 token capacity (lookaheadTokens+1) and a slow replenish rate
 				// to let the first completion request succeed, but not the second one
@@ -264,8 +265,8 @@ func Test_runAssistError(t *testing.T) {
 
 	// Check for the close message
 	_, _, err = ws.ReadMessage()
-	closeErr, ok := err.(*websocket.CloseError)
-	require.True(t, ok, "Expected close error")
+	var closeErr *websocket.CloseError
+	require.ErrorAs(t, err, &closeErr, "Expected close error")
 	require.Equal(t, websocket.CloseInternalServerErr, closeErr.Code, "Expected abnormal closure")
 }
 
@@ -433,7 +434,7 @@ func (s *WebSuite) makeAssistant(_ *testing.T, pack *authPack, conversationID, a
 	u := url.URL{
 		Host:   s.url().Host,
 		Scheme: client.WSS,
-		Path:   fmt.Sprintf("/v1/webapi/sites/%s/assistant", currentSiteShortcut),
+		Path:   fmt.Sprintf("/v1/webapi/sites/%s/assistant/ws", currentSiteShortcut),
 	}
 
 	q := u.Query()
@@ -445,7 +446,6 @@ func (s *WebSuite) makeAssistant(_ *testing.T, pack *authPack, conversationID, a
 		q.Set("action", action)
 	}
 
-	q.Set(roundtrip.AccessTokenQueryParam, pack.session.Token)
 	u.RawQuery = q.Encode()
 
 	dialer := websocket.Dialer{}
@@ -461,6 +461,10 @@ func (s *WebSuite) makeAssistant(_ *testing.T, pack *authPack, conversationID, a
 
 	ws, resp, err := dialer.Dial(u.String(), header)
 	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	if err := makeAuthReqOverWS(ws, pack.session.Token); err != nil {
 		return nil, trace.Wrap(err)
 	}
 

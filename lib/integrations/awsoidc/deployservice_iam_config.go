@@ -1,30 +1,32 @@
 /*
-Copyright 2023 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-	http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package awsoidc
 
 import (
 	"context"
-	"log"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/iam"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/gravitational/trace"
+	"github.com/sirupsen/logrus"
 
 	awsapiutils "github.com/gravitational/teleport/api/utils/aws"
 	awslib "github.com/gravitational/teleport/lib/cloud/aws"
@@ -243,7 +245,7 @@ func createBoundaryPolicyForTaskRole(ctx context.Context, clt DeployServiceIAMCo
 		return trace.Wrap(convertedErr)
 	}
 
-	log.Printf("TaskRole: Boundary Policy %q created.\n", req.TaskRoleBoundaryPolicyName)
+	logrus.Infof("TaskRole: Boundary Policy %q created.\n", req.TaskRoleBoundaryPolicyName)
 	return nil
 }
 
@@ -273,7 +275,7 @@ func createTaskRole(ctx context.Context, clt DeployServiceIAMConfigureClient, re
 		return trace.Wrap(convertedErr)
 	}
 
-	log.Printf("TaskRole: Role %q created with Boundary %q.\n", req.TaskRole, policyARNForRoleBoundary)
+	logrus.Infof("TaskRole: Role %q created with Boundary %q.\n", req.TaskRole, policyARNForRoleBoundary)
 	return nil
 }
 
@@ -300,7 +302,7 @@ func addPolicyToTaskRole(ctx context.Context, clt DeployServiceIAMConfigureClien
 		return trace.Wrap(err)
 	}
 
-	log.Printf("TaskRole: IAM Policy %q added to Role %q.\n", req.TaskRole, req.TaskRole)
+	logrus.Infof("TaskRole: IAM Policy %q added to Role %q.\n", req.TaskRole, req.TaskRole)
 	return nil
 }
 
@@ -329,6 +331,6 @@ func addPolicyToIntegrationRole(ctx context.Context, clt DeployServiceIAMConfigu
 		return trace.Wrap(err)
 	}
 
-	log.Printf("IntegrationRole: IAM Policy %q added to Role %q\n", req.IntegrationRoleDeployServicePolicy, req.IntegrationRole)
+	logrus.Infof("IntegrationRole: IAM Policy %q added to Role %q\n", req.IntegrationRoleDeployServicePolicy, req.IntegrationRole)
 	return nil
 }

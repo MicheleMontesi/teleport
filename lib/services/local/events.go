@@ -1,31 +1,39 @@
 /*
-Copyright 2018-2019 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package local
 
 import (
 	"bytes"
 	"context"
+	"strings"
 
 	"github.com/gravitational/trace"
 	"github.com/jonboulle/clockwork"
 	"github.com/sirupsen/logrus"
 
+	"github.com/gravitational/teleport"
 	apidefaults "github.com/gravitational/teleport/api/defaults"
+	headerv1 "github.com/gravitational/teleport/api/gen/proto/go/teleport/header/v1"
+	kubewaitingcontainerpb "github.com/gravitational/teleport/api/gen/proto/go/teleport/kubewaitingcontainer/v1"
+	notificationsv1 "github.com/gravitational/teleport/api/gen/proto/go/teleport/notifications/v1"
 	"github.com/gravitational/teleport/api/types"
+	"github.com/gravitational/teleport/api/types/kubewaitingcontainer"
 	"github.com/gravitational/teleport/lib/backend"
 	"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/teleport/lib/services"
@@ -40,7 +48,7 @@ type EventsService struct {
 // NewEventsService returns new events service instance
 func NewEventsService(b backend.Backend) *EventsService {
 	return &EventsService{
-		Entry:   logrus.WithFields(logrus.Fields{trace.Component: "Events"}),
+		Entry:   logrus.WithFields(logrus.Fields{teleport.ComponentKey: "Events"}),
 		backend: b,
 	}
 }
@@ -64,7 +72,7 @@ func (e *EventsService) NewWatcher(ctx context.Context, watch types.Watch) (type
 		var parser resourceParser
 		switch kind.Kind {
 		case types.KindCertAuthority:
-			parser = newCertAuthorityParser(kind.LoadSecrets)
+			parser = newCertAuthorityParser(kind.LoadSecrets, kind.Filter)
 		case types.KindToken:
 			parser = newProvisionTokenParser()
 		case types.KindStaticTokens:
@@ -77,8 +85,6 @@ func (e *EventsService) NewWatcher(ctx context.Context, watch types.Watch) (type
 			parser = newAuthPreferenceParser()
 		case types.KindSessionRecordingConfig:
 			parser = newSessionRecordingConfigParser()
-		case types.KindExternalCloudAudit:
-			parser = newExternalCloudAuditParser()
 		case types.KindUIConfig:
 			parser = newUIConfigParser()
 		case types.KindClusterName:
@@ -187,6 +193,14 @@ func (e *EventsService) NewWatcher(ctx context.Context, watch types.Watch) (type
 			parser = newUserLoginStateParser()
 		case types.KindAccessListMember:
 			parser = newAccessListMemberParser()
+		case types.KindAccessListReview:
+			parser = newAccessListReviewParser()
+		case types.KindKubeWaitingContainer:
+			parser = newKubeWaitingContainerParser()
+		case types.KindNotification:
+			parser = newUserNotificationParser()
+		case types.KindGlobalNotification:
+			parser = newGlobalNotificationParser()
 		default:
 			if watch.AllowPartialSuccess {
 				continue
@@ -347,16 +361,20 @@ func (p baseParser) match(key []byte) bool {
 	return false
 }
 
-func newCertAuthorityParser(loadSecrets bool) *certAuthorityParser {
+func newCertAuthorityParser(loadSecrets bool, filter map[string]string) *certAuthorityParser {
+	var caFilter types.CertAuthorityFilter
+	caFilter.FromMap(filter)
 	return &certAuthorityParser{
 		loadSecrets: loadSecrets,
 		baseParser:  newBaseParser(backend.Key(authoritiesPrefix)),
+		filter:      caFilter,
 	}
 }
 
 type certAuthorityParser struct {
 	baseParser
 	loadSecrets bool
+	filter      types.CertAuthorityFilter
 }
 
 func (p *certAuthorityParser) parse(event backend.Event) (types.Resource, error) {
@@ -380,6 +398,9 @@ func (p *certAuthorityParser) parse(event backend.Event) (types.Resource, error)
 			services.WithResourceID(event.Item.ID), services.WithExpires(event.Item.Expires), services.WithRevision(event.Item.Revision))
 		if err != nil {
 			return nil, trace.Wrap(err)
+		}
+		if !p.filter.Match(ca) {
+			return nil, nil
 		}
 		// never send private signing keys over event stream?
 		// this might not be true
@@ -623,31 +644,6 @@ func (p *sessionRecordingConfigParser) parse(event backend.Event) (types.Resourc
 			return nil, trace.Wrap(err)
 		}
 		return ap, nil
-	default:
-		return nil, trace.BadParameter("event %v is not supported", event.Type)
-	}
-}
-
-func newExternalCloudAuditParser() *externalCloudAuditParser {
-	return &externalCloudAuditParser{
-		baseParser: newBaseParser(backend.Key(externalCloudAuditPrefix)),
-	}
-}
-
-type externalCloudAuditParser struct {
-	baseParser
-}
-
-func (p *externalCloudAuditParser) parse(event backend.Event) (types.Resource, error) {
-	switch event.Type {
-	case types.OpDelete:
-		return resourceHeader(event, types.KindExternalCloudAudit, types.V1, 0)
-	case types.OpPut:
-		return services.UnmarshalExternalCloudAudit(event.Item.Value,
-			services.WithResourceID(event.Item.ID),
-			services.WithExpires(event.Item.Expires),
-			services.WithRevision(event.Item.Revision),
-		)
 	default:
 		return nil, trace.BadParameter("event %v is not supported", event.Type)
 	}
@@ -1839,13 +1835,222 @@ type accessListMemberParser struct {
 func (p *accessListMemberParser) parse(event backend.Event) (types.Resource, error) {
 	switch event.Type {
 	case types.OpDelete:
-		return resourceHeader(event, types.KindAccessListMember, types.V1, 0)
+		accessList, name, err := baseTwoKeys(event.Item.Key)
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+		return &types.ResourceHeader{
+			Kind:    types.KindAccessListMember,
+			Version: types.V1,
+			Metadata: types.Metadata{
+				Name:        name,
+				Namespace:   apidefaults.Namespace,
+				Description: accessList, // pass access list description field for the cache
+			},
+		}, nil
 	case types.OpPut:
 		return services.UnmarshalAccessListMember(event.Item.Value,
 			services.WithResourceID(event.Item.ID),
 			services.WithExpires(event.Item.Expires),
 			services.WithRevision(event.Item.Revision),
 		)
+	default:
+		return nil, trace.BadParameter("event %v is not supported", event.Type)
+	}
+}
+
+func newAccessListReviewParser() *accessListReviewParser {
+	return &accessListReviewParser{
+		baseParser: newBaseParser(backend.ExactKey(accessListReviewPrefix)),
+	}
+}
+
+type accessListReviewParser struct {
+	baseParser
+}
+
+func (p *accessListReviewParser) parse(event backend.Event) (types.Resource, error) {
+	switch event.Type {
+	case types.OpDelete:
+		accessList, name, err := baseTwoKeys(event.Item.Key)
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+		return &types.ResourceHeader{
+			Kind:    types.KindAccessListReview,
+			Version: types.V1,
+			Metadata: types.Metadata{
+				Name:        name,
+				Namespace:   apidefaults.Namespace,
+				Description: accessList, // pass access list description field for the cache
+			},
+		}, nil
+	case types.OpPut:
+		return services.UnmarshalAccessListReview(event.Item.Value,
+			services.WithResourceID(event.Item.ID),
+			services.WithExpires(event.Item.Expires),
+			services.WithRevision(event.Item.Revision),
+		)
+	default:
+		return nil, trace.BadParameter("event %v is not supported", event.Type)
+	}
+}
+
+func newKubeWaitingContainerParser() *kubeWaitingContainerParser {
+	return &kubeWaitingContainerParser{
+		baseParser: newBaseParser(backend.Key(kubeWaitingContPrefix)),
+	}
+}
+
+type kubeWaitingContainerParser struct {
+	baseParser
+}
+
+func (p *kubeWaitingContainerParser) parse(event backend.Event) (types.Resource, error) {
+	switch event.Type {
+	case types.OpDelete:
+		// remove the first separator so no separated parts should be
+		// empty strings
+		key := string(event.Item.Key)
+		if len(key) > 0 && key[0] == backend.Separator {
+			key = key[1:]
+		}
+		parts := strings.Split(key, string(backend.Separator))
+		if len(parts) != 6 {
+			return nil, trace.BadParameter("malformed key for %s event: %s", types.KindKubeWaitingContainer, event.Item.Key)
+		}
+
+		resource, err := kubewaitingcontainer.NewKubeWaitingContainer(
+			parts[5],
+			&kubewaitingcontainerpb.KubernetesWaitingContainerSpec{
+				Username:      parts[1],
+				Cluster:       parts[2],
+				Namespace:     parts[3],
+				PodName:       parts[4],
+				ContainerName: parts[5],
+				Patch:         []byte("{}"),                       // default to empty patch. It doesn't matter for delete ops.
+				PatchType:     kubewaitingcontainer.JSONPatchType, // default to JSON patch. It doesn't matter for delete ops.
+			},
+		)
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+		return types.Resource153ToLegacy(resource), nil
+	case types.OpPut:
+		resource, err := services.UnmarshalKubeWaitingContainer(
+			event.Item.Value,
+			services.WithResourceID(event.Item.ID),
+			services.WithExpires(event.Item.Expires),
+			services.WithRevision(event.Item.Revision),
+		)
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+		return types.Resource153ToLegacy(resource), nil
+	default:
+		return nil, trace.BadParameter("event %v is not supported", event.Type)
+	}
+}
+
+func newUserNotificationParser() *userNotificationParser {
+	return &userNotificationParser{
+		baseParser: newBaseParser(backend.Key(notificationsUserSpecificPrefix)),
+	}
+}
+
+type userNotificationParser struct {
+	baseParser
+}
+
+func (p *userNotificationParser) parse(event backend.Event) (types.Resource, error) {
+	switch event.Type {
+	case types.OpDelete:
+		// Remove the first separator so none of the separated parts will be
+		// empty strings
+		key := string(event.Item.Key)
+		key = strings.TrimPrefix(key, string(backend.Separator))
+		parts := strings.Split(key, string(backend.Separator))
+		if len(parts) != 4 {
+			return nil, trace.BadParameter("malformed key for %s event: %s", types.KindNotification, event.Item.Key)
+		}
+
+		notification := &notificationsv1.Notification{
+			Kind:    types.KindNotification,
+			Version: types.V1,
+			Spec: &notificationsv1.NotificationSpec{
+				Username: parts[2],
+				Id:       parts[3],
+			},
+			Metadata: &headerv1.Metadata{
+				Name: parts[3],
+			},
+		}
+
+		return types.Resource153ToLegacy(notification), nil
+	case types.OpPut:
+		notification, err := services.UnmarshalNotification(
+			event.Item.Value,
+			services.WithResourceID(event.Item.ID),
+			services.WithExpires(event.Item.Expires),
+			services.WithRevision(event.Item.Revision))
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+		return types.Resource153ToLegacy(notification), nil
+	default:
+		return nil, trace.BadParameter("event %v is not supported", event.Type)
+	}
+}
+
+func newGlobalNotificationParser() *globalNotificationParser {
+	return &globalNotificationParser{
+		baseParser: newBaseParser(backend.Key(notificationsGlobalPrefix)),
+	}
+}
+
+type globalNotificationParser struct {
+	baseParser
+}
+
+func (p *globalNotificationParser) parse(event backend.Event) (types.Resource, error) {
+	switch event.Type {
+	case types.OpDelete:
+		// Remove the first separator so none of the separated parts will be
+		// empty strings
+		key := string(event.Item.Key)
+		key = strings.TrimPrefix(key, string(backend.Separator))
+		// notifications/global/<uuid>
+		parts := strings.Split(key, string(backend.Separator))
+		if len(parts) != 3 {
+			return nil, trace.BadParameter("malformed key for %s event: %s", types.KindGlobalNotification, event.Item.Key)
+		}
+
+		globalNotification := &notificationsv1.GlobalNotification{
+			Kind:    types.KindGlobalNotification,
+			Version: types.V1,
+			Spec: &notificationsv1.GlobalNotificationSpec{
+				Notification: &notificationsv1.Notification{
+					Spec: &notificationsv1.NotificationSpec{
+						Id: parts[2],
+					},
+				},
+			},
+			Metadata: &headerv1.Metadata{
+				Name: parts[2],
+			},
+		}
+
+		return types.Resource153ToLegacy(globalNotification), nil
+	case types.OpPut:
+		globalNotification, err := services.UnmarshalGlobalNotification(
+			event.Item.Value,
+			services.WithResourceID(event.Item.ID),
+			services.WithExpires(event.Item.Expires),
+			services.WithRevision(event.Item.Revision))
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+		return types.Resource153ToLegacy(globalNotification), nil
 	default:
 		return nil, trace.BadParameter("event %v is not supported", event.Type)
 	}

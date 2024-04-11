@@ -1,18 +1,20 @@
 /*
-Copyright 2019 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package teleport
 
@@ -177,8 +179,34 @@ const (
 	// MetricBackendWriteRequests measures backend write requests count
 	MetricBackendWriteRequests = "backend_write_requests_total"
 
+	// MetricBackendWrites tallies all individual backend writes (this is distinct from backend write
+	// requests in that bulk writes count as multiple writes).
+	MetricBackendWrites = "backend_writes_total"
+
 	// MetricBackendWriteFailedRequests measures failed backend write requests count
 	MetricBackendWriteFailedRequests = "backend_write_requests_failed_total"
+
+	// MetricBackendWriteFailedPreconditionRequests measures the portion of failed backend write requests
+	// that failed due to a custom precondition (existence, revision, value, etc).
+	MetricBackendWriteFailedPreconditionRequests = "backend_write_requests_failed_precondition_total"
+
+	// MetricBackendAtomicWriteRequests measures backend atomic write requests count
+	MetricBackendAtomicWriteRequests = "backend_atomic_write_requests_total"
+
+	// MetricBackendAtomicWriteFailedRequests measures failed backend atomic write requests count
+	MetricBackendAtomicWriteFailedRequests = "backend_atomic_write_requests_failed_total"
+
+	// MetricBackendAtomicWriteConditionFailed measures the amount of atomic write requests that result in condition failure.
+	MetricBackendAtomicWriteConditionFailed = "backend_atomic_write_condition_failed_total"
+
+	// MetricBackendAtomicWriteHistogram measures histogram of backend write latencies
+	MetricBackendAtomicWriteHistogram = "backend_atomic_write_seconds"
+
+	// MetricBackendAtomicWriteSize measures the histogram of atomic write batch sizes
+	MetricBackendAtomicWriteSize = "backend_atomic_write_size"
+
+	// MetricBackendAtomicWriteContention counts the amount of times atomic writes experience internal retries due to contention.
+	MetricBackendAtomicWriteContention = "backend_atomic_write_contention"
 
 	// MetricBackendBatchWriteRequests measures batch backend writes count
 	MetricBackendBatchWriteRequests = "backend_batch_write_requests_total"
@@ -188,6 +216,10 @@ const (
 
 	// MetricBackendReadRequests measures backend read requests count
 	MetricBackendReadRequests = "backend_read_requests_total"
+
+	// MetricBackendReads tallies all individual backend reads (this is distinct from backend read
+	// requests in that bulk reads count as multiple reads).
+	MetricBackendReads = "backend_reads_total"
 
 	// MetricBackendFailedReadRequests measures failed backend read requests count
 	MetricBackendFailedReadRequests = "backend_read_requests_failed_total"
@@ -242,6 +274,9 @@ const (
 	// (as defined by types.PluginStatus) for a plugin instance
 	MetricHostedPluginStatus = "hosted_plugin_status"
 
+	// MetricTeleportServices tracks which services are currently running in the current Teleport Process.
+	MetricTeleportServices = "services"
+
 	// TagRange is a tag specifying backend requests
 	TagRange = "range"
 
@@ -282,6 +317,12 @@ const (
 	// were used for the agent.
 	// This value comes from UpstreamInventoryAgentMetadata (sourced in lib/inventory/metadata.fetchInstallMethods).
 	TagInstallMethods = "install_methods"
+
+	// TagServiceName is the prometheus label to indicate what services are running in the current proxy.
+	// Those services are monitored using the Supervisor.
+	// Only a subset of services are monitored. See [lib/service.metricsServicesRunningMap]
+	// Eg, discovery_service
+	TagServiceName = "service_name"
 )
 
 const (

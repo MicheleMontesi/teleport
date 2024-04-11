@@ -1,19 +1,25 @@
 /*
-Copyright 2023 Gravitational, Inc.
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-    http://www.apache.org/licenses/LICENSE-2.0
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package web
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/gravitational/trace"
@@ -22,6 +28,7 @@ import (
 	"github.com/gravitational/teleport/api/types"
 	"github.com/gravitational/teleport/lib/integrations/awsoidc"
 	"github.com/gravitational/teleport/lib/jwt"
+	"github.com/gravitational/teleport/lib/utils/oidc"
 )
 
 const (
@@ -31,40 +38,28 @@ const (
 
 // openidConfiguration returns the openid-configuration for setting up the AWS OIDC Integration
 func (h *Handler) openidConfiguration(_ http.ResponseWriter, _ *http.Request, _ httprouter.Params) (interface{}, error) {
-	issuer, err := awsoidc.IssuerFromPublicAddress(h.cfg.PublicProxyAddr)
+	issuer, err := oidc.IssuerFromPublicAddress(h.cfg.PublicProxyAddr)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
 
-	return struct {
-		Issuer                           string   `json:"issuer"`
-		JWKSURI                          string   `json:"jwks_uri"`
-		Claims                           []string `json:"claims"`
-		IdTokenSigningAlgValuesSupported []string `json:"id_token_signing_alg_values_supported"`
-		ResponseTypesSupported           []string `json:"response_types_supported"`
-		ScopesSupported                  []string `json:"scopes_supported"`
-		SubjectTypesSupported            []string `json:"subject_types_supported"`
-	}{
-		Issuer:                           issuer,
-		JWKSURI:                          issuer + OIDCJWKWURI,
-		Claims:                           []string{"iss", "sub", "obo", "aud", "jti", "iat", "exp", "nbf"},
-		IdTokenSigningAlgValuesSupported: []string{"RS256"},
-		ResponseTypesSupported:           []string{"id_token"},
-		ScopesSupported:                  []string{"openid"},
-		SubjectTypesSupported:            []string{"public", "pair-wise"},
-	}, nil
+	return oidc.OpenIDConfigurationForIssuer(issuer, issuer+OIDCJWKWURI), nil
 }
 
 // jwksOIDC returns all public keys used to sign JWT tokens for this cluster.
 func (h *Handler) jwksOIDC(_ http.ResponseWriter, r *http.Request, _ httprouter.Params) (interface{}, error) {
-	clusterName, err := h.GetProxyClient().GetDomainName(r.Context())
+	return h.jwks(r.Context(), types.OIDCIdPCA)
+}
+
+func (h *Handler) jwks(ctx context.Context, caType types.CertAuthType) (*JWKSResponse, error) {
+	clusterName, err := h.GetProxyClient().GetDomainName(ctx)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
 
 	// Fetch the JWT public keys only.
-	ca, err := h.GetProxyClient().GetCertAuthority(r.Context(), types.CertAuthID{
-		Type:       types.OIDCIdPCA,
+	ca, err := h.GetProxyClient().GetCertAuthority(ctx, types.CertAuthID{
+		Type:       caType,
 		DomainName: clusterName,
 	}, false /* loadKeys */)
 	if err != nil {

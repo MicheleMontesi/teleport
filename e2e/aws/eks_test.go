@@ -1,18 +1,21 @@
 /*
-Copyright 2023 Gravitational, Inc.
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-	http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
 package e2e
 
 import (
@@ -100,7 +103,7 @@ func awsEKSDiscoveryMatchedCluster(t *testing.T) {
 			return false
 		}
 		// Fail fast if the discovery service creates more than one cluster.
-		assert.Equal(t, 1, len(clusters))
+		assert.Len(t, clusters, 1)
 		// Fail fast if the discovery service creates a cluster with a different name.
 		assert.Equal(t, os.Getenv(eksClusterNameEnv), clusters[0].GetName())
 		return true
@@ -117,14 +120,18 @@ func awsEKSDiscoveryMatchedCluster(t *testing.T) {
 		return err == nil && len(kubeServers) == 1
 	}, 2*time.Minute, time.Second, "wait for the kubernetes service to create a KubernetesServer")
 
+	clusters, err := authC.GetKubernetesClusters(context.Background())
+	require.NoError(t, err)
+
 	// kubeClient is a Kubernetes client for the user created above
 	// that will be used to verify that the user can access the cluster and
 	// the permissions are correct.
 	kubeClient, _, err := kube.ProxyClient(kube.ProxyConfig{
-		T:          teleport,
-		Username:   username,
-		KubeUsers:  kubeUsers,
-		KubeGroups: kubeGroups,
+		T:           teleport,
+		Username:    hostUser,
+		KubeUsers:   kubeUsers,
+		KubeGroups:  kubeGroups,
+		KubeCluster: clusters[0].GetName(),
 	})
 	require.NoError(t, err)
 
@@ -175,7 +182,7 @@ func awsEKSDiscoveryUnmatchedCluster(t *testing.T) {
 // clusters.
 func withFullKubeAccessUserRole(t *testing.T) testOptionsFunc {
 	// Create a new role with full access to all kube clusters.
-	return withUserRole(t, "kubemaster", types.RoleSpecV6{
+	return withUserRole(t, hostUser, "kubemaster", types.RoleSpecV6{
 		Allow: types.RoleConditions{
 			KubeGroups: kubeGroups,
 			KubeUsers:  kubeUsers,

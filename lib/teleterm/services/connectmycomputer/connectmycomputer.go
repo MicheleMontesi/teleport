@@ -1,16 +1,20 @@
-// Copyright 2023 Gravitational, Inc
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package connectmycomputer
 
@@ -20,6 +24,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -27,14 +32,12 @@ import (
 	"github.com/gravitational/trace"
 	"github.com/jonboulle/clockwork"
 	"github.com/sirupsen/logrus"
-	"golang.org/x/exp/slices"
 
 	"github.com/gravitational/teleport"
 	apidefaults "github.com/gravitational/teleport/api/defaults"
 	"github.com/gravitational/teleport/api/types"
-	apiutils "github.com/gravitational/teleport/api/utils"
-	"github.com/gravitational/teleport/lib/auth"
 	"github.com/gravitational/teleport/lib/client"
+	"github.com/gravitational/teleport/lib/connectmycomputer"
 	"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/teleport/lib/teleterm/clusters"
 	"github.com/gravitational/teleport/lib/utils"
@@ -82,7 +85,7 @@ func (s *RoleSetup) Run(ctx context.Context, accessAndIdentity AccessAndIdentity
 				clusterUser.GetName(), clusterUser.GetCreatedBy().Connector.Type)
 	}
 
-	roleName := fmt.Sprintf("%v%v", teleport.ConnectMyComputerRoleNamePrefix, clusterUser.GetName())
+	roleName := connectmycomputer.GetRoleNameForUser(clusterUser.GetName())
 
 	doesRoleExist := true
 	existingRole, err := accessAndIdentity.GetRole(ctx, roleName)
@@ -99,6 +102,8 @@ func (s *RoleSetup) Run(ctx context.Context, accessAndIdentity AccessAndIdentity
 		return noCertsReloaded, trace.Wrap(err)
 	}
 
+	reloadCerts := false
+
 	if !doesRoleExist {
 		s.cfg.Log.Infof("Creating the role %v.", roleName)
 
@@ -113,8 +118,8 @@ func (s *RoleSetup) Run(ctx context.Context, accessAndIdentity AccessAndIdentity
 		if err != nil {
 			return noCertsReloaded, trace.Wrap(err)
 		}
-		if role, err = accessAndIdentity.UpsertRole(ctx, role); err != nil {
-			return noCertsReloaded, trace.Wrap(err, "creating role %v", role.GetName())
+		if _, err = accessAndIdentity.CreateRole(ctx, role); err != nil {
+			return noCertsReloaded, trace.Wrap(err, "creating role %v", roleName)
 		}
 	} else {
 		s.cfg.Log.Infof("The role %v already exists", roleName)
@@ -132,6 +137,9 @@ func (s *RoleSetup) Run(ctx context.Context, accessAndIdentity AccessAndIdentity
 
 			existingRole.SetLogins(types.Allow, append(allowedLogins, systemUser.Username))
 			isRoleDirty = true
+			// Reload certs at the later stage because we added new a new login to the Connect My Computer
+			// role. The certs need to be reloaded to include the new role.
+			reloadCerts = true
 		}
 
 		// Ensure that the owner label has the expected value.
@@ -140,6 +148,9 @@ func (s *RoleSetup) Run(ctx context.Context, accessAndIdentity AccessAndIdentity
 		// value will make sure that the user is able to connect to relevant nodes. This is done more to
 		// reduce the support load than to make the feature more secure.
 		allowedNodeLabels := existingRole.GetNodeLabels(types.Allow)
+		if allowedNodeLabels == nil {
+			allowedNodeLabels = make(types.Labels)
+		}
 		ownerNodeLabelValue := allowedNodeLabels[types.ConnectMyComputerNodeOwnerLabel]
 		expectedOwnerNodeLabelValue := []string{clusterUser.GetName()}
 
@@ -154,7 +165,7 @@ func (s *RoleSetup) Run(ctx context.Context, accessAndIdentity AccessAndIdentity
 			timeoutCtx, cancel := context.WithTimeout(ctx, resourceUpdateTimeout)
 			defer cancel()
 			err = s.syncResourceUpdate(timeoutCtx, accessAndIdentity, existingRole, func(ctx context.Context) error {
-				existingRole, err := accessAndIdentity.UpsertRole(ctx, existingRole)
+				_, err := accessAndIdentity.UpdateRole(ctx, existingRole)
 				return trace.Wrap(err, "updating role %v", existingRole.GetName())
 			})
 			if err != nil {
@@ -167,42 +178,49 @@ func (s *RoleSetup) Run(ctx context.Context, accessAndIdentity AccessAndIdentity
 
 	if hasCMCRole {
 		s.cfg.Log.Infof("The user %v already has the role %v.", clusterUser.GetName(), roleName)
-		return noCertsReloaded, nil
+	} else {
+		s.cfg.Log.Infof("Adding the role %v to the user %v.", roleName, clusterUser.GetName())
+		clusterUser.AddRole(roleName)
+		timeoutCtx, cancel := context.WithTimeout(ctx, resourceUpdateTimeout)
+		defer cancel()
+		err = s.syncResourceUpdate(timeoutCtx, accessAndIdentity, clusterUser, func(ctx context.Context) error {
+			_, err := accessAndIdentity.UpdateUser(ctx, clusterUser)
+			return trace.Wrap(err, "updating user %v", clusterUser.GetName())
+		})
+		if err != nil {
+			return noCertsReloaded, trace.Wrap(err)
+		}
+		// Reload certs because we just assigned a new role to the user. The certs need to be reloaded
+		// to include the new logins that the role includes.
+		reloadCerts = true
 	}
 
-	s.cfg.Log.Infof("Adding the role %v to the user %v.", roleName, clusterUser.GetName())
-	clusterUser.AddRole(roleName)
-	timeoutCtx, cancel := context.WithTimeout(ctx, resourceUpdateTimeout)
-	defer cancel()
-	err = s.syncResourceUpdate(timeoutCtx, accessAndIdentity, clusterUser, func(ctx context.Context) error {
-		_, err := accessAndIdentity.UpdateUser(ctx, clusterUser)
-		return trace.Wrap(err, "updating user %v", clusterUser.GetName())
-	})
-	if err != nil {
-		return noCertsReloaded, trace.Wrap(err)
+	if reloadCerts {
+		s.cfg.Log.Info("Reissuing certs.")
+		// ReissueUserCerts called with CertCacheDrop and a bogus access request ID in DropAccessRequests
+		// allows us to refresh the role list in the certs without forcing the user to relogin.
+		//
+		// Sending bogus request IDs is not documented but it is covered by tests. Refreshing roles based
+		// on the server state is necessary for tsh request drop to work.
+		//
+		// If passing bogus request IDs ever needs to be removed, then there are two options here:
+		// * Pass a wildcard instead. This will break setups where people use access requests to make
+		//   Connect My Computer work. Most users will probably not use access requests for that though.
+		// * Invalidate the stored certs somehow to force the user to relogin. If Connect makes a request
+		//   after role setup and [client.IsErrorResolvableWithRelogin] returns true for the error from
+		//   the response, Connect will ask the user to relogin.
+		//
+		// TODO(ravicious): Expand auth.ServerWithRoles.GenerateUserCerts to support refreshing role
+		// list without having to send a bogus request ID, like how lib/auth.HTTPClient.ExtendWebSession
+		// works.
+		err = certManager.ReissueUserCerts(ctx, client.CertCacheDrop, client.ReissueParams{
+			RouteToCluster:     cluster.Name,
+			DropAccessRequests: []string{fmt.Sprintf("bogus-request-id-%v", uuid.NewString())},
+		})
+		return RoleSetupResult{CertsReloaded: true}, trace.Wrap(err)
+	} else {
+		return RoleSetupResult{CertsReloaded: false}, nil
 	}
-
-	s.cfg.Log.Info("Reissuing certs.")
-	// ReissueUserCerts called with CertCacheDrop and a bogus access request ID in DropAccessRequests
-	// allows us to refresh the role list in the certs without forcing the user to relogin.
-	//
-	// Sending bogus request IDs is not documented but it is covered by tests. Refreshing roles based
-	// on the server state is necessary for tsh request drop to work.
-	//
-	// If passing bogus request IDs ever needs to be removed, then there are two options here:
-	// * Pass a wildcard instead. This will break setups where people use access requests to make
-	//   Connect My Computer work. Most users will probably not use access requests for that though.
-	// * Invalidate the stored certs somehow to force the user to relogin. If Connect makes a request
-	//   after role setup and [client.IsErrorResolvableWithRelogin] returns true for the error from
-	//   the response, Connect will ask the user to relogin.
-	//
-	// TODO(ravicious): Expand auth.ServerWithRoles.GenerateUserCerts to support refreshing role
-	// list without having to send a bogus request ID.
-	err = certManager.ReissueUserCerts(ctx, client.CertCacheDrop, client.ReissueParams{
-		RouteToCluster:     cluster.Name,
-		DropAccessRequests: []string{fmt.Sprintf("bogus-request-id-%v", uuid.NewString())},
-	})
-	return RoleSetupResult{CertsReloaded: true}, trace.Wrap(err)
 }
 
 const resourceUpdateTimeout = 15 * time.Second
@@ -218,7 +236,7 @@ func (s *RoleSetup) syncResourceUpdate(ctx context.Context, accessAndIdentity Ac
 
 	err = updateFunc(ctx)
 	if err != nil {
-		return trace.Wrap(err, "calling update function")
+		return trace.Wrap(err)
 	}
 
 	_, err = waitForOpPut(ctx, watcher, resource.GetKind(), resource.GetName())
@@ -230,8 +248,10 @@ func (s *RoleSetup) syncResourceUpdate(ctx context.Context, accessAndIdentity Ac
 type AccessAndIdentity interface {
 	// See services.Access.GetRole.
 	GetRole(ctx context.Context, name string) (types.Role, error)
-	// See services.Access.UpsertRole.
-	UpsertRole(context.Context, types.Role) (types.Role, error)
+	// See services.Access.CreateRole.
+	CreateRole(context.Context, types.Role) (types.Role, error)
+	// See services.Access.UpdateRole.
+	UpdateRole(context.Context, types.Role) (types.Role, error)
 	// See auth.Cache.NewWatcher.
 	NewWatcher(ctx context.Context, watch types.Watch) (types.Watcher, error)
 
@@ -257,7 +277,7 @@ type RoleSetupConfig struct {
 
 func (c *RoleSetupConfig) CheckAndSetDefaults() error {
 	if c.Log == nil {
-		c.Log = logrus.NewEntry(logrus.StandardLogger()).WithField(trace.Component, "CMC role")
+		c.Log = logrus.NewEntry(logrus.StandardLogger()).WithField(teleport.ComponentKey, "CMC role")
 	}
 
 	return nil
@@ -274,10 +294,10 @@ func NewTokenProvisioner(cfg *TokenProvisionerConfig) *TokenProvisioner {
 }
 
 // CreateNodeToken creates a node join token that is valid for 5 minutes.
-func (t *TokenProvisioner) CreateNodeToken(ctx context.Context, provisioner Provisioner, cluster *clusters.Cluster) (*NodeToken, error) {
-	tokenName, err := utils.CryptoRandomHex(auth.TokenLenBytes)
+func (t *TokenProvisioner) CreateNodeToken(ctx context.Context, provisioner Provisioner, cluster *clusters.Cluster) (string, error) {
+	tokenName, err := utils.CryptoRandomHex(defaults.TokenLenBytes)
 	if err != nil {
-		return nil, trace.Wrap(err)
+		return "", trace.Wrap(err)
 	}
 
 	var req types.ProvisionTokenSpecV2
@@ -286,35 +306,19 @@ func (t *TokenProvisioner) CreateNodeToken(ctx context.Context, provisioner Prov
 
 	provisionToken, err := types.NewProvisionTokenFromSpec(tokenName, expires, req)
 	if err != nil {
-		return nil, trace.Wrap(err)
+		return "", trace.Wrap(err)
 	}
 
 	err = provisioner.CreateToken(ctx, provisionToken)
 	if err != nil {
-		return nil, trace.Wrap(err)
+		return "", trace.Wrap(err)
 	}
 
-	return &NodeToken{
-		Token: tokenName,
-		Labels: types.Labels{
-			types.ConnectMyComputerNodeOwnerLabel: apiutils.Strings{cluster.GetLoggedInUser().Name},
-		},
-	}, nil
-}
-
-// DeleteToken deletes a join token
-func (t *TokenProvisioner) DeleteToken(ctx context.Context, provisioner Provisioner, token string) error {
-	err := provisioner.DeleteToken(ctx, token)
-	return trace.Wrap(err)
+	return tokenName, nil
 }
 
 type TokenProvisionerConfig struct {
 	Clock clockwork.Clock
-}
-
-type NodeToken struct {
-	Token  string
-	Labels types.Labels
 }
 
 func (c *TokenProvisionerConfig) checkAndSetDefaults() {
@@ -328,8 +332,6 @@ func (c *TokenProvisionerConfig) checkAndSetDefaults() {
 type Provisioner interface {
 	// See services.Provisioner.CreateToken.
 	CreateToken(ctx context.Context, token types.ProvisionToken) error
-	// See services.Provisioner.DeleteToken.
-	DeleteToken(ctx context.Context, token string) error
 }
 
 type NodeJoinWait struct {

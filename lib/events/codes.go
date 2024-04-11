@@ -1,18 +1,20 @@
 /*
-Copyright 2019 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package events
 
@@ -79,6 +81,14 @@ const (
 	UserHeadlessLoginApprovedFailureCode = "T1013W"
 	// UserHeadlessLoginRejectedCode is an event code for when headless login attempt was rejected.
 	UserHeadlessLoginRejectedCode = "T1014W"
+	// CreateMFAAuthChallenge is an event code for when an MFA auth challenge is created.
+	CreateMFAAuthChallengeCode = "T1015I"
+	// ValidateMFAAuthResponseCode is an event code for when an MFA auth challenge
+	// response is successfully validated.
+	ValidateMFAAuthResponseCode = "T1016I"
+	// VValidateMFAAuthResponseFailureCode is an event code for when an MFA auth challenge
+	// response fails validation.
+	ValidateMFAAuthResponseFailureCode = "T1016W"
 
 	// BillingCardCreateCode is an event code for when a user creates a new credit card.
 	BillingCardCreateCode = "TBL00I"
@@ -141,6 +151,16 @@ const (
 	DatabaseSessionQueryFailedCode = "TDB02W"
 	// DatabaseSessionMalformedPacketCode is the db.session.malformed_packet event code.
 	DatabaseSessionMalformedPacketCode = "TDB06I"
+	// DatabaseSessionPermissionUpdateCode is the db.session.permissions.update event code.
+	DatabaseSessionPermissionUpdateCode = "TDB07I"
+	// DatabaseSessionUserCreateCode is the db.session.user.create event code.
+	DatabaseSessionUserCreateCode = "TDB08I"
+	// DatabaseSessionUserCreateFailureCode is the db.session.user.create event failure code.
+	DatabaseSessionUserCreateFailureCode = "TDB08W"
+	// DatabaseSessionUserDeactivateCode is the db.session.user.deactivate event code.
+	DatabaseSessionUserDeactivateCode = "TDB09I"
+	// DatabaseSessionUserDeactivateFailureCode is the db.session.user.deactivate event failure code.
+	DatabaseSessionUserDeactivateFailureCode = "TDB09W"
 
 	// PostgresParseCode is the db.session.postgres.statements.parse event code.
 	PostgresParseCode = "TPG00I"
@@ -280,6 +300,8 @@ const (
 	// Note: some requests (like exec into a pod) use other codes (like
 	// ExecCode).
 	KubeRequestCode = "T3009I"
+	// SCPDisallowedCode is the SCP disallowed event code.
+	SCPDisallowedCode = "T3010E"
 
 	// KubernetesClusterCreateCode is the kube.create event code.
 	KubernetesClusterCreateCode = "T3010I"
@@ -327,6 +349,7 @@ const (
 	SFTPSymlinkFailureCode  = "TS018E"
 	SFTPLinkCode            = "TS019I"
 	SFTPLinkFailureCode     = "TS019E"
+	SFTPDisallowedCode      = "TS020E"
 
 	// SessionCommandCode is a session command code.
 	SessionCommandCode = "T4000I"
@@ -400,6 +423,13 @@ const (
 	// InstanceJoinCode is the 'node.join' event code.
 	InstanceJoinCode = "TJ002I"
 
+	// BotCreateCode is the `bot.create` event code.
+	BotCreateCode = "TB001I"
+	// BotUpdateCode is the `bot.update` event code.
+	BotUpdateCode = "TB002I"
+	// BotDeleteCode is the `bot.delete` event code.
+	BotDeleteCode = "TB003I"
+
 	// LockCreatedCode is the lock created event code.
 	LockCreatedCode = "TLK00I"
 	// LockDeletedCode is the lock deleted event code.
@@ -434,6 +464,10 @@ const (
 	DeviceAuthenticateCode = "TV006I"
 	// DeviceUpdateCode is the device update code.
 	DeviceUpdateCode = "TV007I"
+	// DeviceWebTokenCreateCode is the device web token creation code.
+	DeviceWebTokenCreateCode = "TV008I"
+	// DeviceAuthenticateConfirmCode is the device authentication confirm code.
+	DeviceAuthenticateConfirmCode = "TV009I"
 
 	// LoginRuleCreateCode is the login rule create code.
 	LoginRuleCreateCode = "TLR00I"
@@ -488,6 +522,18 @@ const (
 	// OktaAssignmentCleanupFailureCode is the Okta assignment cleanup failure code.
 	OktaAssignmentCleanupFailureCode = "TOK005E"
 
+	// OktaAccessListSyncSuccessCode is the Okta access list sync success code.
+	OktaAccessListSyncSuccessCode = "TOK006I"
+
+	// OktaAccessListSyncSuccessCode is the Okta access list sync failure code.
+	OktaAccessListSyncFailureCode = "TOK006E"
+
+	// OktaUserSyncSuccessCode is the Okta user sync success code.
+	OktaUserSyncSuccessCode = "TOK007I"
+
+	// OktaUserSyncSuccessCode is the Okta user sync failure code.
+	OktaUserSyncFailureCode = "TOK007E"
+
 	// AccessListCreateSuccessCode is the access list create success code.
 	AccessListCreateSuccessCode = "TAL001I"
 
@@ -541,6 +587,23 @@ const (
 
 	// SecReportsReportRunCode is used when a report in run.
 	SecReportsReportRunCode = "SRE002I"
+
+	// ExternalAuditStorageEnableCode is the External Audit Storage enabled code.
+	ExternalAuditStorageEnableCode = "TEA001I"
+	// ExternalAuditStorageDisableCode is the External Audit Storage disabled code.
+	ExternalAuditStorageDisableCode = "TEA002I"
+
+	// SPIFFESVIDIssuedSuccessCode is the SPIFFE SVID issued success code.
+	SPIFFESVIDIssuedSuccessCode = "TSPIFFE000I"
+	// SPIFFESVIDIssuedFailureCode is the SPIFFE SVID issued failure code.
+	SPIFFESVIDIssuedFailureCode = "TSPIFFE000E"
+
+	// AuthPreferenceUpdateCode is the auth preference updated event code.
+	AuthPreferenceUpdateCode = "TCAUTH001I"
+	// ClusterNetworkingConfigUpdateCode is the cluster networking config updated event code.
+	ClusterNetworkingConfigUpdateCode = "TCNET002I"
+	// SessionRecordingConfigUpdateCode is the session recording config updated event code.
+	SessionRecordingConfigUpdateCode = "TCREC003I"
 
 	// UnknownCode is used when an event of unknown type is encountered.
 	UnknownCode = apievents.UnknownCode

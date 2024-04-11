@@ -1,18 +1,20 @@
 /*
-Copyright 2017-2021 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package auth
 
@@ -98,14 +100,14 @@ func (g *GithubConverter) GetGithubConnectors(ctx context.Context, withSecrets b
 	return connectors, nil
 }
 
-func (g *GithubConverter) UpsertGithubConnector(ctx context.Context, connector types.GithubConnector) error {
+func (g *GithubConverter) UpsertGithubConnector(ctx context.Context, connector types.GithubConnector) (types.GithubConnector, error) {
 	convertedConnector, err := services.ConvertGithubConnector(connector)
 	if err != nil {
-		return trace.Wrap(err)
+		return nil, trace.Wrap(err)
 	}
 
-	err = g.ClientI.UpsertGithubConnector(ctx, convertedConnector)
-	return trace.Wrap(err)
+	connector, err = g.ClientI.UpsertGithubConnector(ctx, convertedConnector)
+	return connector, trace.Wrap(err)
 }
 
 func (g *GithubConverter) CreateGithubConnector(ctx context.Context, connector types.GithubConnector) (types.GithubConnector, error) {
@@ -130,16 +132,23 @@ func (g *GithubConverter) UpdateGithubConnector(ctx context.Context, connector t
 
 // CreateGithubAuthRequest creates a new request for Github OAuth2 flow
 func (a *Server) CreateGithubAuthRequest(ctx context.Context, req types.GithubAuthRequest) (*types.GithubAuthRequest, error) {
-	_, client, err := a.getGithubConnectorAndClient(ctx, req)
+	connector, client, err := a.getGithubConnectorAndClient(ctx, req)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
-	req.StateToken, err = utils.CryptoRandomHex(TokenLenBytes)
+
+	if hook := GithubAuthRequestHook; hook != nil {
+		if err := hook(ctx, &req, connector); err != nil {
+			return nil, trace.Wrap(err)
+		}
+	}
+
+	req.StateToken, err = utils.CryptoRandomHex(defaults.TokenLenBytes)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
 	req.RedirectURL = client.AuthCodeURL(req.StateToken, "", "")
-	log.WithFields(logrus.Fields{trace.Component: "github"}).Debugf(
+	log.WithFields(logrus.Fields{teleport.ComponentKey: "github"}).Debugf(
 		"Redirect URL: %v.", req.RedirectURL)
 	req.SetExpiry(a.GetClock().Now().UTC().Add(defaults.GithubAuthRequestTTL))
 	err = a.Services.CreateGithubAuthRequest(ctx, req)
@@ -150,12 +159,13 @@ func (a *Server) CreateGithubAuthRequest(ctx context.Context, req types.GithubAu
 }
 
 // upsertGithubConnector creates or updates a Github connector.
-func (a *Server) upsertGithubConnector(ctx context.Context, connector types.GithubConnector) error {
+func (a *Server) upsertGithubConnector(ctx context.Context, connector types.GithubConnector) (types.GithubConnector, error) {
 	if err := checkGithubOrgSSOSupport(ctx, connector, nil, a.githubOrgSSOCache, nil); err != nil {
-		return trace.Wrap(err)
+		return nil, trace.Wrap(err)
 	}
-	if err := a.UpsertGithubConnector(ctx, connector); err != nil {
-		return trace.Wrap(err)
+	upserted, err := a.UpsertGithubConnector(ctx, connector)
+	if err != nil {
+		return nil, trace.Wrap(err)
 	}
 	if err := a.emitter.EmitAuditEvent(ctx, &apievents.GithubConnectorCreate{
 		Metadata: apievents.Metadata{
@@ -166,11 +176,12 @@ func (a *Server) upsertGithubConnector(ctx context.Context, connector types.Gith
 		ResourceMetadata: apievents.ResourceMetadata{
 			Name: connector.GetName(),
 		},
+		ConnectionMetadata: authz.ConnectionMetadata(ctx),
 	}); err != nil {
 		log.WithError(err).Warn("Failed to emit GitHub connector create event.")
 	}
 
-	return nil
+	return upserted, nil
 }
 
 // createGithubConnector creates a new Github connector.
@@ -192,6 +203,7 @@ func (a *Server) createGithubConnector(ctx context.Context, connector types.Gith
 		ResourceMetadata: apievents.ResourceMetadata{
 			Name: connector.GetName(),
 		},
+		ConnectionMetadata: authz.ConnectionMetadata(ctx),
 	}); err != nil {
 		log.WithError(err).Warn("Failed to emit GitHub connector create event.")
 	}
@@ -218,8 +230,9 @@ func (a *Server) updateGithubConnector(ctx context.Context, connector types.Gith
 		ResourceMetadata: apievents.ResourceMetadata{
 			Name: connector.GetName(),
 		},
+		ConnectionMetadata: authz.ConnectionMetadata(ctx),
 	}); err != nil {
-		log.WithError(err).Warn("Failed to emit GitHub connector create event.")
+		log.WithError(err).Warn("Failed to emit GitHub connector update event.")
 	}
 
 	return updated, nil
@@ -258,7 +271,8 @@ func checkGithubOrgSSOSupport(ctx context.Context, conn types.GithubConnector, u
 	}
 
 	// Check each organization only once
-	// DELETE IN 12 (zmb3)
+	// TODO: this can be removed as of Teleport 12, but we should create cluster
+	// alerts for anyone using the old teams_to_logins field to avoid breaking anyone
 	for _, mapping := range conn.GetTeamsToLogins() {
 		addOrg(mapping.Organization)
 	}
@@ -372,6 +386,7 @@ func (a *Server) deleteGithubConnector(ctx context.Context, connectorName string
 		ResourceMetadata: apievents.ResourceMetadata{
 			Name: connectorName,
 		},
+		ConnectionMetadata: authz.ConnectionMetadata(ctx),
 	}); err != nil {
 		log.WithError(err).Warn("Failed to emit GitHub connector delete event.")
 	}
@@ -440,7 +455,8 @@ func validateGithubAuthCallbackHelper(ctx context.Context, m githubManager, diag
 		Metadata: apievents.Metadata{
 			Type: events.UserLoginEvent,
 		},
-		Method: events.LoginMethodGithub,
+		Method:             events.LoginMethodGithub,
+		ConnectionMetadata: authz.ConnectionMetadata(ctx),
 	}
 
 	auth, err := m.validateGithubAuthCallback(ctx, diagCtx, q)
@@ -570,7 +586,7 @@ func (a *Server) getGithubOAuth2Client(connector types.GithubConnector) (*oauth2
 
 // ValidateGithubAuthCallback validates Github auth callback redirect
 func (a *Server) validateGithubAuthCallback(ctx context.Context, diagCtx *SSODiagContext, q url.Values) (*GithubAuthResponse, error) {
-	logger := log.WithFields(logrus.Fields{trace.Component: "github"})
+	logger := log.WithFields(logrus.Fields{teleport.ComponentKey: "github"})
 
 	if errParam := q.Get("error"); errParam != "" {
 		// try to find request so the error gets logged against it.
@@ -646,7 +662,7 @@ func (a *Server) validateGithubAuthCallback(ctx context.Context, diagCtx *SSODia
 	if err != nil {
 		return nil, trace.Wrap(err, "failed to query GitHub user info")
 	}
-	teamsResp, err := ghClient.getTeams()
+	teamsResp, err := ghClient.getTeams(ctx)
 	if err != nil {
 		return nil, trace.Wrap(err, "failed to query GitHub user teams")
 	}
@@ -719,7 +735,7 @@ func (a *Server) validateGithubAuthCallback(ctx context.Context, diagCtx *SSODia
 
 	// If the request is coming from a browser, create a web session.
 	if req.CreateWebSession {
-		session, err := a.CreateWebSessionFromReq(ctx, types.NewWebSessionRequest{
+		session, err := a.CreateWebSessionFromReq(ctx, NewWebSessionRequest{
 			User:             userState.GetName(),
 			Roles:            userState.GetRoles(),
 			Traits:           userState.GetTraits(),
@@ -852,7 +868,7 @@ func (a *Server) calculateGithubUser(ctx context.Context, diagCtx *SSODiagContex
 }
 
 func (a *Server) createGithubUser(ctx context.Context, p *CreateUserParams, dryRun bool) (types.User, error) {
-	log.WithFields(logrus.Fields{trace.Component: "github"}).Debugf(
+	log.WithFields(logrus.Fields{teleport.ComponentKey: "github"}).Debugf(
 		"Generating dynamic GitHub identity %v/%v with roles: %v. Dry run: %v.",
 		p.ConnectorName, p.Username, p.Roles, dryRun)
 
@@ -933,7 +949,7 @@ func populateGithubClaims(user *userResponse, teams []teamResponse) (*types.Gith
 		OrganizationToTeams: orgToTeams,
 		Teams:               teamList,
 	}
-	log.WithFields(logrus.Fields{trace.Component: "github"}).Debugf(
+	log.WithFields(logrus.Fields{teleport.ComponentKey: "github"}).Debugf(
 		"Claims: %#v.", claims)
 	return claims, nil
 }
@@ -987,7 +1003,7 @@ type orgResponse struct {
 }
 
 // getTeams retrieves a list of teams authenticated user belongs to.
-func (c *githubAPIClient) getTeams() ([]teamResponse, error) {
+func (c *githubAPIClient) getTeams(ctx context.Context) ([]teamResponse, error) {
 	var result []teamResponse
 
 	bytes, nextPage, err := c.get("user/teams")
@@ -1026,6 +1042,7 @@ func (c *githubAPIClient) getTeams() ([]teamResponse, error) {
 					Success: false,
 					Error:   warningMessage,
 				},
+				ConnectionMetadata: authz.ConnectionMetadata(ctx),
 			}); err != nil {
 				log.WithError(err).Warn("Failed to emit GitHub login failure event.")
 			}
@@ -1105,3 +1122,10 @@ var GithubScopes = []string{
 	// read:org grants read-only access to user's team memberships
 	"read:org",
 }
+
+// Hooks for future use in Enterprise-only code.
+var (
+	GithubAuthRequestHook func(context.Context, *types.GithubAuthRequest, types.GithubConnector) error
+	OIDCAuthRequestHook   func(context.Context, *types.OIDCAuthRequest, types.OIDCConnector) error
+	SAMLAuthRequestHook   func(context.Context, *types.SAMLAuthRequest, types.SAMLConnector) error
+)

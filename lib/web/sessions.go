@@ -1,18 +1,20 @@
 /*
-Copyright 2015-2019 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package web
 
@@ -20,6 +22,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -49,10 +52,10 @@ import (
 	"github.com/gravitational/teleport/lib/auth"
 	"github.com/gravitational/teleport/lib/authz"
 	"github.com/gravitational/teleport/lib/client"
+	"github.com/gravitational/teleport/lib/modules"
 	"github.com/gravitational/teleport/lib/multiplexer"
 	"github.com/gravitational/teleport/lib/reversetunnelclient"
 	"github.com/gravitational/teleport/lib/services"
-	"github.com/gravitational/teleport/lib/services/local"
 	alpncommon "github.com/gravitational/teleport/lib/srv/alpnproxy/common"
 	"github.com/gravitational/teleport/lib/sshutils"
 	"github.com/gravitational/teleport/lib/tlsca"
@@ -330,10 +333,14 @@ func (c *SessionContext) NewKubernetesServiceClient(ctx context.Context, addr st
 		addr,
 		grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)),
 		grpc.WithChainUnaryInterceptor(
+			//nolint:staticcheck // SA1019. There is a data race in the stats.Handler that is replacing
+			// the interceptor. See https://github.com/open-telemetry/opentelemetry-go-contrib/issues/4576.
 			otelgrpc.UnaryClientInterceptor(),
 			metadata.UnaryClientInterceptor,
 		),
 		grpc.WithChainStreamInterceptor(
+			//nolint:staticcheck // SA1019. There is a data race in the stats.Handler that is replacing
+			// the interceptor. See https://github.com/open-telemetry/opentelemetry-go-contrib/issues/4576.
 			otelgrpc.StreamClientInterceptor(),
 			metadata.StreamClientInterceptor,
 		),
@@ -616,6 +623,8 @@ type sessionCacheOptions struct {
 	sessionLingeringThreshold time.Duration
 	// proxySigner is used to sign PROXY header and securely propagate client's real IP
 	proxySigner multiplexer.PROXYHeaderSigner
+	// See [sessionCache.startWebSessionWatcherImmediately]. Used for testing.
+	startWebSessionWatcherImmediately bool
 }
 
 // newSessionCache creates a [sessionCache] from the provided [config] and
@@ -632,22 +641,26 @@ func newSessionCache(ctx context.Context, config sessionCacheOptions) (*sessionC
 	}
 
 	cache := &sessionCache{
-		clusterName:               clusterName.GetClusterName(),
-		proxyClient:               config.proxyClient,
-		accessPoint:               config.accessPoint,
-		sessions:                  make(map[string]*SessionContext),
-		resources:                 make(map[string]*sessionResources),
-		authServers:               config.servers,
-		closer:                    utils.NewCloseBroadcaster(),
-		cipherSuites:              config.cipherSuites,
-		log:                       newPackageLogger(),
-		clock:                     config.clock,
-		sessionLingeringThreshold: config.sessionLingeringThreshold,
-		proxySigner:               config.proxySigner,
+		clusterName:                       clusterName.GetClusterName(),
+		proxyClient:                       config.proxyClient,
+		accessPoint:                       config.accessPoint,
+		sessions:                          make(map[string]*SessionContext),
+		resources:                         make(map[string]*sessionResources),
+		authServers:                       config.servers,
+		closer:                            utils.NewCloseBroadcaster(),
+		cipherSuites:                      config.cipherSuites,
+		log:                               newPackageLogger(),
+		clock:                             config.clock,
+		sessionLingeringThreshold:         config.sessionLingeringThreshold,
+		proxySigner:                       config.proxySigner,
+		startWebSessionWatcherImmediately: config.startWebSessionWatcherImmediately,
 	}
 
 	// periodically close expired and unused sessions
 	go cache.expireSessions(ctx)
+
+	// Watch for session updates.
+	go cache.watchWebSessions(ctx)
 
 	return cache, nil
 }
@@ -668,7 +681,7 @@ type sessionCache struct {
 	// cipherSuites is the list of supported TLS cipher suites.
 	cipherSuites []uint16
 
-	mu sync.Mutex
+	mu sync.RWMutex
 	// sessions maps user/sessionID to an active web session value between renewals.
 	// This is the client-facing session handle
 	sessions map[string]*SessionContext
@@ -686,6 +699,11 @@ type sessionCache struct {
 
 	// proxySigner is used to sign PROXY header and securely propagate client's real IP
 	proxySigner multiplexer.PROXYHeaderSigner
+
+	// startWebSessionWatcherImmediately removes the First component of the linear
+	// backoff used to start the WebSession watcher.
+	// Used for testing.
+	startWebSessionWatcherImmediately bool
 }
 
 // Close closes all allocated resources and stops goroutines
@@ -695,9 +713,8 @@ func (s *sessionCache) Close() error {
 }
 
 func (s *sessionCache) ActiveSessions() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return len(s.sessions)
 }
 
@@ -726,6 +743,103 @@ func (s *sessionCache) clearExpiredSessions(ctx context.Context) {
 		}
 		s.removeSessionContextLocked(c.cfg.Session.GetUser(), c.cfg.Session.GetName())
 		s.log.WithField("ctx", c.String()).Debug("Context expired.")
+	}
+}
+
+// watchWebSessions runs the WebSession watcher loop.
+// It only stops when ctx is done.
+func (s *sessionCache) watchWebSessions(ctx context.Context) {
+	// Watcher not necessary for OSS.
+	if modules.GetModules().BuildType() != modules.BuildEnterprise {
+		return
+	}
+
+	linear := utils.NewDefaultLinear()
+	if s.startWebSessionWatcherImmediately {
+		linear.First = 0
+	}
+
+	s.log.Debug("Starting sessionCache WebSession watcher")
+	for {
+		select {
+		// Stop when the context tells us to.
+		case <-ctx.Done():
+			s.log.Debug("Stopping sessionCache WebSession watcher")
+			return
+
+		case <-linear.After():
+			linear.Inc()
+		}
+
+		if err := s.watchWebSessionsOnce(ctx, linear.Reset); err != nil && !errors.Is(err, context.Canceled) {
+			const msg = "" +
+				"sessionCache WebSession watcher aborted, re-connecting. " +
+				"This may have an impact in device trust web sessions."
+			s.log.WithError(err).Warn(msg)
+		}
+	}
+}
+
+// watchWebSessionsOnce creates a watcher for WebSessions and watches for its
+// events.
+//
+// Any updated sessions are evicted from the cache. The underlying assumption
+// is that an updated session got its certificates augmented with device trust
+// extensions, so it is evicted in order for the new certificates to be loaded
+// by the Proxy.
+func (s *sessionCache) watchWebSessionsOnce(ctx context.Context, reset func()) error {
+	watcher, err := s.proxyClient.NewWatcher(ctx, types.Watch{
+		Name: teleport.ComponentWebProxy + ".sessionCache." + types.KindWebSession,
+		Kinds: []types.WatchKind{
+			{
+				Kind: types.KindWebSession,
+				// Watch only for KindWebSession.
+				// SubKinds include KindAppSession, KindSAMLIdPSession, etc.
+				SubKind: types.KindWebSession,
+			},
+		},
+	})
+	if err != nil {
+		return trace.Wrap(err)
+	}
+	defer watcher.Close()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+
+		case <-watcher.Done():
+			return errors.New("watcher closed")
+
+		case event := <-watcher.Events():
+			reset() // Reset linear backoff attempts.
+
+			s.log.
+				WithField("event", event).
+				Debug("Received sessionCache watcher event")
+
+			if event.Type != types.OpPut {
+				continue // We only care about OpPut at the moment.
+			}
+
+			session, ok := event.Resource.(types.WebSession)
+			if !ok {
+				s.log.
+					WithField("resource_type", fmt.Sprintf("%T", event.Resource)).
+					Warn("sessionCache WebSession watcher received unexpected resource type")
+				continue
+			}
+
+			// If the session got an update, assume it got augmented with device
+			// extensions and clear the cache.
+			// We could be more selective here, but this is good enough.
+			if err := s.releaseResources(session.GetUser(), session.GetName()); err != nil {
+				s.log.
+					WithError(err).
+					Debug("sessionCache WebSession wacher: failed to release updated session.")
+			}
+		}
 	}
 }
 
@@ -847,18 +961,34 @@ func (s *sessionCache) invalidateSession(ctx context.Context, sctx *SessionConte
 	if err != nil {
 		return trace.Wrap(err)
 	}
+
+	// App session, SAML session and web session deletion should be treated as a single transaction.
+	// To avoid aborting deletion midpoint due to a failure in one of the session deletion,
+	// we use sessionDeletionErr below to join errors and return them at last.
+	var sessionDeletionErrs error
+	if err := clt.DeleteUserAppSessions(ctx, &proto.DeleteUserAppSessionsRequest{Username: sctx.GetUser()}); err != nil {
+		sessionDeletionErrs = err
+	}
+	if samlSession := sctx.cfg.Session.GetSAMLSession(); samlSession != nil && samlSession.ID != "" {
+		if err := clt.DeleteSAMLIdPSession(ctx, types.DeleteSAMLIdPSessionRequest{
+			SessionID: samlSession.ID,
+		}); err != nil && !trace.IsNotFound(err) {
+			sessionDeletionErrs = errors.Join(sessionDeletionErrs, err)
+		}
+	}
 	// Delete just the session - leave the bearer token to linger to avoid
 	// failing a client query still using the old token.
-	err = clt.WebSessions().Delete(ctx, types.DeleteWebSessionRequest{
+	if err := clt.WebSessions().Delete(ctx, types.DeleteWebSessionRequest{
 		User:      sctx.GetUser(),
 		SessionID: sctx.GetSessionID(),
-	})
-	if err != nil && !trace.IsNotFound(err) {
-		return trace.Wrap(err)
+	}); err != nil && !trace.IsNotFound(err) {
+		sessionDeletionErrs = errors.Join(sessionDeletionErrs, err)
 	}
-	if err := clt.DeleteUserAppSessions(ctx, &proto.DeleteUserAppSessionsRequest{Username: sctx.GetUser()}); err != nil {
-		return trace.Wrap(err)
+
+	if sessionDeletionErrs != nil {
+		return trace.Wrap(sessionDeletionErrs)
 	}
+
 	if err := s.releaseResources(sctx.GetUser(), sctx.GetSessionID()); err != nil {
 		return trace.Wrap(err)
 	}
@@ -866,8 +996,8 @@ func (s *sessionCache) invalidateSession(ctx context.Context, sctx *SessionConte
 }
 
 func (s *sessionCache) getContext(key string) (*SessionContext, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	ctx, ok := s.sessions[key]
 	return ctx, ok
 }
@@ -931,8 +1061,8 @@ func (s *sessionCache) upsertSessionContext(user string) *sessionResources {
 	}
 	ctx := &sessionResources{
 		log: s.log.WithFields(logrus.Fields{
-			trace.Component: "user-session",
-			"user":          user,
+			teleport.ComponentKey: "user-session",
+			"user":                user,
 		}),
 	}
 	s.resources[user] = ctx
@@ -1091,48 +1221,6 @@ func (c *sessionResources) transferClosers() []io.Closer {
 
 func sessionKey(user, sessionID string) string {
 	return user + sessionID
-}
-
-// waitForWebSession will block until the requested web session shows up in the
-// cache or a timeout occurs.
-func (h *Handler) waitForWebSession(ctx context.Context, req types.GetWebSessionRequest) error {
-	_, err := h.cfg.AccessPoint.GetWebSession(ctx, req)
-	if err == nil {
-		return nil
-	}
-	logger := h.log.WithField("req", req)
-	if !trace.IsNotFound(err) {
-		logger.WithError(err).Debug("Failed to query web session.")
-	}
-	// Establish a watch.
-	watcher, err := h.cfg.AccessPoint.NewWatcher(ctx, types.Watch{
-		Name: teleport.ComponentWebProxy,
-		Kinds: []types.WatchKind{
-			{
-				Kind:    types.KindWebSession,
-				SubKind: types.KindWebSession,
-			},
-		},
-		MetricComponent: teleport.ComponentWebProxy,
-	})
-	if err != nil {
-		return trace.Wrap(err)
-	}
-	defer watcher.Close()
-	matchEvent := func(event types.Event) (types.Resource, error) {
-		if event.Type == types.OpPut &&
-			event.Resource.GetKind() == types.KindWebSession &&
-			event.Resource.GetSubKind() == types.KindWebSession &&
-			event.Resource.GetName() == req.SessionID {
-			return event.Resource, nil
-		}
-		return nil, trace.CompareFailed("no match")
-	}
-	_, err = local.WaitForEvent(ctx, watcher, local.EventMatcherFunc(matchEvent), h.clock)
-	if err != nil {
-		logger.WithError(err).Warn("Failed to wait for web session.")
-	}
-	return trace.Wrap(err)
 }
 
 // remoteClientCache stores remote clients keyed by site name while also keeping

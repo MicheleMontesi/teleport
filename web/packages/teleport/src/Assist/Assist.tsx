@@ -1,21 +1,26 @@
 /**
- * Copyright 2023 Gravitational, Inc.
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
  *
- *     http://www.apache.org/licenses/LICENSE-2.0
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 import React, { useEffect, useState } from 'react';
 import styled, { keyframes } from 'styled-components';
+import { sharedStyles } from 'design/theme/themes/sharedStyles';
+
+import { AssistViewMode } from 'gen-proto-ts/teleport/userpreferences/v1/assist_pb';
 
 import { Header } from 'teleport/Assist/Header';
 import { ConversationHistory } from 'teleport/Assist/ConversationHistory';
@@ -25,11 +30,12 @@ import {
 } from 'teleport/Assist/context/AssistContext';
 import { ConversationList } from 'teleport/Assist/ConversationList';
 import { useLayout } from 'teleport/Main/LayoutContext';
-import { ViewMode } from 'teleport/Assist/types';
 import { Settings } from 'teleport/Assist/Settings';
 import { ErrorBanner, ErrorList } from 'teleport/Assist/ErrorBanner';
 import { useUser } from 'teleport/User/UserContext';
 import { LandingPage } from 'teleport/Assist/LandingPage';
+
+const { dockedAssistWidth } = sharedStyles;
 
 interface AssistProps {
   onClose: () => void;
@@ -55,9 +61,9 @@ const slideIn = keyframes`
   }
 `;
 
-function variables(props: { viewMode: ViewMode }) {
+function variables(props: { viewMode: AssistViewMode }) {
   switch (props.viewMode) {
-    case ViewMode.Popup:
+    case AssistViewMode.POPUP:
       return {
         '--assist-gutter': '20px',
         '--assist-border-radius': '15px',
@@ -71,8 +77,8 @@ function variables(props: { viewMode: ViewMode }) {
         '--assist-bottom-padding': '5px',
       };
 
-    case ViewMode.PopupExpanded:
-    case ViewMode.PopupExpandedSidebarVisible:
+    case AssistViewMode.POPUP_EXPANDED:
+    case AssistViewMode.POPUP_EXPANDED_SIDEBAR_VISIBLE:
       return {
         '--assist-gutter': '20px',
         '--assist-border-radius': '15px',
@@ -86,13 +92,13 @@ function variables(props: { viewMode: ViewMode }) {
         '--assist-bottom-padding': '5px',
       };
 
-    case ViewMode.Docked:
+    case AssistViewMode.DOCKED:
       return {
         '--assist-gutter': '0',
         '--assist-border-radius': '0',
         '--assist-left': 'auto',
         '--assist-right': '0',
-        '--assist-width': '520px',
+        '--assist-width': `${dockedAssistWidth}px`,
         '--assist-height': '100vh',
         '--assist-box-shadow': 'none',
         '--assist-left-border': '1px solid rgba(0, 0, 0, 0.1)',
@@ -103,11 +109,11 @@ function variables(props: { viewMode: ViewMode }) {
 }
 
 function sidebarVariables(props: {
-  viewMode: ViewMode;
+  viewMode: AssistViewMode;
   sidebarVisible: boolean;
 }) {
   switch (props.viewMode) {
-    case ViewMode.Popup:
+    case AssistViewMode.POPUP:
       if (props.sidebarVisible) {
         return {
           '--conversation-width': '550px',
@@ -129,8 +135,8 @@ function sidebarVariables(props: {
         '--conversation-list-position': 'absolute',
       };
 
-    case ViewMode.PopupExpanded:
-    case ViewMode.PopupExpandedSidebarVisible:
+    case AssistViewMode.POPUP_EXPANDED:
+    case AssistViewMode.POPUP_EXPANDED_SIDEBAR_VISIBLE:
       if (props.sidebarVisible) {
         return {
           '--conversation-list-margin': '0',
@@ -152,11 +158,11 @@ function sidebarVariables(props: {
         '--conversation-list-position': 'absolute',
       };
 
-    case ViewMode.Docked:
+    case AssistViewMode.DOCKED:
       if (props.sidebarVisible) {
         return {
-          '--conversation-width': '520px',
-          '--conversation-list-width': '520px',
+          '--conversation-width': `${dockedAssistWidth}px`,
+          '--conversation-list-width': `${dockedAssistWidth}px`,
           '--conversation-list-margin': '0',
           '--command-input-width': '380px',
           '--conversation-list-display': 'flex',
@@ -166,7 +172,7 @@ function sidebarVariables(props: {
 
       return {
         '--conversation-width': '525px',
-        '--conversation-list-width': '520px',
+        '--conversation-list-width': `${dockedAssistWidth}px`,
         '--conversation-list-margin':
           'calc((var(--conversation-list-width) * -1) - 1px)',
         '--command-input-width': '380px',
@@ -178,19 +184,29 @@ function sidebarVariables(props: {
 
 const Container = styled.div<{ docked: boolean }>`
   position: fixed;
-  top: 0;
+  ${p =>
+    p.docked
+      ? `top: ${p.theme.topBarHeight[0]}px;
+  @media screen and (min-width: ${p.theme.breakpoints.small}px) {
+    top: ${p.theme.topBarHeight[1]}px;
+  }
+  @media screen and (min-width: ${p.theme.breakpoints.large}px) {
+    top: ${p.theme.topBarHeight[2]}px;
+  }
+  `
+      : 'top: 0;'}
   left: ${p => (p.docked ? 'auto' : '0')};
   right: 0;
   bottom: 0;
   opacity: 0;
   animation: forwards ${fadeIn} 0.3s ease-in-out;
   background: rgba(0, 0, 0, 0.5);
-  z-index: 1000;
+  z-index: ${p => (p.docked ? 2 : 100)};
   display: flex;
   justify-content: flex-end;
 `;
 
-const AssistContainer = styled.div`
+const AssistContainer = styled.div<{ docked: boolean }>`
   ${variables};
   ${sidebarVariables};
 
@@ -200,7 +216,8 @@ const AssistContainer = styled.div`
     0
   );
   animation: forwards ${slideIn} 0.5s cubic-bezier(0.33, 1, 0.68, 1);
-  transition: width 0.5s cubic-bezier(0.33, 1, 0.68, 1),
+  transition:
+    width 0.5s cubic-bezier(0.33, 1, 0.68, 1),
     height 0.5s cubic-bezier(0.33, 1, 0.68, 1);
   background: ${p => p.theme.colors.levels.popout};
   border-radius: var(--assist-border-radius);
@@ -208,7 +225,17 @@ const AssistContainer = styled.div`
   position: absolute;
   width: var(--assist-width);
   max-height: calc(100vh - var(--assist-gutter) * 2);
-  height: var(--assist-height);
+  ${p =>
+    p.docked
+      ? `height: calc(100vh - ${p.theme.topBarHeight[0]}px);
+  @media screen and (min-width: ${p.theme.breakpoints.small}px) {
+    height: calc(100vh - ${p.theme.topBarHeight[1]}px);
+  }
+  @media screen and (min-width: ${p.theme.breakpoints.large}px) {
+    height: calc(100vh - ${p.theme.topBarHeight[2]}px);
+  }
+  `
+      : 'height: var(--assist-height);'}
   top: var(--assist-gutter);
   right: var(--assist-right);
   left: var(--assist-left);
@@ -276,11 +303,17 @@ function AssistContent(props: AssistProps) {
   const { hasDockedElement, setHasDockedElement } = useLayout();
 
   useEffect(() => {
-    if (!hasDockedElement && preferences.assist.viewMode === ViewMode.Docked) {
+    if (
+      !hasDockedElement &&
+      preferences.assist.viewMode === AssistViewMode.DOCKED
+    ) {
       setHasDockedElement(true);
     }
 
-    if (hasDockedElement && preferences.assist.viewMode !== ViewMode.Docked) {
+    if (
+      hasDockedElement &&
+      preferences.assist.viewMode !== AssistViewMode.DOCKED
+    ) {
       setHasDockedElement(false);
     }
   }, [hasDockedElement, preferences.assist.viewMode]);
@@ -295,8 +328,8 @@ function AssistContent(props: AssistProps) {
     }
 
     if (
-      preferences.assist.viewMode === ViewMode.Popup ||
-      preferences.assist.viewMode === ViewMode.Docked
+      preferences.assist.viewMode === AssistViewMode.POPUP ||
+      preferences.assist.viewMode === AssistViewMode.DOCKED
     ) {
       toggleSidebar(false);
     }
@@ -308,7 +341,8 @@ function AssistContent(props: AssistProps) {
 
     if (
       sidebarVisible &&
-      preferences.assist.viewMode !== ViewMode.PopupExpandedSidebarVisible
+      preferences.assist.viewMode !==
+        AssistViewMode.POPUP_EXPANDED_SIDEBAR_VISIBLE
     ) {
       toggleSidebar(false);
     }
@@ -340,11 +374,10 @@ function AssistContent(props: AssistProps) {
     </ErrorBanner>
   ));
 
+  const docked = preferences.assist.viewMode === AssistViewMode.DOCKED;
+
   return (
-    <Container
-      onClick={handleClose}
-      docked={preferences.assist.viewMode === ViewMode.Docked}
-    >
+    <Container onClick={handleClose} docked={docked}>
       {settingsOpen && (
         <Settings
           onClose={() => setSettingsOpen(false)}
@@ -357,6 +390,7 @@ function AssistContent(props: AssistProps) {
         onClick={handleClick}
         viewMode={preferences.assist.viewMode}
         sidebarVisible={sidebarVisible}
+        docked={docked}
       >
         <Header
           onClose={handleClose}

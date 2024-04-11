@@ -1,16 +1,20 @@
-// Copyright 2023 Gravitational, Inc
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package unifiedresources
 
@@ -26,6 +30,7 @@ import (
 	"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/teleport/lib/teleterm/api/uri"
 	"github.com/gravitational/teleport/lib/teleterm/clusters"
+	"github.com/gravitational/teleport/lib/utils/aws"
 )
 
 func TestUnifiedResourcesList(t *testing.T) {
@@ -61,10 +66,52 @@ func TestUnifiedResourcesList(t *testing.T) {
 	})
 	require.NoError(t, err)
 
+	app, err := types.NewAppServerV3(types.Metadata{
+		Name: "testApp",
+	}, types.AppServerSpecV3{
+		HostID: uuid.New().String(),
+		App: &types.AppV3{
+			Metadata: types.Metadata{
+				Name: "testApp",
+			},
+			Spec: types.AppSpecV3{
+				URI: "https://test.app",
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	samlSP, err := types.NewSAMLIdPServiceProvider(types.Metadata{
+		Name: "testApp",
+	}, types.SAMLIdPServiceProviderSpecV1{
+		ACSURL:   "https://test.example",
+		EntityID: "123",
+	})
+	require.NoError(t, err)
+
 	mockedResources := []*proto.PaginatedResource{
 		{Resource: &proto.PaginatedResource_Node{Node: node.(*types.ServerV2)}},
 		{Resource: &proto.PaginatedResource_DatabaseServer{DatabaseServer: database}},
 		{Resource: &proto.PaginatedResource_KubernetesServer{KubernetesServer: kube}},
+		{Resource: &proto.PaginatedResource_AppServer{AppServer: app}},
+		// just an app server like above, but wrapped in AppServerOrSAMLIdPServiceProvider
+		{Resource: &proto.PaginatedResource_AppServerOrSAMLIdPServiceProvider{
+			//nolint:staticcheck // SA1019. TODO(sshah) DELETE IN 17.0
+			AppServerOrSAMLIdPServiceProvider: &types.AppServerOrSAMLIdPServiceProviderV1{
+				Resource: &types.AppServerOrSAMLIdPServiceProviderV1_AppServer{
+					AppServer: app,
+				},
+			}},
+		},
+		{Resource: &proto.PaginatedResource_AppServerOrSAMLIdPServiceProvider{
+			//nolint:staticcheck // SA1019. TODO(sshah) DELETE IN 17.0
+			AppServerOrSAMLIdPServiceProvider: &types.AppServerOrSAMLIdPServiceProviderV1{
+				Resource: &types.AppServerOrSAMLIdPServiceProviderV1_SAMLIdPServiceProvider{
+					SAMLIdPServiceProvider: samlSP.(*types.SAMLIdPServiceProviderV1),
+				},
+			}},
+		},
+		{Resource: &proto.PaginatedResource_SAMLIdPServiceProvider{SAMLIdPServiceProvider: samlSP.(*types.SAMLIdPServiceProviderV1)}},
 	}
 	mockedNextKey := "nextKey"
 
@@ -75,18 +122,43 @@ func TestUnifiedResourcesList(t *testing.T) {
 
 	response, err := List(ctx, cluster, mockedClient, &proto.ListUnifiedResourcesRequest{})
 	require.NoError(t, err)
+
 	require.Equal(t, UnifiedResource{Server: &clusters.Server{
 		URI:    uri.NewClusterURI(cluster.ProfileName).AppendServer(node.GetName()),
 		Server: node,
 	}}, response.Resources[0])
+
 	require.Equal(t, UnifiedResource{Database: &clusters.Database{
 		URI:      uri.NewClusterURI(cluster.ProfileName).AppendDB(database.GetName()),
 		Database: database.GetDatabase(),
 	}}, response.Resources[1])
+
 	require.Equal(t, UnifiedResource{Kube: &clusters.Kube{
 		URI:               uri.NewClusterURI(cluster.ProfileName).AppendKube(kube.GetCluster().GetName()),
 		KubernetesCluster: kube.GetCluster(),
 	}}, response.Resources[2])
+
+	require.Equal(t, UnifiedResource{App: &clusters.App{
+		URI: uri.NewClusterURI(cluster.ProfileName).AppendApp(app.GetApp().GetName()),
+		// FQDN looks weird because we cannot mock cluster.status.ProxyHost in tests.
+		FQDN:     "testApp.",
+		AWSRoles: aws.Roles{},
+		App:      app.GetApp(),
+	}}, response.Resources[3])
+
+	require.Equal(t, UnifiedResource{App: &clusters.App{
+		URI: uri.NewClusterURI(cluster.ProfileName).AppendApp(app.GetApp().GetName()),
+		// FQDN looks weird because we cannot mock cluster.status.ProxyHost in tests.
+		FQDN:     "testApp.",
+		AWSRoles: aws.Roles{},
+		App:      app.GetApp(),
+	}}, response.Resources[4])
+
+	require.Equal(t, UnifiedResource{SAMLIdPServiceProvider: &clusters.SAMLIdPServiceProvider{
+		URI:      uri.NewClusterURI(cluster.ProfileName).AppendApp(samlSP.GetName()),
+		Provider: samlSP,
+	}}, response.Resources[5])
+
 	require.Equal(t, mockedNextKey, response.NextKey)
 }
 

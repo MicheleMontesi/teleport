@@ -1,23 +1,27 @@
 /*
-Copyright 2023 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package local
 
 import (
 	"context"
+	"fmt"
+	"strconv"
 	"testing"
 	"time"
 
@@ -32,7 +36,7 @@ import (
 	"github.com/gravitational/teleport/api/types/trait"
 	"github.com/gravitational/teleport/lib/backend"
 	"github.com/gravitational/teleport/lib/backend/memory"
-	"github.com/gravitational/teleport/lib/services"
+	"github.com/gravitational/teleport/lib/modules"
 )
 
 // TestAccessListCRUD tests backend operations with access list resources.
@@ -46,8 +50,7 @@ func TestAccessListCRUD(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	service, err := NewAccessListService(backend.NewSanitizer(mem), clock)
-	require.NoError(t, err)
+	service := newAccessListService(t, mem, clock, true /* igsEnabled */)
 
 	// Create a couple access lists.
 	accessList1 := newAccessList(t, "accessList1", clock)
@@ -135,6 +138,214 @@ func TestAccessListCRUD(t *testing.T) {
 	require.True(t, trace.IsAlreadyExists(err))
 }
 
+// TestAccessListCreate_UpsertAccessList_WithoutLimit tests creating access list
+// is unlimited if IGS feature is enabled.
+func TestAccessListCreate_UpsertAccessList_WithoutLimit(t *testing.T) {
+	ctx := context.Background()
+	clock := clockwork.NewFakeClock()
+
+	mem, err := memory.New(memory.Config{
+		Context: ctx,
+		Clock:   clock,
+	})
+	require.NoError(t, err)
+
+	service := newAccessListService(t, mem, clock, true /* igsEnabled */)
+
+	accessList1 := newAccessList(t, "accessList1", clock)
+	accessList2 := newAccessList(t, "accessList2", clock)
+	accessList3 := newAccessList(t, "accessList3", clock)
+
+	// No limit to creating access list.
+	_, err = service.UpsertAccessList(ctx, accessList1)
+	require.NoError(t, err)
+	_, err = service.UpsertAccessList(ctx, accessList2)
+	require.NoError(t, err)
+	_, err = service.UpsertAccessList(ctx, accessList3)
+	require.NoError(t, err)
+
+	// Fetch all access lists.
+	out, err := service.GetAccessLists(ctx)
+	require.NoError(t, err)
+	require.Len(t, out, 3)
+}
+
+// TestAccessListCreate_UpdateAccessList tests creating access list
+// and updating access list with the same name.
+func TestAccessListCreate_UpdateAccessList(t *testing.T) {
+	ctx := context.Background()
+	clock := clockwork.NewFakeClock()
+
+	mem, err := memory.New(memory.Config{
+		Context: ctx,
+		Clock:   clock,
+	})
+	require.NoError(t, err)
+
+	service := newAccessListService(t, mem, clock, true /* igsEnabled */)
+
+	// No limit to creating access list.
+	result, err := service.UpsertAccessList(ctx, newAccessList(t, "accessList1", clock))
+	require.NoError(t, err)
+	// Fetch all access lists.
+	out, err := service.GetAccessLists(ctx)
+	require.NoError(t, err)
+	require.Len(t, out, 1)
+
+	result.Spec.Description = "changing description"
+	// Update access list with the correct revision.
+	_, err = service.UpdateAccessList(ctx, result)
+	require.NoError(t, err)
+	result.Spec.Description = "changing description again"
+	result.Metadata.Revision = "fake revision"
+	// Update access list with wrong revision should return an error.
+	_, err = service.UpdateAccessList(ctx, result)
+	require.Error(t, err)
+	require.True(t, trace.IsCompareFailed(err), "expected precondition failed error, got %v", err)
+}
+
+// TestAccessListCreate_UpsertAccessList_WithLimit tests creating access list
+// is limited to the limit defined in feature if IGS is NOT enabled.
+// Also tests "upserting" and deleting is allowed despite "create" limit reached.
+func TestAccessListCreate_UpsertAccessList_WithLimit(t *testing.T) {
+	ctx := context.Background()
+	clock := clockwork.NewFakeClock()
+
+	mem, err := memory.New(memory.Config{
+		Context: ctx,
+		Clock:   clock,
+	})
+	require.NoError(t, err)
+
+	service := newAccessListService(t, mem, clock, false /* igsEnabled */)
+
+	accessList1 := newAccessList(t, "accessList1", clock)
+	accessList2 := newAccessList(t, "accessList2", clock)
+
+	// First create is free.
+	_, err = service.UpsertAccessList(ctx, accessList1)
+	require.NoError(t, err)
+
+	// Second create should return an error.
+	_, err = service.UpsertAccessList(ctx, accessList2)
+	require.True(t, trace.IsAccessDenied(err), "expected access denied / license limit error, got %v", err)
+	require.ErrorContains(t, err, "reached its limit")
+
+	// Double check only be one access list exists.
+	out, err := service.GetAccessLists(ctx)
+	require.NoError(t, err)
+	require.Len(t, out, 1)
+
+	// Updating existing access list should be allowed.
+	accessList1.Spec.Description = "changing description"
+	_, err = service.UpsertAccessList(ctx, accessList1)
+	require.NoError(t, err)
+
+	// Delete the one access list.
+	err = service.DeleteAccessList(ctx, "accessList1")
+	require.NoError(t, err)
+
+	// Create the same list again.
+	_, err = service.UpsertAccessList(ctx, accessList1)
+	require.NoError(t, err)
+}
+
+// TestAccessListCreate_UpsertAccessListWithMembers_WithLimit tests creating access list
+// with members, is limited to the limit defined in feature if IGS is NOT enabled.
+// Also tests "upserting" and deleting is allowed despite "create" limit reached.
+func TestAccessListCreate_UpsertAccessListWithMembers_WithLimit(t *testing.T) {
+	ctx := context.Background()
+	clock := clockwork.NewFakeClock()
+
+	mem, err := memory.New(memory.Config{
+		Context: ctx,
+		Clock:   clock,
+	})
+	require.NoError(t, err)
+
+	service := newAccessListService(t, mem, clock, false /* igsEnabled */)
+
+	accessList1 := newAccessList(t, "accessList1", clock)
+	accessList2 := newAccessList(t, "accessList2", clock)
+
+	accessListMember1 := newAccessListMember(t, accessList1.GetName(), "alice")
+	accessListMember2 := newAccessListMember(t, accessList1.GetName(), "bob")
+
+	// First create is free.
+	_, _, err = service.UpsertAccessListWithMembers(ctx, accessList1, []*accesslist.AccessListMember{accessListMember1})
+	require.NoError(t, err)
+
+	// Check the count
+	count, err := service.CountAccessListMembers(ctx, accessList1.GetName())
+	require.NoError(t, err)
+	require.Equal(t, uint32(1), count)
+
+	// Second create should return an error.
+	_, _, err = service.UpsertAccessListWithMembers(ctx, accessList2, []*accesslist.AccessListMember{accessListMember2})
+	require.True(t, trace.IsAccessDenied(err), "expected access denied / license limit error, got %v", err)
+	require.ErrorContains(t, err, "reached its limit")
+
+	// Double check only be one access list exists.
+	out, err := service.GetAccessLists(ctx)
+	require.NoError(t, err)
+	require.Len(t, out, 1)
+	require.Equal(t, "accessList1", out[0].Metadata.Name)
+
+	// Double check only one member exists.
+	members, _, err := service.ListAccessListMembers(ctx, accessList1.GetName(), 0 /* default size*/, "")
+	require.NoError(t, err)
+	require.Len(t, members, 1)
+	require.Equal(t, "alice", members[0].Metadata.Name)
+
+	// Updating existing access list should be allowed.
+	accessList1.Spec.Description = "changing description"
+	_, _, err = service.UpsertAccessListWithMembers(ctx, accessList1, []*accesslist.AccessListMember{accessListMember1})
+	require.NoError(t, err)
+
+	// Delete the one access list.
+	err = service.DeleteAccessList(ctx, "accessList1")
+	require.NoError(t, err)
+
+	// Create the same list again.
+	_, _, err = service.UpsertAccessListWithMembers(ctx, accessList1, []*accesslist.AccessListMember{accessListMember1})
+	require.NoError(t, err)
+}
+
+// TestAccessListCreate_UpsertAccessListWithMembers_WithoutLimit tests creating access list
+// with members is unlimited if IGS feature is enabled.
+func TestAccessListCreate_UpsertAccessListWithMembers_WithoutLimit(t *testing.T) {
+	ctx := context.Background()
+	clock := clockwork.NewFakeClock()
+
+	mem, err := memory.New(memory.Config{
+		Context: ctx,
+		Clock:   clock,
+	})
+	require.NoError(t, err)
+
+	service := newAccessListService(t, mem, clock, true /* igsEnabled */)
+
+	accessList1 := newAccessList(t, "accessList1", clock)
+	accessList2 := newAccessList(t, "accessList2", clock)
+	accessList3 := newAccessList(t, "accessList3", clock)
+
+	accessListMember1 := newAccessListMember(t, accessList1.GetName(), "alice")
+	accessListMember2 := newAccessListMember(t, accessList1.GetName(), "bob")
+
+	// No limit to creating access list.
+	_, _, err = service.UpsertAccessListWithMembers(ctx, accessList1, []*accesslist.AccessListMember{accessListMember1})
+	require.NoError(t, err)
+	_, _, err = service.UpsertAccessListWithMembers(ctx, accessList2, []*accesslist.AccessListMember{accessListMember2})
+	require.NoError(t, err)
+	_, _, err = service.UpsertAccessListWithMembers(ctx, accessList3, []*accesslist.AccessListMember{})
+	require.NoError(t, err)
+
+	// Fetch all access lists.
+	out, err := service.GetAccessLists(ctx)
+	require.NoError(t, err)
+	require.Len(t, out, 3)
+}
+
 func TestAccessListDedupeOwnersBackwardsCompat(t *testing.T) {
 	ctx := context.Background()
 	clock := clockwork.NewFakeClock()
@@ -145,8 +356,7 @@ func TestAccessListDedupeOwnersBackwardsCompat(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	service, err := NewAccessListService(backend.NewSanitizer(mem), clock)
-	require.NoError(t, err)
+	service := newAccessListService(t, mem, clock, true /* igsEnabled */)
 
 	// Put an unduplicated owners access list in the backend.
 	accessListDuplicateOwners := newAccessList(t, "accessListDuplicateOwners", clock)
@@ -174,14 +384,13 @@ func TestAccessListUpsertWithMembers(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	service, err := NewAccessListService(backend.NewSanitizer(mem), clock)
-	require.NoError(t, err)
+	service := newAccessListService(t, mem, clock, true /* igsEnabled */)
 
 	// Create a couple access lists.
 	accessList1 := newAccessList(t, "accessList1", clock)
 
 	cmpOpts := []cmp.Option{
-		cmpopts.IgnoreFields(header.Metadata{}, "ID", "Revision"),
+		cmpopts.IgnoreFields(header.Metadata{}, "ID"),
 	}
 
 	t.Run("create access list", func(t *testing.T) {
@@ -250,8 +459,7 @@ func TestAccessListMembersCRUD(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	service, err := NewAccessListService(backend.NewSanitizer(mem), clock)
-	require.NoError(t, err)
+	service := newAccessListService(t, mem, clock, true /* igsEnabled */)
 
 	// Create a couple access lists.
 	accessList1 := newAccessList(t, "accessList1", clock)
@@ -374,6 +582,12 @@ func TestAccessListMembersCRUD(t *testing.T) {
 	_, err = service.UpsertAccessListMember(ctx, accessList1Member2)
 	require.NoError(t, err)
 
+	// try to update a member with the wrong revision.
+	accessList1Member2.Metadata.Revision = "fake revision"
+	_, err = service.UpdateAccessListMember(ctx, accessList1Member2)
+	require.Error(t, err)
+	require.True(t, trace.IsCompareFailed(err), "expected precondition failed error, got %v", err)
+
 	// Delete all members from access list 1.
 	require.NoError(t, service.DeleteAllAccessListMembersForAccessList(ctx, accessList1.GetName()))
 
@@ -415,9 +629,7 @@ func TestAccessListReviewCRUD(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	var service services.AccessLists
-	service, err = NewAccessListService(backend.NewSanitizer(mem), clock)
-	require.NoError(t, err)
+	service := newAccessListService(t, mem, clock, true /* igsEnabled */)
 
 	// Create a couple access lists.
 	accessList1 := newAccessList(t, "accessList1", clock)
@@ -482,10 +694,12 @@ func TestAccessListReviewCRUD(t *testing.T) {
 	// Verify changes to access list.
 	accessList1Updated, err := service.GetAccessList(ctx, accessList1.GetName())
 	require.NoError(t, err)
-	require.Equal(t, accessList1Updated.Spec.Audit.NextAuditDate,
+	require.Equal(t,
 		time.Date(accessList1OrigDate.Year(),
 			accessList1OrigDate.Month()+time.Month(accessList1Updated.Spec.Audit.Recurrence.Frequency),
-			int(accessList1Updated.Spec.Audit.Recurrence.DayOfMonth), 0, 0, 0, 0, time.UTC))
+			int(accessList1Updated.Spec.Audit.Recurrence.DayOfMonth), 0, 0, 0, 0, time.UTC),
+		accessList1Updated.Spec.Audit.NextAuditDate,
+	)
 	require.Empty(t, cmp.Diff(*(accessList1Review1.Spec.Changes.MembershipRequirementsChanged), accessList1Updated.Spec.MembershipRequires))
 	require.Equal(t, accessList1Review1.Spec.Changes.ReviewFrequencyChanged, accessList1Updated.Spec.Audit.Recurrence.Frequency)
 	require.Equal(t, accessList1Review1.Spec.Changes.ReviewDayOfMonthChanged, accessList1Updated.Spec.Audit.Recurrence.DayOfMonth)
@@ -504,10 +718,12 @@ func TestAccessListReviewCRUD(t *testing.T) {
 	// Verify changes to the access list again.
 	accessList1Updated, err = service.GetAccessList(ctx, accessList1.GetName())
 	require.NoError(t, err)
-	require.Equal(t, accessList1Updated.Spec.Audit.NextAuditDate,
+	require.Equal(t,
 		time.Date(accessList1OrigDate.Year(),
 			accessList1OrigDate.Month()+time.Month(accessList1Updated.Spec.Audit.Recurrence.Frequency)*2,
-			int(accessList1Updated.Spec.Audit.Recurrence.DayOfMonth), 0, 0, 0, 0, time.UTC))
+			int(accessList1Updated.Spec.Audit.Recurrence.DayOfMonth), 0, 0, 0, 0, time.UTC),
+		accessList1Updated.Spec.Audit.NextAuditDate,
+	)
 
 	// Attempting to apply changes already reflected in the access list should modify the original review.
 	require.Nil(t, accessList1Review2.Spec.Changes.MembershipRequirementsChanged)
@@ -526,10 +742,12 @@ func TestAccessListReviewCRUD(t *testing.T) {
 
 	accessList2Updated, err := service.GetAccessList(ctx, accessList2.GetName())
 	require.NoError(t, err)
-	require.Equal(t, accessList2Updated.Spec.Audit.NextAuditDate,
+	require.Equal(t,
 		time.Date(accessList2OrigDate.Year(),
 			accessList2OrigDate.Month()+time.Month(accessList2Updated.Spec.Audit.Recurrence.Frequency),
-			int(accessList2Updated.Spec.Audit.Recurrence.DayOfMonth), 0, 0, 0, 0, time.UTC))
+			int(accessList2Updated.Spec.Audit.Recurrence.DayOfMonth), 0, 0, 0, 0, time.UTC),
+		accessList2Updated.Spec.Audit.NextAuditDate,
+	)
 	require.Empty(t, cmp.Diff(accessList2.Spec.MembershipRequires, accessList2Updated.Spec.MembershipRequires))
 	require.Equal(t, accessList2.Spec.Audit.Recurrence.Frequency, accessList2Updated.Spec.Audit.Recurrence.Frequency)
 	require.Equal(t, accessList2.Spec.Audit.Recurrence.DayOfMonth, accessList2Updated.Spec.Audit.Recurrence.DayOfMonth)
@@ -575,11 +793,8 @@ func TestAccessListReviewCRUD(t *testing.T) {
 	require.ErrorIs(t, err, trace.NotFound("access_list_review \"no-review\" doesn't exist"))
 
 	// Try to delete all reviews from a non-existent list.
-	err = service.DeleteAllAccessListReviews(ctx, "non-existent-list")
-	require.ErrorIs(t, err, trace.NotFound("access_list \"non-existent-list\" doesn't exist"))
-
 	// Delete all access list reviews.
-	err = service.DeleteAllAccessListReviews(ctx, accessList1.GetName())
+	err = service.DeleteAllAccessListReviews(ctx)
 	require.NoError(t, err)
 
 	// Verify that access lists reviews are gone.
@@ -790,7 +1005,7 @@ func newAccessListReview(t *testing.T, accessList, name string) *accesslist.Revi
 
 	review, err := accesslist.NewReview(
 		header.Metadata{
-			Name: "test-access-list-review",
+			Name: name,
 		},
 		accesslist.ReviewSpec{
 			AccessList: accessList,
@@ -829,4 +1044,136 @@ func newAccessListReview(t *testing.T, accessList, name string) *accesslist.Revi
 	require.NoError(t, err)
 
 	return review
+}
+
+func TestAccessListService_ListAllAccessListMembers(t *testing.T) {
+	ctx := context.Background()
+	clock := clockwork.NewFakeClock()
+
+	mem, err := memory.New(memory.Config{
+		Context: ctx,
+		Clock:   clock,
+	})
+	require.NoError(t, err)
+
+	service := newAccessListService(t, mem, clock, true /* igsEnabled */)
+
+	const numAccessLists = 10
+	const numAccessListMembersPerAccessList = 250
+	totalMembers := numAccessLists * numAccessListMembersPerAccessList
+
+	// Create several access lists.
+	expectedMembers := make([]*accesslist.AccessListMember, totalMembers)
+	for i := 0; i < numAccessLists; i++ {
+		alName := strconv.Itoa(i)
+		_, err := service.UpsertAccessList(ctx, newAccessList(t, alName, clock))
+		require.NoError(t, err)
+
+		for j := 0; j < numAccessListMembersPerAccessList; j++ {
+			member := newAccessListMember(t, alName, fmt.Sprintf("%03d", j))
+			expectedMembers[i*numAccessListMembersPerAccessList+j] = member
+			_, err := service.UpsertAccessListMember(ctx, member)
+			require.NoError(t, err)
+		}
+	}
+
+	allMembers := make([]*accesslist.AccessListMember, 0, totalMembers)
+	var nextToken string
+	for {
+		var members []*accesslist.AccessListMember
+		var err error
+		members, nextToken, err = service.ListAllAccessListMembers(ctx, 0, nextToken)
+		require.NoError(t, err)
+
+		allMembers = append(allMembers, members...)
+
+		if nextToken == "" {
+			break
+		}
+	}
+
+	require.Empty(t, cmp.Diff(expectedMembers, allMembers, cmpopts.IgnoreFields(header.Metadata{}, "ID", "Revision")))
+}
+
+func TestAccessListService_ListAllAccessListReviews(t *testing.T) {
+	ctx := context.Background()
+	clock := clockwork.NewFakeClock()
+
+	mem, err := memory.New(memory.Config{
+		Context: ctx,
+		Clock:   clock,
+	})
+	require.NoError(t, err)
+
+	service := newAccessListService(t, mem, clock, true /* igsEnabled */)
+
+	const numAccessLists = 10
+	const numAccessListReviewsPerAccessList = 250
+	totalReviews := numAccessLists * numAccessListReviewsPerAccessList
+
+	// Create several access lists.
+	expectedReviews := make([]*accesslist.Review, totalReviews)
+	for i := 0; i < numAccessLists; i++ {
+		alName := strconv.Itoa(i)
+		_, err := service.UpsertAccessList(ctx, newAccessList(t, alName, clock))
+		require.NoError(t, err)
+
+		for j := 0; j < numAccessListReviewsPerAccessList; j++ {
+			review, err := accesslist.NewReview(
+				header.Metadata{
+					Name: strconv.Itoa(j),
+				},
+				accesslist.ReviewSpec{
+					AccessList: alName,
+					Reviewers: []string{
+						"user1",
+					},
+					ReviewDate: time.Now(),
+				},
+			)
+			require.NoError(t, err)
+			review, _, err = service.CreateAccessListReview(ctx, review)
+			expectedReviews[i*numAccessListReviewsPerAccessList+j] = review
+			require.NoError(t, err)
+		}
+	}
+
+	allReviews := make([]*accesslist.Review, 0, totalReviews)
+	var nextToken string
+	for {
+		var reviews []*accesslist.Review
+		var err error
+		reviews, nextToken, err = service.ListAllAccessListReviews(ctx, 0, nextToken)
+		require.NoError(t, err)
+
+		allReviews = append(allReviews, reviews...)
+
+		if nextToken == "" {
+			break
+		}
+	}
+
+	require.Empty(t, cmp.Diff(expectedReviews, allReviews, cmpopts.IgnoreFields(header.Metadata{}, "ID", "Revision"), cmpopts.SortSlices(
+		func(r1, r2 *accesslist.Review) bool {
+			return r1.GetName() < r2.GetName()
+		}),
+	))
+}
+
+func newAccessListService(t *testing.T, mem *memory.Memory, clock clockwork.Clock, igsEnabled bool) *AccessListService {
+	t.Helper()
+
+	modules.SetTestModules(t, &modules.TestModules{
+		TestFeatures: modules.Features{
+			IdentityGovernanceSecurity: igsEnabled,
+			AccessList: modules.AccessListFeature{
+				CreateLimit: 1,
+			},
+		},
+	})
+
+	service, err := NewAccessListService(backend.NewSanitizer(mem), clock)
+	require.NoError(t, err)
+
+	return service
 }

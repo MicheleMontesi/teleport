@@ -3,7 +3,11 @@ title: Database Access with Self-Hosted MySQL/MariaDB
 description: How to configure Teleport database access with self-hosted MySQL/MariaDB.
 ---
 
-(!docs/pages/includes/database-access/db-introduction.mdx  dbType="MySQL or MariaDB" dbConfigure="MySQL or MariaDB database with mutual TLS authentication" dbName="MySQL or MariaDB" !)
+(!docs/pages/includes/database-access/db-introduction.mdx  dbType="MySQL or MariaDB" dbConfigure="MySQL or MariaDB database" dbName="MySQL or MariaDB" !)
+
+## How it works
+
+(!docs/pages/includes/database-access/how-it-works/mtls.mdx db="MySQL or MariaDB"!)
 
 <Tabs>
 <TabItem scope={["oss", "enterprise"]} label="Self-Hosted">
@@ -193,13 +197,6 @@ Note that you will only be able to see databases your role has access to. See
 the [RBAC](../rbac.mdx) guide for more details.
 
 To retrieve credentials for a database and connect to it:
-
-```code
-$ tsh db connect example-mysql
-```
-
-You can optionally specify the database name and the user to use by default
-when connecting to the database instance:
 
 ```code
 $ tsh db connect --db-user=root --db-name=mysql example-mysql

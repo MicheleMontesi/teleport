@@ -1,18 +1,20 @@
 /*
-Copyright 2017 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package local
 
@@ -36,6 +38,7 @@ import (
 	"github.com/gravitational/teleport/api/types"
 	"github.com/gravitational/teleport/lib/backend"
 	"github.com/gravitational/teleport/lib/backend/lite"
+	"github.com/gravitational/teleport/lib/backend/memory"
 	"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/teleport/lib/services/suite"
 )
@@ -44,7 +47,7 @@ func TestRemoteClusterCRUD(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	bk, err := lite.New(ctx, backend.Params{"path": t.TempDir()})
+	bk, err := memory.New(memory.Config{})
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, bk.Close()) })
 
@@ -71,19 +74,22 @@ func TestRemoteClusterCRUD(t *testing.T) {
 	src.SetLastHeartbeat(clock.Now().Add(-time.Hour))
 
 	// create remote clusters
-	err = presenceBackend.CreateRemoteCluster(rc)
+	gotRC, err := presenceBackend.CreateRemoteCluster(ctx, rc)
 	require.NoError(t, err)
-	err = presenceBackend.CreateRemoteCluster(src)
+	require.Empty(t, cmp.Diff(rc, gotRC, cmpopts.IgnoreFields(types.Metadata{}, "ID", "Revision")))
+	gotSRC, err := presenceBackend.CreateRemoteCluster(ctx, src)
 	require.NoError(t, err)
+	require.Empty(t, cmp.Diff(src, gotSRC, cmpopts.IgnoreFields(types.Metadata{}, "ID", "Revision")))
 
 	// get remote cluster make sure it's correct
-	gotRC, err := presenceBackend.GetRemoteCluster("foo")
+	gotRC, err = presenceBackend.GetRemoteCluster(ctx, "foo")
 	require.NoError(t, err)
 	require.Equal(t, "foo", gotRC.GetName())
 	require.Equal(t, teleport.RemoteClusterStatusOffline, gotRC.GetConnectionStatus())
 	require.Equal(t, clock.Now().Nanosecond(), gotRC.GetLastHeartbeat().Nanosecond())
 	require.Equal(t, originalLabels, gotRC.GetMetadata().Labels)
 
+	rc = gotRC
 	updatedLabels := map[string]string{
 		"e": "f",
 		"g": "h",
@@ -92,34 +98,36 @@ func TestRemoteClusterCRUD(t *testing.T) {
 	// update remote clusters
 	rc.SetConnectionStatus(teleport.RemoteClusterStatusOnline)
 	rc.SetLastHeartbeat(clock.Now().Add(time.Hour))
-	rc.SetMetadata(types.Metadata{
-		Name:   "foo",
-		Labels: updatedLabels,
-	})
-	err = presenceBackend.UpdateRemoteCluster(ctx, rc)
+	meta := rc.GetMetadata()
+	meta.Labels = updatedLabels
+	rc.SetMetadata(meta)
+	gotRC, err = presenceBackend.UpdateRemoteCluster(ctx, rc)
 	require.NoError(t, err)
+	require.Empty(t, cmp.Diff(rc, gotRC, cmpopts.IgnoreFields(types.Metadata{}, "ID", "Revision")))
 
+	src = gotSRC
 	src.SetConnectionStatus(teleport.RemoteClusterStatusOffline)
 	src.SetLastHeartbeat(clock.Now())
-	err = presenceBackend.UpdateRemoteCluster(ctx, src)
+	gotSRC, err = presenceBackend.UpdateRemoteCluster(ctx, src)
 	require.NoError(t, err)
+	require.Empty(t, cmp.Diff(src, gotSRC, cmpopts.IgnoreFields(types.Metadata{}, "ID", "Revision")))
 
 	// get remote cluster make sure it's correct
-	gotRC, err = presenceBackend.GetRemoteCluster("foo")
+	gotRC, err = presenceBackend.GetRemoteCluster(ctx, "foo")
 	require.NoError(t, err)
 	require.Equal(t, "foo", gotRC.GetName())
 	require.Equal(t, teleport.RemoteClusterStatusOnline, gotRC.GetConnectionStatus())
 	require.Equal(t, clock.Now().Add(time.Hour).Nanosecond(), gotRC.GetLastHeartbeat().Nanosecond())
 	require.Equal(t, updatedLabels, gotRC.GetMetadata().Labels)
 
-	gotRC, err = presenceBackend.GetRemoteCluster("bar")
+	gotRC, err = presenceBackend.GetRemoteCluster(ctx, "bar")
 	require.NoError(t, err)
 	require.Equal(t, "bar", gotRC.GetName())
 	require.Equal(t, teleport.RemoteClusterStatusOffline, gotRC.GetConnectionStatus())
 	require.Equal(t, clock.Now().Nanosecond(), gotRC.GetLastHeartbeat().Nanosecond())
 
 	// get all clusters
-	allRC, err := presenceBackend.GetRemoteClusters()
+	allRC, err := presenceBackend.GetRemoteClusters(ctx)
 	require.NoError(t, err)
 	require.Len(t, allRC, 2)
 
@@ -130,7 +138,133 @@ func TestRemoteClusterCRUD(t *testing.T) {
 	// make sure it's really gone
 	err = presenceBackend.DeleteRemoteCluster(ctx, "foo")
 	require.Error(t, err)
-	require.ErrorIs(t, err, trace.NotFound("key /remoteClusters/foo is not found"))
+	require.ErrorIs(t, err, trace.NotFound("key \"/remoteClusters/foo\" is not found"))
+}
+
+func TestPresenceService_PatchRemoteCluster(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	bk, err := memory.New(memory.Config{})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, bk.Close()) })
+
+	presenceBackend := NewPresenceService(bk)
+
+	rc, err := types.NewRemoteCluster("bar")
+	require.NoError(t, err)
+	rc.SetConnectionStatus(teleport.RemoteClusterStatusOffline)
+	_, err = presenceBackend.CreateRemoteCluster(ctx, rc)
+	require.NoError(t, err)
+
+	updatedRC, err := presenceBackend.PatchRemoteCluster(
+		ctx,
+		rc.GetName(),
+		func(rc types.RemoteCluster) (types.RemoteCluster, error) {
+			require.Equal(t, teleport.RemoteClusterStatusOffline, rc.GetConnectionStatus())
+			rc.SetConnectionStatus(teleport.RemoteClusterStatusOnline)
+			return rc, nil
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, teleport.RemoteClusterStatusOnline, updatedRC.GetConnectionStatus())
+
+	// Ensure this was persisted.
+	fetchedRC, err := presenceBackend.GetRemoteCluster(ctx, rc.GetName())
+	require.NoError(t, err)
+	require.Equal(t, teleport.RemoteClusterStatusOnline, fetchedRC.GetConnectionStatus())
+	// Ensure other fields unchanged
+	require.Empty(t,
+		cmp.Diff(
+			rc,
+			fetchedRC,
+			cmpopts.IgnoreFields(types.Metadata{}, "ID", "Revision"),
+			cmpopts.IgnoreFields(types.RemoteClusterStatusV3{}, "Connection"),
+		),
+	)
+
+	// Ensure that name cannot be updated
+	_, err = presenceBackend.PatchRemoteCluster(
+		ctx,
+		rc.GetName(),
+		func(rc types.RemoteCluster) (types.RemoteCluster, error) {
+			rc.SetName("baz")
+			return rc, nil
+		},
+	)
+	require.Error(t, err)
+	require.True(t, trace.IsBadParameter(err))
+	require.Contains(t, err.Error(), "metadata.name: cannot be patched")
+
+	// Ensure that revision cannot be updated
+	_, err = presenceBackend.PatchRemoteCluster(
+		ctx,
+		rc.GetName(),
+		func(rc types.RemoteCluster) (types.RemoteCluster, error) {
+			rc.SetRevision("baz")
+			return rc, nil
+		},
+	)
+	require.Error(t, err)
+	require.True(t, trace.IsBadParameter(err))
+	require.Contains(t, err.Error(), "metadata.revision: cannot be patched")
+}
+
+func TestPresenceService_ListRemoteClusters(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	bk, err := memory.New(memory.Config{})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, bk.Close()) })
+
+	presenceBackend := NewPresenceService(bk)
+
+	// With no resources, we should not get an error but we should get an empty
+	// token and an empty slice.
+	rcs, pageToken, err := presenceBackend.ListRemoteClusters(ctx, 0, "")
+	require.NoError(t, err)
+	require.Empty(t, pageToken)
+	require.Empty(t, rcs)
+
+	// Create a few remote clusters
+	for i := 0; i < 10; i++ {
+		rc, err := types.NewRemoteCluster(fmt.Sprintf("rc-%d", i))
+		require.NoError(t, err)
+		_, err = presenceBackend.CreateRemoteCluster(ctx, rc)
+		require.NoError(t, err)
+	}
+
+	// Check limit behaves
+	rcs, pageToken, err = presenceBackend.ListRemoteClusters(ctx, 1, "")
+	require.NoError(t, err)
+	require.NotEmpty(t, pageToken)
+	require.Len(t, rcs, 1)
+
+	// Iterate through all pages with a low limit to ensure that pageToken
+	// behaves correctly.
+	rcs = []types.RemoteCluster{}
+	pageToken = ""
+	for i := 0; i < 10; i++ {
+		var got []types.RemoteCluster
+		got, pageToken, err = presenceBackend.ListRemoteClusters(ctx, 1, pageToken)
+		require.NoError(t, err)
+		if i == 9 {
+			// For the final page, we should not get a page token
+			require.Empty(t, pageToken)
+		} else {
+			require.NotEmpty(t, pageToken)
+		}
+		require.Len(t, got, 1)
+		rcs = append(rcs, got...)
+	}
+	require.Len(t, rcs, 10)
+
+	// Check that with a higher limit, we get all resources
+	rcs, pageToken, err = presenceBackend.ListRemoteClusters(ctx, 20, "")
+	require.NoError(t, err)
+	require.Empty(t, pageToken)
+	require.Len(t, rcs, 10)
 }
 
 func TestTrustedClusterCRUD(t *testing.T) {
@@ -236,7 +370,7 @@ func TestApplicationServersCRUD(t *testing.T) {
 	// No app servers should be registered initially
 	out, err := presence.GetApplicationServers(ctx, apidefaults.Namespace)
 	require.NoError(t, err)
-	require.Equal(t, 0, len(out))
+	require.Empty(t, out)
 
 	// Create app servers.
 	lease, err := presence.UpsertApplicationServer(ctx, serverA)
@@ -327,7 +461,7 @@ func TestDatabaseServersCRUD(t *testing.T) {
 	// Initially expect not to be returned any servers.
 	out, err := presence.GetDatabaseServers(ctx, apidefaults.Namespace)
 	require.NoError(t, err)
-	require.Equal(t, 0, len(out))
+	require.Empty(t, out)
 
 	// Upsert server.
 	lease, err := presence.UpsertDatabaseServer(ctx, server)
@@ -357,7 +491,7 @@ func TestDatabaseServersCRUD(t *testing.T) {
 	// Now expect no servers to be returned.
 	out, err = presence.GetDatabaseServers(ctx, apidefaults.Namespace)
 	require.NoError(t, err)
-	require.Equal(t, 0, len(out))
+	require.Empty(t, out)
 
 	// Upsert server with TTL.
 	server.SetExpiry(clock.Now().UTC().Add(time.Hour))
@@ -384,7 +518,7 @@ func TestDatabaseServersCRUD(t *testing.T) {
 	// Now expect no servers to be returned.
 	out, err = presence.GetDatabaseServers(ctx, apidefaults.Namespace)
 	require.NoError(t, err)
-	require.Equal(t, 0, len(out))
+	require.Empty(t, out)
 }
 
 func TestNodeCRUD(t *testing.T) {
@@ -405,7 +539,7 @@ func TestNodeCRUD(t *testing.T) {
 		// Initially expect no nodes to be returned.
 		nodes, err := presence.GetNodes(ctx, apidefaults.Namespace)
 		require.NoError(t, err)
-		require.Equal(t, 0, len(nodes))
+		require.Empty(t, nodes)
 
 		// Create nodes
 		_, err = presence.UpsertNode(ctx, node1)
@@ -421,13 +555,13 @@ func TestNodeCRUD(t *testing.T) {
 			// Get all nodes, transparently handle limit exceeded errors
 			nodes, err := presence.GetNodes(ctx, apidefaults.Namespace)
 			require.NoError(t, err)
-			require.EqualValues(t, len(nodes), 2)
+			require.Len(t, nodes, 2)
 			require.Empty(t, cmp.Diff([]types.Server{node1, node2}, nodes,
 				cmpopts.IgnoreFields(types.Metadata{}, "ID", "Revision")))
 
 			// GetNodes should fail if namespace isn't provided
 			_, err = presence.GetNodes(ctx, "")
-			require.IsType(t, &trace.BadParameterError{}, err.(*trace.TraceErr).OrigError())
+			require.True(t, trace.IsBadParameter(err))
 		})
 		t.Run("GetNode", func(t *testing.T) {
 			t.Parallel()
@@ -439,11 +573,11 @@ func TestNodeCRUD(t *testing.T) {
 
 			// GetNode should fail if node name isn't provided
 			_, err = presence.GetNode(ctx, apidefaults.Namespace, "")
-			require.IsType(t, &trace.BadParameterError{}, err.(*trace.TraceErr).OrigError())
+			require.True(t, trace.IsBadParameter(err))
 
 			// GetNode should fail if namespace isn't provided
 			_, err = presence.GetNode(ctx, "", "node1")
-			require.IsType(t, &trace.BadParameterError{}, err.(*trace.TraceErr).OrigError())
+			require.True(t, trace.IsBadParameter(err))
 		})
 	})
 
@@ -465,7 +599,7 @@ func TestNodeCRUD(t *testing.T) {
 		// Now expect no nodes to be returned.
 		nodes, err := presence.GetNodes(ctx, apidefaults.Namespace)
 		require.NoError(t, err)
-		require.Equal(t, 0, len(nodes))
+		require.Empty(t, nodes)
 	})
 }
 
@@ -862,12 +996,11 @@ func TestListResources_Helpers(t *testing.T) {
 				require.NoError(t, err)
 
 				return FakePaginate(types.Servers(nodes).AsResources(), FakePaginateParams{
-					ResourceType:        req.ResourceType,
-					Limit:               req.Limit,
-					Labels:              req.Labels,
-					SearchKeywords:      req.SearchKeywords,
-					PredicateExpression: req.PredicateExpression,
-					StartKey:            req.StartKey,
+					ResourceType:   req.ResourceType,
+					Limit:          req.Limit,
+					Labels:         req.Labels,
+					SearchKeywords: req.SearchKeywords,
+					StartKey:       req.StartKey,
 				})
 			},
 		},
@@ -1094,7 +1227,7 @@ func TestFakePaginate_TotalCount(t *testing.T) {
 				require.NoError(t, err)
 				require.Len(t, resp.Resources, tc.limit)
 				require.Equal(t, resources[0:tc.limit], resp.Resources)
-				require.Equal(t, len(nodes), resp.TotalCount)
+				require.Len(t, nodes, resp.TotalCount)
 
 				// Next fetch should return same amount of totals.
 				if tc.limit != len(nodes) {
@@ -1105,11 +1238,11 @@ func TestFakePaginate_TotalCount(t *testing.T) {
 					require.NoError(t, err)
 					require.Len(t, resp.Resources, tc.limit)
 					require.Equal(t, resources[tc.limit:tc.limit*2], resp.Resources)
-					require.Equal(t, len(nodes), resp.TotalCount)
+					require.Len(t, nodes, resp.TotalCount)
 				} else {
 					require.Empty(t, resp.NextKey)
 					require.Equal(t, resources, resp.Resources)
-					require.Equal(t, len(nodes), resp.TotalCount)
+					require.Len(t, nodes, resp.TotalCount)
 				}
 			})
 		}

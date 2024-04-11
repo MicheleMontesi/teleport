@@ -1,18 +1,20 @@
 /*
-Copyright 2023 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package web
 
@@ -25,9 +27,14 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	discoveryconfigv1 "github.com/gravitational/teleport/api/gen/proto/go/teleport/discoveryconfig/v1"
 	"github.com/gravitational/teleport/api/types"
+	"github.com/gravitational/teleport/api/types/discoveryconfig"
+	"github.com/gravitational/teleport/lib/auth"
+	"github.com/gravitational/teleport/lib/authz"
 	"github.com/gravitational/teleport/lib/services"
 	"github.com/gravitational/teleport/lib/web/ui"
 )
@@ -116,6 +123,33 @@ func TestDiscoveryConfig(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, "dg01", discoveryConfigResp.DiscoveryGroup)
 			require.Equal(t, "dc01", discoveryConfigResp.Name)
+		})
+
+		t.Run("Read status after an update", func(t *testing.T) {
+			client, err := env.server.NewClient(auth.TestIdentity{
+				I: authz.BuiltinRole{
+					Role:     types.RoleDiscovery,
+					Username: "disc",
+				},
+			})
+			require.NoError(t, err)
+			status := discoveryconfig.Status{
+				State:               discoveryconfigv1.DiscoveryConfigState_DISCOVERY_CONFIG_STATE_RUNNING.String(),
+				DiscoveredResources: 1,
+				LastSyncTime:        env.clock.Now().UTC(),
+			}
+			_, err = client.DiscoveryConfigClient().UpdateDiscoveryConfigStatus(ctx, "dc01", status)
+			require.NoError(t, err)
+			resp, err := pack.clt.Get(ctx, getDC01Endpoint, nil)
+			require.NoError(t, err)
+			require.Equal(t, http.StatusOK, resp.Code())
+
+			var discoveryConfigResp ui.DiscoveryConfig
+			err = json.Unmarshal(resp.Bytes(), &discoveryConfigResp)
+			require.NoError(t, err)
+			assert.Equal(t, "dg01", discoveryConfigResp.DiscoveryGroup)
+			assert.Equal(t, "dc01", discoveryConfigResp.Name)
+			assert.Equal(t, status, discoveryConfigResp.Status)
 		})
 
 		t.Run("Update discovery config", func(t *testing.T) {
@@ -210,7 +244,64 @@ func TestDiscoveryConfig(t *testing.T) {
 			require.NotEmpty(t, listResponse.NextKey)
 			startKey = listResponse.NextKey
 		}
-		require.Equal(t, listTestCount, len(uniqDC))
+		require.Len(t, uniqDC, listTestCount)
 		require.Zero(t, iterationsCount, "invalid number of iterations")
+	})
+
+	t.Run("Create valid access graph", func(t *testing.T) {
+		resp, err := pack.clt.PostJSON(ctx, createEndpoint, ui.DiscoveryConfig{
+			Name:           "dc01",
+			DiscoveryGroup: "dg01",
+			AccessGraph: &types.AccessGraphSync{
+				AWS: []*types.AccessGraphAWSSync{
+					{
+						Regions:     []string{"us-west-2"},
+						Integration: "integrationrole",
+					},
+				},
+			},
+		})
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, resp.Code())
+
+		t.Run("Create fails when name already exists", func(t *testing.T) {
+			resp, err := pack.clt.PostJSON(ctx, createEndpoint, ui.DiscoveryConfig{
+				Name:           "dc01",
+				DiscoveryGroup: "dg01",
+				AccessGraph: &types.AccessGraphSync{
+					AWS: []*types.AccessGraphAWSSync{
+						{
+							Regions:     []string{"us-west-2"},
+							Integration: "integrationrole",
+						},
+					},
+				},
+			})
+			require.ErrorContains(t, err, "already exists")
+			require.Equal(t, http.StatusConflict, resp.Code())
+		})
+
+		getDC01Endpoint := pack.clt.Endpoint("webapi", "sites", clusterName, "discoveryconfig", "dc01")
+		t.Run("Get one", func(t *testing.T) {
+			resp, err := pack.clt.Get(ctx, getDC01Endpoint, nil)
+			require.NoError(t, err)
+			require.Equal(t, http.StatusOK, resp.Code())
+
+			var discoveryConfigResp ui.DiscoveryConfig
+			err = json.Unmarshal(resp.Bytes(), &discoveryConfigResp)
+			require.NoError(t, err)
+			require.Equal(t, "dg01", discoveryConfigResp.DiscoveryGroup)
+			require.Equal(t, "dc01", discoveryConfigResp.Name)
+			require.NotNil(t, discoveryConfigResp.AccessGraph)
+			expected := &types.AccessGraphSync{
+				AWS: []*types.AccessGraphAWSSync{
+					{
+						Regions:     []string{"us-west-2"},
+						Integration: "integrationrole",
+					},
+				},
+			}
+			require.Equal(t, expected, discoveryConfigResp.AccessGraph)
+		})
 	})
 }

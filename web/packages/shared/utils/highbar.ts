@@ -1,17 +1,19 @@
 /**
- * Copyright 2023 Gravitational, Inc
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
  *
- *      http://www.apache.org/licenses/LICENSE-2.0
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 type SupportedMergeTypes = string | number | Record<string, unknown>;
@@ -108,7 +110,8 @@ export function runOnce<T extends (...args) => any>(func: T) {
   let result;
   return function () {
     if (--n > 0) {
-      result = func.apply(this, arguments);
+      // This implementation does not pass strictBindCallApply check.
+      result = func.apply(this, arguments as any);
     }
     if (n <= 1) {
       func = undefined;
@@ -290,6 +293,7 @@ export function debounce<T extends (...args: any) => any>(
     }
     return result;
   }
+
   debounced.cancel = cancel;
   debounced.flush = flush;
   return debounced;
@@ -325,7 +329,8 @@ export function memoize<T extends (...args: any) => any>(
     if (cache.has(key)) {
       return cache.get(key);
     }
-    const result = func.apply(this, args);
+    // `as any` because the implementation does not pass strictBindCallApply check.
+    const result = func.apply(this, args as any);
     memoized.cache = cache.set(key, result) || cache;
     return result;
   };

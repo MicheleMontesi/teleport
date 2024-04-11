@@ -1,16 +1,20 @@
-// Copyright 2021 Gravitational, Inc
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package auth
 
@@ -21,6 +25,7 @@ import (
 	"net/mail"
 	"time"
 
+	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/gravitational/trace"
 	"github.com/pquerna/otp"
 	"github.com/pquerna/otp/totp"
@@ -29,15 +34,14 @@ import (
 	"github.com/gravitational/teleport"
 	"github.com/gravitational/teleport/api/client/proto"
 	"github.com/gravitational/teleport/api/constants"
+	mfav1 "github.com/gravitational/teleport/api/gen/proto/go/teleport/mfa/v1"
 	"github.com/gravitational/teleport/api/types"
 	apievents "github.com/gravitational/teleport/api/types/events"
 	"github.com/gravitational/teleport/api/utils/keys"
 	wantypes "github.com/gravitational/teleport/lib/auth/webauthntypes"
 	"github.com/gravitational/teleport/lib/authz"
-	"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/teleport/lib/events"
 	"github.com/gravitational/teleport/lib/services"
-	"github.com/gravitational/teleport/lib/utils"
 
 	"layeh.com/radius"
 	R "layeh.com/radius/rfc2865"
@@ -89,32 +93,26 @@ func (a *Server) ChangeUserAuthentication(ctx context.Context, req *proto.Change
 		return nil, trace.BadParameter("unexpected WebSessionV2 type %T", sess)
 	}
 
+	// TODO(codingllama): Issue device web token here?
+	//  This could enable the initial transition, after the user sets password and
+	//  MFA, to trigger device web login.
+	//  At the moment it's highly unlikely the user has an enrolled device at this
+	//  stage, so there's little reason to do it.
+
 	return &proto.ChangeUserAuthenticationResponse{
 		WebSession: sess,
 		Recovery:   newRecovery,
 	}, nil
 }
 
-// ResetPassword securely generates a new random password and assigns it to user.
-// This method is used to invalidate existing user password during password
-// reset process.
-func (a *Server) ResetPassword(ctx context.Context, username string) (string, error) {
-	user, err := a.GetUser(ctx, username, false)
-	if err != nil {
-		return "", trace.Wrap(err)
+// ResetPassword deletes the user's password. This method is used to invalidate
+// existing user password during password reset process. This function doesn't
+// fail if the user doesn't have a password or the user doesn't exist at all.
+func (a *Server) ResetPassword(ctx context.Context, username string) error {
+	if err := a.DeletePassword(ctx, username); err != nil && !trace.IsNotFound(err) {
+		return trace.Wrap(err)
 	}
-
-	password, err := utils.CryptoRandomHex(defaults.ResetPasswordLength)
-	if err != nil {
-		return "", trace.Wrap(err)
-	}
-
-	err = a.UpsertPassword(user.GetName(), []byte(password))
-	if err != nil {
-		return "", trace.Wrap(err)
-	}
-
-	return password, nil
+	return nil
 }
 
 // ChangePassword updates users password based on the old password.
@@ -130,10 +128,18 @@ func (a *Server) ChangePassword(ctx context.Context, req *proto.ChangePasswordRe
 		Username: user,
 		Webauthn: wantypes.CredentialAssertionResponseFromProto(req.Webauthn),
 	}
+	requiredExt := mfav1.ChallengeExtensions{
+		Scope: mfav1.ChallengeScope_CHALLENGE_SCOPE_CHANGE_PASSWORD,
+	}
 	if len(req.OldPassword) > 0 {
 		authReq.Pass = &PassCreds{
 			Password: req.OldPassword,
 		}
+	} else {
+		// If the user didn't provide their old password, we need to require
+		// identity verification (i.e. make sure that a resident token used for
+		// MFA).
+		requiredExt.UserVerificationRequirement = string(protocol.VerificationRequired)
 	}
 	if req.SecondFactorToken != "" {
 		authReq.OTP = &OTPCreds{
@@ -141,7 +147,12 @@ func (a *Server) ChangePassword(ctx context.Context, req *proto.ChangePasswordRe
 			Token:    req.SecondFactorToken,
 		}
 	}
-	if _, _, err := a.authenticateUser(ctx, authReq); err != nil {
+	verifyMFALocks, _, _, err := a.authenticateUser(ctx, authReq, requiredExt)
+	if err != nil {
+		return trace.Wrap(err)
+	}
+	// Verify if the MFA device used is locked.
+	if err := verifyMFALocks(verifyMFADeviceLocksParams{}); err != nil {
 		return trace.Wrap(err)
 	}
 
@@ -154,7 +165,8 @@ func (a *Server) ChangePassword(ctx context.Context, req *proto.ChangePasswordRe
 			Type: events.UserPasswordChangeEvent,
 			Code: events.UserPasswordChangeCode,
 		},
-		UserMetadata: authz.ClientUserMetadataWithUser(ctx, user),
+		UserMetadata:       authz.ClientUserMetadataWithUser(ctx, user),
+		ConnectionMetadata: authz.ConnectionMetadata(ctx),
 	}); err != nil {
 		log.WithError(err).Warn("Failed to emit password change event.")
 	}
@@ -215,7 +227,7 @@ func (a *Server) checkPasswordWOToken(user string, password []byte) error {
 	userFound := true
 	if trace.IsNotFound(err) {
 		userFound = false
-		log.Debugf("Username %q not found, using fake hash to mitigate timing attacks.", user)
+		log.Debugf("Password for username %q not found, using fake hash to mitigate timing attacks.", user)
 		hash = fakePasswordHash
 	}
 
@@ -310,6 +322,9 @@ func (a *Server) checkOTP(user string, otpToken string) (*types.MFADevice, error
 		}
 		return dev, nil
 	}
+	// This message is relied upon by the Web UI in
+	// web/packages/teleport/src/Account/ManageDevices/AddAuthDeviceWizard/AddAuthDeviceWizard.tsx/RequthenticateStep().
+	// Please keep these in sync.
 	return nil, trace.AccessDenied("invalid totp token")
 }
 
@@ -377,16 +392,27 @@ func (a *Server) changeUserAuthentication(ctx context.Context, req *proto.Change
 		return nil, trace.BadParameter("expired token")
 	}
 
-	err = a.changeUserSecondFactor(ctx, req, token)
-	if err != nil {
+	// Check if the user still exists before potentially recreating the user
+	// below. If the user was deleted, do NOT honor the request and delete any
+	// other tokens associated with the user.
+	if _, err := a.GetUser(ctx, token.GetUser(), false); err != nil {
+		if trace.IsNotFound(err) {
+			// Delete any remaining tokens for users that no longer exist.
+			if err := a.deleteUserTokens(ctx, token.GetUser()); err != nil {
+				return nil, trace.Wrap(err)
+			}
+		}
+		return nil, trace.Wrap(err)
+	}
+
+	if err := a.changeUserSecondFactor(ctx, req, token); err != nil {
 		return nil, trace.Wrap(err)
 	}
 
 	username := token.GetUser()
 	// Delete this token first to minimize the chances
 	// of partially updated user with still valid token.
-	err = a.deleteUserTokens(ctx, username)
-	if err != nil {
+	if err := a.deleteUserTokens(ctx, username); err != nil {
 		return nil, trace.Wrap(err)
 	}
 

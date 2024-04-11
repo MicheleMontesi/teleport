@@ -1,17 +1,19 @@
 /**
- * Copyright 2023 Gravitational, Inc.
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
  *
- *     http://www.apache.org/licenses/LICENSE-2.0
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 import { Label } from 'teleport/types';
@@ -35,7 +37,7 @@ import { Node } from '../nodes';
 export type Integration<
   T extends string = 'integration',
   K extends string = IntegrationKind,
-  S extends Record<string, any> = IntegrationSpecAwsOidc
+  S extends Record<string, any> = IntegrationSpecAwsOidc,
 > = {
   resourceType: T;
   kind: K;
@@ -49,9 +51,12 @@ export type Integration<
 // resource's subKind field.
 export enum IntegrationKind {
   AwsOidc = 'aws-oidc',
+  ExternalAuditStorage = 'external-audit-storage',
 }
 export type IntegrationSpecAwsOidc = {
   roleArn: string;
+  issuerS3Prefix: string;
+  issuerS3Bucket: string;
 };
 
 export enum IntegrationStatusCode {
@@ -60,6 +65,7 @@ export enum IntegrationStatusCode {
   OtherError = 2,
   Unauthorized = 3,
   SlackNotInChannel = 10,
+  Draft = 100,
 }
 
 export function getStatusCodeTitle(code: IntegrationStatusCode): string {
@@ -72,6 +78,8 @@ export function getStatusCodeTitle(code: IntegrationStatusCode): string {
       return 'Unauthorized';
     case IntegrationStatusCode.SlackNotInChannel:
       return 'Bot not invited to channel';
+    case IntegrationStatusCode.Draft:
+      return 'Draft';
     default:
       return 'Unknown error';
   }
@@ -86,14 +94,31 @@ export function getStatusCodeDescription(
 
     case IntegrationStatusCode.SlackNotInChannel:
       return 'The Slack integration must be invited to the default channel in order to receive access request notifications.';
-
     default:
       return null;
   }
 }
 
-export type Plugin = Integration<'plugin', PluginKind, PluginSpec>;
-export type PluginSpec = Record<string, never>; // currently no 'spec' fields exposed to the frontend
+export type ExternalAuditStorage = {
+  integrationName: string;
+  policyName: string;
+  region: string;
+  sessionsRecordingsURI: string;
+  athenaWorkgroup: string;
+  glueDatabase: string;
+  glueTable: string;
+  auditEventsLongTermURI: string;
+  athenaResultsURI: string;
+};
+
+export type ExternalAuditStorageIntegration = Integration<
+  'external-audit-storage',
+  IntegrationKind.ExternalAuditStorage,
+  ExternalAuditStorage
+>;
+
+export type Plugin<T = any> = Integration<'plugin', PluginKind, T>;
+export type PluginSpec = PluginOktaSpec | any; // currently only okta has a plugin spec
 // PluginKind represents the type of the plugin
 // and should be the same value as defined in the backend (check master branch for the latest):
 // https://github.com/gravitational/teleport/blob/a410acef01e0023d41c18ca6b0a7b384d738bb32/api/types/plugin.go#L27
@@ -110,6 +135,25 @@ export type PluginKind =
   | 'okta'
   | 'servicenow'
   | 'jamf';
+
+export type PluginOktaSpec = {
+  // scimBearerToken is the plain text of the bearer token that Okta will use
+  // to authenticate SCIM requests
+  scimBearerToken: string;
+  // oktaAppID is the Okta ID of the SAML App created during the Okta plugin
+  // installation
+  oktaAppId: string;
+  // oktaAppName is the human readable name of the Okta SAML app created
+  // during the Okta plugin installation
+  oktaAppName: string;
+  // teleportSSOConnector is the name of the Teleport SAML SSO connector
+  // created by the plugin during installation
+  teleportSsoConnector: string;
+  // error contains a description of any failures during plugin installation
+  // that were deemed not serious enough to fail the plugin installation, but
+  // may effect the operation of advanced features like User Sync or SCIM.
+  error: string;
+};
 
 export type IntegrationCreateRequest = {
   name: string;
@@ -228,6 +272,8 @@ export type ListAwsRdsDatabaseResponse = {
 export type IntegrationUpdateRequest = {
   awsoidc: {
     roleArn: string;
+    issuerS3Bucket: string;
+    issuerS3Prefix: string;
   };
 };
 
@@ -240,19 +286,82 @@ export type AwsOidcDeployServiceRequest = {
   securityGroups?: string[];
 };
 
-export type AwsOidcDeployServiceResponse = {
-  // clusterArn is the Amazon ECS Cluster ARN
-  // where the task was started.
-  clusterArn: string;
-  // serviceArn is the Amazon ECS Cluster Service
-  // ARN created to run the task.
-  serviceArn: string;
-  // taskDefinitionArn is the Amazon ECS Task Definition
-  // ARN created to run the Service.
-  taskDefinitionArn: string;
-  // serviceDashboardUrl is a link to the service's Dashboard
-  // URL in Amazon Console.
-  serviceDashboardUrl: string;
+// DeployDatabaseServiceDeployment identifies the required fields to deploy a DatabaseService.
+type DeployDatabaseServiceDeployment = {
+  // VPCID is the VPCID where the service is going to be deployed.
+  vpcId: string;
+  // SubnetIDs are the subnets for the network configuration.
+  // They must belong to the VPCID above.
+  subnetIds: string[];
+  // SecurityGroups are the SecurityGroup IDs to associate with this particular deployment.
+  // If empty, the default security group for the VPC is going to be used.
+  // TODO(lisa): out of scope.
+  securityGroups?: string[];
+};
+
+// AwsOidcDeployDatabaseServicesRequest contains the required fields to perform a DeployService request.
+// Each deployed DatabaseService will be proxying the resources that match the following labels:
+// -region: <Region>
+// -account-id: <AccountID>s
+// -vpc-id: <Deployments[].VPCID>
+export type AwsOidcDeployDatabaseServicesRequest = {
+  // Region is the AWS Region for the Service.
+  region: string;
+  // TaskRoleARN is the AWS Role's ARN used within the Task execution.
+  // Ensure the AWS Client's Role has `iam:PassRole` for this Role's ARN.
+  // This can be either the ARN or the short name of the AWS Role.
+  taskRoleArn: string;
+  // Deployments is a list of Services to be deployed.
+  // If the target deployment already exists, the deployment is skipped.
+  deployments: DeployDatabaseServiceDeployment[];
+};
+
+export type AwsEksCluster = {
+  name: string;
+  region: Regions;
+  accountId: string;
+  status:
+    | 'active'
+    | 'pending'
+    | 'creating'
+    | 'failed'
+    | 'updating'
+    | 'deleting';
+  /**
+   * labels contains this cluster's tags.
+   */
+  labels: Label[];
+  /**
+   * joinLabels contains labels that should be injected into teleport kube agent, if EKS cluster is being enrolled.
+   */
+  joinLabels: Label[];
+};
+
+export type EnrollEksClustersRequest = {
+  region: string;
+  enableAppDiscovery: boolean;
+  clusterNames: string[];
+};
+
+export type EnrollEksClustersResponse = {
+  results: {
+    clusterName: string;
+    resourceId: string;
+    error: { message: string };
+  }[];
+};
+
+export type ListEksClustersRequest = {
+  region: Regions;
+  nextToken?: string;
+};
+
+export type ListEksClustersResponse = {
+  /**
+   * clusters is the list of EKS clusters.
+   */
+  clusters: AwsEksCluster[];
+  nextToken?: string;
 };
 
 export type ListEc2InstancesRequest = {
@@ -356,4 +465,13 @@ export type Cidr = {
   cidr: string;
   // Description contains a small text describing the CIDR.
   description: string;
+};
+
+// IntegrationUrlLocationState define fields to preserve state between
+// react routes (eg. in External Audit Storage flow, it is required of user
+// to create a AWS OIDC integration which requires changing route
+// and then coming back to resume the flow.)
+export type IntegrationUrlLocationState = {
+  kind: IntegrationKind;
+  redirectText: string;
 };

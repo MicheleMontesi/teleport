@@ -1,20 +1,24 @@
-/*
-Copyright 2020 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+/**
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 import React from 'react';
+
+import { UserPreferences } from 'gen-proto-ts/teleport/lib/teleterm/v1/service_pb';
 
 import {
   ManagementSection,
@@ -24,16 +28,21 @@ import {
 export type NavGroup = 'team' | 'activity' | 'clusters' | 'accessrequests';
 
 export interface Context {
-  init(): Promise<void>;
+  init(preferences: UserPreferences): Promise<void>;
   getFeatureFlags(): FeatureFlags;
 }
 
 export interface TeleportFeatureNavigationItem {
   title: NavTitle;
-  icon: React.ReactNode;
+  icon: (props) => JSX.Element;
   exact?: boolean;
   getLink?(clusterId: string): string;
   isExternalLink?: boolean;
+  /*
+   * isSelected is an option function provided to allow more control over whether this feature is
+   * in the "selected" state in the navigation
+   */
+  isSelected?: (clusterId: string, pathname: string) => boolean;
 }
 
 export enum NavTitle {
@@ -49,6 +58,7 @@ export enum NavTitle {
 
   // Access Management
   Users = 'Users',
+  Bots = 'Bots',
   Roles = 'User Roles',
   AuthConnectors = 'Auth Connectors',
   Integrations = 'Integrations',
@@ -64,6 +74,7 @@ export enum NavTitle {
   // Resources Requests
   NewRequest = 'New Request',
   ReviewRequests = 'Review Requests',
+  AccessGraph = 'Access Graph',
 
   // Activity
   SessionRecordings = 'Session Recordings',
@@ -113,6 +124,12 @@ export interface TeleportFeature {
   isLocked?(lockedFeatures: LockedFeatures): boolean;
   lockedNavigationItem?: TeleportFeatureNavigationItem;
   lockedRoute?: TeleportFeatureRoute;
+  // hideNavigation is used to hide the navigation completely
+  // and show a back button in the top bar
+  hideNavigation?: boolean;
+  // if highlightKey is specified, navigating to ?highlight=<highlightKey>
+  // will highlight the feature in the navigation, to draw a users attention to it
+  highlightKey?: string;
 }
 
 export type StickyCluster = {
@@ -150,6 +167,7 @@ export interface FeatureFlags {
   accessRequests: boolean;
   newAccessRequest: boolean;
   downloadCenter: boolean;
+  supportLink: boolean;
   discover: boolean;
   plugins: boolean;
   integrations: boolean;
@@ -162,6 +180,12 @@ export interface FeatureFlags {
   accessMonitoring: boolean;
   // Whether or not the management section should be available.
   managementSection: boolean;
+  accessGraph: boolean;
+  externalAuditStorage: boolean;
+  listBots: boolean;
+  addBots: boolean;
+  editBots: boolean;
+  removeBots: boolean;
 }
 
 // LockedFeatures are used for determining which features are disabled in the user's cluster.
@@ -171,6 +195,7 @@ export type LockedFeatures = {
   accessRequests: boolean;
   premiumSupport: boolean;
   trustedDevices: boolean;
+  externalCloudAudit: boolean;
 };
 
 // RecommendFeature is used for recommending features if its usage status is zero.
@@ -182,3 +207,11 @@ export enum RecommendationStatus {
   Notify = 'NOTIFY',
   Done = 'DONE',
 }
+
+// WebsocketStatus is used to indicate the auth status from a
+// websocket connection
+export type WebsocketStatus = {
+  type: string;
+  status: string;
+  message?: string;
+};

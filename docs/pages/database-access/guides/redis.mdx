@@ -5,7 +5,11 @@ description: How to configure Teleport database access with Redis.
 
 If you want to configure Redis Cluster, please read [Database Access with Redis Cluster](redis-cluster.mdx).
 
-(!docs/pages/includes/database-access/db-introduction.mdx  dbType="Redis" dbConfigure="Redis database with mutual TLS authentication" dbName="Redis" !)
+(!docs/pages/includes/database-access/db-introduction.mdx  dbType="Redis" dbConfigure="Redis database" dbName="Redis" !)
+
+## How it works
+
+(!docs/pages/includes/database-access/how-it-works/mtls.mdx db="Redis"!)
 
 <Tabs>
 <TabItem scope={["oss", "enterprise"]} label="Self-Hosted">
@@ -23,15 +27,15 @@ If you want to configure Redis Cluster, please read [Database Access with Redis 
 
 - Redis version `6.0` or newer.
 
+  <Admonition type="note" title="Note">
+  RESP3 (REdis Serialization Protocol) is currently not supported.
+  </Admonition>
+
 - `redis-cli` version `6.2` or newer installed and added to your system's `PATH` environment variable.
 
 - A host where you will run the Teleport Database Service.
 
   See [Installation](../../installation.mdx) for details.
-
-<Admonition type="note" title="Note">
-  Redis `7.0` and RESP3 (REdis Serialization Protocol) are currently not supported.
-</Admonition>
 
 - (!docs/pages/includes/tctl.mdx!)
 

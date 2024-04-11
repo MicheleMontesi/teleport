@@ -31,20 +31,24 @@ import (
 	"github.com/gravitational/teleport/api/utils/grpc/interceptors"
 )
 
-const otpTestCode = "otp-test-code"
+const (
+	otpTestCode         = "otp-test-code"
+	otpTestCodeReusable = "otp-test-code-reusable"
+)
 
 type mfaService struct {
+	allowReuse bool
 	proto.UnimplementedAuthServiceServer
 }
 
 func (s *mfaService) Ping(ctx context.Context, req *proto.PingRequest) (*proto.PingResponse, error) {
-	if err := verifyMFAFromContext(ctx); err != nil {
+	if err := s.verifyMFAFromContext(ctx); err != nil {
 		return nil, trace.Wrap(err)
 	}
 	return &proto.PingResponse{}, nil
 }
 
-func verifyMFAFromContext(ctx context.Context) error {
+func (s *mfaService) verifyMFAFromContext(ctx context.Context) error {
 	mfaResp, err := mfa.CredentialsFromContext(ctx)
 	if err != nil {
 		// (In production consider logging err, so we don't swallow it silently.)
@@ -53,20 +57,27 @@ func verifyMFAFromContext(ctx context.Context) error {
 
 	switch r := mfaResp.Response.(type) {
 	case *proto.MFAAuthenticateResponse_TOTP:
-		if r.TOTP.Code != otpTestCode {
-			return trace.AccessDenied("failed MFA verification")
+		switch r.TOTP.Code {
+		case otpTestCode:
+			return nil
+		case otpTestCodeReusable:
+			if s.allowReuse {
+				return nil
+			}
+			fallthrough
+		default:
+			return trace.Wrap(&mfa.ErrAdminActionMFARequired)
 		}
 	default:
 		return trace.BadParameter("unexpected mfa response type %T", r)
 	}
-
-	return nil
 }
 
 // TestGRPCErrorWrapping tests the error wrapping capability of the client
 // and server unary and stream interceptors
 func TestRetryWithMFA(t *testing.T) {
 	t.Parallel()
+	ctx := context.Background()
 
 	mtlsConfig := mtls.NewConfig(t)
 	listener, err := net.Listen("tcp", "localhost:0")
@@ -96,22 +107,28 @@ func TestRetryWithMFA(t *testing.T) {
 		assert.ErrorIs(t, err, &mfa.ErrAdminActionMFARequired, "Ping error mismatch")
 	})
 
+	okMFACeremony := func(ctx context.Context, challengeRequest *proto.CreateAuthenticateChallengeRequest, promptOpts ...mfa.PromptOpt) (*proto.MFAAuthenticateResponse, error) {
+		return &proto.MFAAuthenticateResponse{
+			Response: &proto.MFAAuthenticateResponse_TOTP{
+				TOTP: &proto.TOTPResponse{
+					Code: otpTestCode,
+				},
+			},
+		}, nil
+	}
+
+	mfaCeremonyErr := trace.BadParameter("client does not support mfa")
+	nokMFACeremony := func(ctx context.Context, challengeRequest *proto.CreateAuthenticateChallengeRequest, promptOpts ...mfa.PromptOpt) (*proto.MFAAuthenticateResponse, error) {
+		return nil, mfaCeremonyErr
+	}
+
 	t.Run("with interceptor", func(t *testing.T) {
 		t.Run("ok mfa ceremony", func(t *testing.T) {
-			okMFACeremony := func(ctx context.Context) (*proto.MFAAuthenticateResponse, error) {
-				return &proto.MFAAuthenticateResponse{
-					Response: &proto.MFAAuthenticateResponse_TOTP{
-						TOTP: &proto.TOTPResponse{
-							Code: otpTestCode,
-						},
-					},
-				}, nil
-			}
 			conn, err := grpc.Dial(
 				listener.Addr().String(),
 				grpc.WithTransportCredentials(credentials.NewTLS(mtlsConfig.ClientTLS)),
 				grpc.WithChainUnaryInterceptor(
-					interceptors.RetryWithMFAUnaryInterceptor(okMFACeremony),
+					interceptors.WithMFAUnaryInterceptor(okMFACeremony),
 					interceptors.GRPCClientUnaryErrorInterceptor,
 				),
 			)
@@ -119,20 +136,16 @@ func TestRetryWithMFA(t *testing.T) {
 			defer conn.Close()
 
 			client := proto.NewAuthServiceClient(conn)
-			_, err = client.Ping(context.Background(), &proto.PingRequest{})
+			_, err = client.Ping(ctx, &proto.PingRequest{})
 			assert.NoError(t, err)
 		})
 
 		t.Run("nok mfa ceremony", func(t *testing.T) {
-			mfaCeremonyErr := trace.BadParameter("client does not support mfa")
-			nokMFACeremony := func(ctx context.Context) (*proto.MFAAuthenticateResponse, error) {
-				return nil, mfaCeremonyErr
-			}
 			conn, err := grpc.Dial(
 				listener.Addr().String(),
 				grpc.WithTransportCredentials(credentials.NewTLS(mtlsConfig.ClientTLS)),
 				grpc.WithChainUnaryInterceptor(
-					interceptors.RetryWithMFAUnaryInterceptor(nokMFACeremony),
+					interceptors.WithMFAUnaryInterceptor(nokMFACeremony),
 					interceptors.GRPCClientUnaryErrorInterceptor,
 				),
 			)
@@ -140,9 +153,129 @@ func TestRetryWithMFA(t *testing.T) {
 			defer conn.Close()
 
 			client := proto.NewAuthServiceClient(conn)
-			_, err = client.Ping(context.Background(), &proto.PingRequest{})
+			_, err = client.Ping(ctx, &proto.PingRequest{})
 			assert.ErrorIs(t, err, &mfa.ErrAdminActionMFARequired, "Ping error mismatch")
 			assert.ErrorIs(t, err, mfaCeremonyErr, "Ping error mismatch")
 		})
+
+		t.Run("ok mfa in context", func(t *testing.T) {
+			conn, err := grpc.Dial(
+				listener.Addr().String(),
+				grpc.WithTransportCredentials(credentials.NewTLS(mtlsConfig.ClientTLS)),
+				grpc.WithChainUnaryInterceptor(
+					interceptors.WithMFAUnaryInterceptor(nokMFACeremony),
+					interceptors.GRPCClientUnaryErrorInterceptor,
+				),
+			)
+			require.NoError(t, err)
+			defer conn.Close()
+
+			mfaResp, _ := okMFACeremony(ctx, nil)
+			ctx := mfa.ContextWithMFAResponse(ctx, mfaResp)
+
+			client := proto.NewAuthServiceClient(conn)
+			_, err = client.Ping(ctx, &proto.PingRequest{})
+			assert.NoError(t, err)
+		})
+	})
+}
+
+func TestRetryWithMFA_Reuse(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	mtlsConfig := mtls.NewConfig(t)
+	listener, err := net.Listen("tcp", "localhost:0")
+	require.NoError(t, err)
+
+	mfaService := &mfaService{}
+	server := grpc.NewServer(
+		grpc.Creds(credentials.NewTLS(mtlsConfig.ServerTLS)),
+		grpc.ChainUnaryInterceptor(interceptors.GRPCServerUnaryErrorInterceptor),
+	)
+	proto.RegisterAuthServiceServer(server, mfaService)
+	go func() {
+		server.Serve(listener)
+	}()
+	defer server.Stop()
+
+	okMFACeremony := func(ctx context.Context, challengeRequest *proto.CreateAuthenticateChallengeRequest, promptOpts ...mfa.PromptOpt) (*proto.MFAAuthenticateResponse, error) {
+		return &proto.MFAAuthenticateResponse{
+			Response: &proto.MFAAuthenticateResponse_TOTP{
+				TOTP: &proto.TOTPResponse{
+					Code: otpTestCode,
+				},
+			},
+		}, nil
+	}
+
+	okMFACeremonyAllowReuse := func(ctx context.Context, challengeRequest *proto.CreateAuthenticateChallengeRequest, promptOpts ...mfa.PromptOpt) (*proto.MFAAuthenticateResponse, error) {
+		return &proto.MFAAuthenticateResponse{
+			Response: &proto.MFAAuthenticateResponse_TOTP{
+				TOTP: &proto.TOTPResponse{
+					Code: otpTestCodeReusable,
+				},
+			},
+		}, nil
+	}
+
+	t.Run("ok allow reuse", func(t *testing.T) {
+		mfaService.allowReuse = true
+		conn, err := grpc.Dial(
+			listener.Addr().String(),
+			grpc.WithTransportCredentials(credentials.NewTLS(mtlsConfig.ClientTLS)),
+			grpc.WithChainUnaryInterceptor(
+				interceptors.WithMFAUnaryInterceptor(okMFACeremonyAllowReuse),
+				interceptors.GRPCClientUnaryErrorInterceptor,
+			),
+		)
+		require.NoError(t, err)
+		defer conn.Close()
+
+		client := proto.NewAuthServiceClient(conn)
+		_, err = client.Ping(ctx, &proto.PingRequest{})
+		assert.NoError(t, err)
+	})
+
+	t.Run("nok disallow reuse", func(t *testing.T) {
+		mfaService.allowReuse = false
+		conn, err := grpc.Dial(
+			listener.Addr().String(),
+			grpc.WithTransportCredentials(credentials.NewTLS(mtlsConfig.ClientTLS)),
+			grpc.WithChainUnaryInterceptor(
+				interceptors.WithMFAUnaryInterceptor(okMFACeremonyAllowReuse),
+				interceptors.GRPCClientUnaryErrorInterceptor,
+			),
+		)
+		require.NoError(t, err)
+		defer conn.Close()
+
+		client := proto.NewAuthServiceClient(conn)
+		_, err = client.Ping(ctx, &proto.PingRequest{})
+		assert.ErrorIs(t, err, &mfa.ErrAdminActionMFARequired, "Ping error mismatch")
+	})
+
+	t.Run("ok disallow reuse, retry with one-shot mfa", func(t *testing.T) {
+		mfaService.allowReuse = false
+		conn, err := grpc.Dial(
+			listener.Addr().String(),
+			grpc.WithTransportCredentials(credentials.NewTLS(mtlsConfig.ClientTLS)),
+			grpc.WithChainUnaryInterceptor(
+				interceptors.WithMFAUnaryInterceptor(okMFACeremony),
+				interceptors.GRPCClientUnaryErrorInterceptor,
+			),
+		)
+		require.NoError(t, err)
+		defer conn.Close()
+
+		// Pass reusable MFA through the context. The interceptor should
+		// catch the resulting ErrAdminActionMFARequired and retry with
+		// a one-shot mfa challenge.
+		mfaResp, _ := okMFACeremony(ctx, nil)
+		ctx := mfa.ContextWithMFAResponse(ctx, mfaResp)
+
+		client := proto.NewAuthServiceClient(conn)
+		_, err = client.Ping(ctx, &proto.PingRequest{})
+		assert.NoError(t, err)
 	})
 }

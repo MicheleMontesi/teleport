@@ -18,15 +18,16 @@ package types
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"strings"
 	"time"
 
 	"github.com/gogo/protobuf/jsonpb"
 	"github.com/gravitational/trace"
-	log "github.com/sirupsen/logrus"
 
 	"github.com/gravitational/teleport/api/constants"
 	"github.com/gravitational/teleport/api/defaults"
@@ -63,6 +64,8 @@ type AuthPreference interface {
 	// IsSecondFactorWebauthnAllowed checks if users are allowed to register
 	// Webauthn devices.
 	IsSecondFactorWebauthnAllowed() bool
+	// IsAdminActionMFAEnforced checks if admin action MFA is enforced.
+	IsAdminActionMFAEnforced() bool
 
 	// GetConnectorName gets the name of the OIDC or SAML connector to use. If
 	// this value is empty, we fall back to the first connector in the backend.
@@ -96,8 +99,14 @@ type AuthPreference interface {
 	GetRequireMFAType() RequireMFAType
 	// GetPrivateKeyPolicy returns the configured private key policy for the cluster.
 	GetPrivateKeyPolicy() keys.PrivateKeyPolicy
+
+	// GetHardwareKey returns the hardware key settings configured for the cluster.
+	GetHardwareKey() (*HardwareKey, error)
 	// GetPIVSlot returns the configured piv slot for the cluster.
 	GetPIVSlot() keys.PIVSlot
+	// GetHardwareKeySerialNumberValidation returns the cluster's hardware key
+	// serial number validation settings.
+	GetHardwareKeySerialNumberValidation() (*HardwareKeySerialNumberValidation, error)
 
 	// GetDisconnectExpiredCert returns disconnect expired certificate setting
 	GetDisconnectExpiredCert() bool
@@ -290,7 +299,7 @@ func (c *AuthPreferenceV2) GetPreferredLocalMFA() constants.SecondFactorType {
 		}
 		return constants.SecondFactorOTP
 	default:
-		log.Warnf("Unexpected second_factor setting: %v", sf)
+		slog.WarnContext(context.Background(), "Found unknown second_factor setting", "second_factor", sf)
 		return "" // Unsure, say nothing.
 	}
 }
@@ -315,7 +324,7 @@ func (c *AuthPreferenceV2) IsSecondFactorWebauthnAllowed() bool {
 	case trace.IsNotFound(err): // OK, expected to happen in some cases.
 		return false
 	case err != nil:
-		log.WithError(err).Warnf("Got unexpected error when reading Webauthn config")
+		slog.WarnContext(context.Background(), "Got unexpected error when reading Webauthn config", "error", err)
 		return false
 	}
 
@@ -323,6 +332,12 @@ func (c *AuthPreferenceV2) IsSecondFactorWebauthnAllowed() bool {
 	return c.Spec.SecondFactor == constants.SecondFactorWebauthn ||
 		c.Spec.SecondFactor == constants.SecondFactorOptional ||
 		c.Spec.SecondFactor == constants.SecondFactorOn
+}
+
+// IsAdminActionMFAEnforced checks if admin action MFA is enforced. Currently, the only
+// prerequisite for admin action MFA enforcement is whether Webauthn is enforced.
+func (c *AuthPreferenceV2) IsAdminActionMFAEnforced() bool {
+	return c.Spec.SecondFactor == constants.SecondFactorWebauthn
 }
 
 // GetConnectorName gets the name of the OIDC or SAML connector to use. If
@@ -398,9 +413,29 @@ func (c *AuthPreferenceV2) GetPrivateKeyPolicy() keys.PrivateKeyPolicy {
 	}
 }
 
+// GetHardwareKey returns the hardware key settings configured for the cluster.
+func (c *AuthPreferenceV2) GetHardwareKey() (*HardwareKey, error) {
+	if c.Spec.HardwareKey == nil {
+		return nil, trace.NotFound("Hardware key support is not configured in this cluster")
+	}
+	return c.Spec.HardwareKey, nil
+}
+
 // GetPIVSlot returns the configured piv slot for the cluster.
 func (c *AuthPreferenceV2) GetPIVSlot() keys.PIVSlot {
-	return keys.PIVSlot(c.Spec.PIVSlot)
+	if hk, err := c.GetHardwareKey(); err == nil {
+		return keys.PIVSlot(hk.PIVSlot)
+	}
+	return ""
+}
+
+// GetHardwareKeySerialNumberValidation returns the cluster's hardware key
+// serial number validation settings.
+func (c *AuthPreferenceV2) GetHardwareKeySerialNumberValidation() (*HardwareKeySerialNumberValidation, error) {
+	if c.Spec.HardwareKey == nil || c.Spec.HardwareKey.SerialNumberValidation == nil {
+		return nil, trace.NotFound("Hardware key serial number validation is not configured in this cluster")
+	}
+	return c.Spec.HardwareKey.SerialNumberValidation, nil
 }
 
 // GetDisconnectExpiredCert returns disconnect expired certificate setting
@@ -534,10 +569,11 @@ func (c *AuthPreferenceV2) CheckAndSetDefaults() error {
 	}
 
 	if c.Spec.SecondFactor == constants.SecondFactorU2F {
-		log.Warnf(`` +
+		const deprecationMessage = `` +
 			`Second Factor "u2f" is deprecated and marked for removal, using "webauthn" instead. ` +
 			`Please update your configuration to use WebAuthn. ` +
-			`Refer to https://goteleport.com/docs/access-controls/guides/webauthn/`)
+			`Refer to https://goteleport.com/docs/access-controls/guides/webauthn/`
+		slog.WarnContext(context.Background(), deprecationMessage)
 		c.Spec.SecondFactor = constants.SecondFactorWebauthn
 	}
 
@@ -650,6 +686,15 @@ func (c *AuthPreferenceV2) CheckAndSetDefaults() error {
 		}
 	}
 
+	// TODO(Joerger): DELETE IN 17.0.0
+	c.CheckSetPIVSlot()
+
+	if hk, err := c.GetHardwareKey(); err == nil && hk.PIVSlot != "" {
+		if err := keys.PIVSlot(hk.PIVSlot).Validate(); err != nil {
+			return trace.Wrap(err)
+		}
+	}
+
 	// Make sure the IdP section is populated.
 	if c.Spec.IDP == nil {
 		c.Spec.IDP = &IdPOptions{}
@@ -672,6 +717,22 @@ func (c *AuthPreferenceV2) CheckAndSetDefaults() error {
 	}
 
 	return nil
+}
+
+// CheckSetPIVSlot ensures that the PIVSlot and Hardwarekey.PIVSlot stay in sync so that
+// older versions of Teleport that do not know about Hardwarekey.PIVSlot are able to keep
+// using PIVSlot and newer versions of Teleport can rely solely on Hardwarekey.PIVSlot
+// without causing any service degradation.
+// TODO(Joerger): DELETE IN 17.0.0
+func (c *AuthPreferenceV2) CheckSetPIVSlot() {
+	if c.Spec.PIVSlot != "" {
+		if c.Spec.HardwareKey == nil {
+			c.Spec.HardwareKey = &HardwareKey{}
+		}
+		c.Spec.HardwareKey.PIVSlot = c.Spec.PIVSlot
+	} else if c.Spec.HardwareKey != nil && c.Spec.HardwareKey.PIVSlot != "" {
+		c.Spec.PIVSlot = c.Spec.HardwareKey.PIVSlot
+	}
 }
 
 // String represents a human readable version of authentication settings.
@@ -716,7 +777,7 @@ func (w *Webauthn) CheckAndSetDefaults(u *U2F) error {
 		default:
 			return trace.BadParameter("failed to infer webauthn RPID from U2F App ID (%q)", u.AppID)
 		}
-		log.Infof("WebAuthn: RPID inferred from U2F configuration: %q", rpID)
+		slog.InfoContext(context.Background(), "WebAuthn: RPID inferred from U2F configuration", "rpid", rpID)
 		w.RPID = rpID
 	default:
 		return trace.BadParameter("webauthn configuration missing rp_id")
@@ -725,7 +786,7 @@ func (w *Webauthn) CheckAndSetDefaults(u *U2F) error {
 	// AttestationAllowedCAs.
 	switch {
 	case u != nil && len(u.DeviceAttestationCAs) > 0 && len(w.AttestationAllowedCAs) == 0 && len(w.AttestationDeniedCAs) == 0:
-		log.Infof("WebAuthn: using U2F device attestation CAs as allowed CAs")
+		slog.InfoContext(context.Background(), "WebAuthn: using U2F device attestation CAs as allowed CAs")
 		w.AttestationAllowedCAs = u.DeviceAttestationCAs
 	default:
 		for _, pem := range w.AttestationAllowedCAs {

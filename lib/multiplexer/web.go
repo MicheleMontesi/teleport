@@ -1,24 +1,27 @@
 /*
-Copyright 2021 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package multiplexer
 
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"io"
 	"net"
 	"time"
@@ -27,6 +30,7 @@ import (
 	"github.com/jonboulle/clockwork"
 	"github.com/sirupsen/logrus"
 
+	"github.com/gravitational/teleport"
 	"github.com/gravitational/teleport/lib/defaults"
 	dbcommon "github.com/gravitational/teleport/lib/srv/db/dbutils"
 	"github.com/gravitational/teleport/lib/utils"
@@ -63,7 +67,7 @@ func NewWebListener(cfg WebListenerConfig) (*WebListener, error) {
 	}
 	context, cancel := context.WithCancel(context.Background())
 	return &WebListener{
-		log:         logrus.WithField(trace.Component, "mxweb"),
+		log:         logrus.WithField(teleport.ComponentKey, "mxweb"),
 		cfg:         cfg,
 		webListener: newListener(context, cfg.Listener.Addr()),
 		dbListener:  newListener(context, cfg.Listener.Addr()),
@@ -134,7 +138,7 @@ func (l *WebListener) detectAndForward(conn *tls.Conn) {
 	}
 
 	if err := conn.Handshake(); err != nil {
-		if trace.Unwrap(err) != io.EOF {
+		if !errors.Is(trace.Unwrap(err), io.EOF) {
 			l.log.WithFields(logrus.Fields{
 				"src_addr": conn.RemoteAddr(),
 				"dst_addr": conn.LocalAddr(),

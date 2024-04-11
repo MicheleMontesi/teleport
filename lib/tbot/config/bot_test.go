@@ -1,23 +1,26 @@
 /*
-Copyright 2022 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package config
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
@@ -25,11 +28,13 @@ import (
 	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/ssh"
-	"golang.org/x/exp/slices"
+	"google.golang.org/grpc"
 
 	"github.com/gravitational/teleport/api/client/proto"
 	"github.com/gravitational/teleport/api/client/webclient"
 	"github.com/gravitational/teleport/api/constants"
+	machineidv1pb "github.com/gravitational/teleport/api/gen/proto/go/teleport/machineid/v1"
+	trustpb "github.com/gravitational/teleport/api/gen/proto/go/teleport/trust/v1"
 	"github.com/gravitational/teleport/api/types"
 	"github.com/gravitational/teleport/lib/auth/testauthority"
 	"github.com/gravitational/teleport/lib/fixtures"
@@ -73,7 +78,7 @@ func newMockProvider(cfg *BotConfig) *mockProvider {
 	}
 }
 
-func (p *mockProvider) GetRemoteClusters(opts ...services.MarshalOption) ([]types.RemoteCluster, error) {
+func (p *mockProvider) GetRemoteClusters(ctx context.Context) ([]types.RemoteCluster, error) {
 	rc, err := types.NewRemoteCluster(p.remoteClusterName)
 	if err != nil {
 		return nil, trace.Wrap(err)
@@ -140,20 +145,34 @@ func (p *mockProvider) AuthPing(_ context.Context) (*proto.PingResponse, error) 
 	}, nil
 }
 
-func (p *mockProvider) GenerateHostCert(
+func (p *mockProvider) SignX509SVIDs(
 	ctx context.Context,
-	key []byte, hostID, nodeName string, principals []string,
-	clusterName string, role types.SystemRole, ttl time.Duration,
-) ([]byte, error) {
+	in *machineidv1pb.SignX509SVIDsRequest,
+	opts ...grpc.CallOption,
+) (*machineidv1pb.SignX509SVIDsResponse, error) {
+	return nil, nil
+}
+
+func (p *mockProvider) GenerateHostCert(
+	ctx context.Context, req *trustpb.GenerateHostCertRequest,
+) (*trustpb.GenerateHostCertResponse, error) {
 	// We could generate a cert easily enough here, but the template generates a
 	// random key each run so the resulting cert will change too.
 	// The CA fixture isn't even a cert but we never examine it, so it'll do the
 	// job.
-	return []byte(fixtures.SSHCAPublicKey), nil
+	return &trustpb.GenerateHostCertResponse{SshCertificate: []byte(fixtures.SSHCAPublicKey)}, nil
 }
 
 func (p *mockProvider) ProxyPing(ctx context.Context) (*webclient.PingResponse, error) {
-	return &webclient.PingResponse{}, nil
+	return &webclient.PingResponse{
+		ClusterName: p.clusterName,
+		Proxy: webclient.ProxySettings{
+			TLSRoutingEnabled: true,
+			SSH: webclient.SSHProxySettings{
+				PublicAddr: p.proxyAddr,
+			},
+		},
+	}, nil
 }
 
 func (p *mockProvider) Config() *BotConfig {
@@ -163,13 +182,6 @@ func (p *mockProvider) Config() *BotConfig {
 // identRequest is a function used to add additional requests to an identity in
 // getTestIdent.
 type identRequest func(id *tlsca.Identity)
-
-// kubernetesRequest requests a Kubernetes cluster.
-func kubernetesRequest(k8sCluster string) identRequest {
-	return func(id *tlsca.Identity) {
-		id.KubernetesCluster = k8sCluster
-	}
-}
 
 // getTestIdent returns a mostly-valid bot Identity without starting up an
 // entire Teleport server instance.
@@ -237,7 +249,7 @@ func getTestIdent(t *testing.T, username string, reqs ...identRequest) *identity
 	ident, err := identity.ReadIdentityFromStore(&identity.LoadIdentityParams{
 		PrivateKeyBytes: privateKey,
 		PublicKeyBytes:  tlsPublicKeyPEM,
-	}, certs, identity.DestinationKinds()...)
+	}, certs)
 	require.NoError(t, err)
 
 	return ident

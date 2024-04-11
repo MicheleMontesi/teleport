@@ -1,16 +1,20 @@
-// Copyright 2022 Gravitational, Inc
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package configure
 
@@ -83,7 +87,7 @@ Examples:
   Generate the configuration and immediately test it using "tctl sso test" command.`)
 
 	preset := &AuthKindCommand{
-		Run: func(ctx context.Context, clt auth.ClientI) error { return ghRunFunc(ctx, cmd, &spec, gh, clt) },
+		Run: func(ctx context.Context, clt *auth.Client) error { return ghRunFunc(ctx, cmd, &spec, gh, clt) },
 	}
 
 	sub.Action(func(ctx *kingpin.ParseContext) error {
@@ -94,7 +98,7 @@ Examples:
 	return preset
 }
 
-func ghRunFunc(ctx context.Context, cmd *SSOConfigureCommand, spec *types.GithubConnectorSpecV3, flags *ghExtraFlags, clt auth.ClientI) error {
+func ghRunFunc(ctx context.Context, cmd *SSOConfigureCommand, spec *types.GithubConnectorSpecV3, flags *ghExtraFlags, clt *auth.Client) error {
 	if err := specCheckRoles(ctx, cmd.Logger, spec, flags.ignoreMissingRoles, clt); err != nil {
 		return trace.Wrap(err)
 	}
@@ -111,7 +115,7 @@ func ghRunFunc(ctx context.Context, cmd *SSOConfigureCommand, spec *types.Github
 }
 
 // ResolveCallbackURL deals with common pattern of resolving callback URL for IdP to use.
-func ResolveCallbackURL(logger *logrus.Entry, clt auth.ClientI, fieldName string, callbackPattern string) string {
+func ResolveCallbackURL(logger *logrus.Entry, clt *auth.Client, fieldName string, callbackPattern string) string {
 	var callbackURL string
 
 	logger.Infof("%v empty, resolving automatically.", fieldName)
@@ -138,7 +142,7 @@ func ResolveCallbackURL(logger *logrus.Entry, clt auth.ClientI, fieldName string
 	return callbackURL
 }
 
-func specCheckRoles(ctx context.Context, logger *logrus.Entry, spec *types.GithubConnectorSpecV3, ignoreMissingRoles bool, clt auth.ClientI) error {
+func specCheckRoles(ctx context.Context, logger *logrus.Entry, spec *types.GithubConnectorSpecV3, ignoreMissingRoles bool, clt *auth.Client) error {
 	allRoles, err := clt.GetRoles(ctx)
 	if err != nil {
 		logger.WithError(err).Warn("Unable to get roles list. Skipping teams-to-roles sanity checks.")

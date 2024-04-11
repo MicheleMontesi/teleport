@@ -1,18 +1,20 @@
 /*
-Copyright 2021 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package events
 
@@ -129,7 +131,7 @@ func FromEventFields(fields EventFields) (events.AuditEvent, error) {
 		e = &events.TrustedClusterDelete{}
 	case TrustedClusterTokenCreateEvent:
 		//nolint:staticcheck // We still need to support viewing the deprecated event
-		//type for backwards compatibility.
+		// type for backwards compatibility.
 		e = &events.TrustedClusterTokenCreate{}
 	case ProvisionTokenCreateEvent:
 		e = &events.ProvisionTokenCreate{}
@@ -183,6 +185,12 @@ func FromEventFields(fields EventFields) (events.AuditEvent, error) {
 		e = &events.DatabaseSessionQuery{}
 	case DatabaseSessionMalformedPacketEvent:
 		e = &events.DatabaseSessionMalformedPacket{}
+	case DatabaseSessionPermissionsUpdateEvent:
+		e = &events.DatabasePermissionUpdate{}
+	case DatabaseSessionUserCreateEvent:
+		e = &events.DatabaseUserCreate{}
+	case DatabaseSessionUserDeactivateEvent:
+		e = &events.DatabaseUserDeactivate{}
 	case DatabaseSessionPostgresParseEvent:
 		e = &events.PostgresParse{}
 	case DatabaseSessionPostgresBindEvent:
@@ -237,9 +245,14 @@ func FromEventFields(fields EventFields) (events.AuditEvent, error) {
 		e = &events.MFADeviceDelete{}
 	case DeviceEvent: // Kept for backwards compatibility.
 		e = &events.DeviceEvent{}
-	case DeviceCreateEvent, DeviceDeleteEvent, DeviceUpdateEvent,
-		DeviceEnrollEvent, DeviceAuthenticateEvent,
-		DeviceEnrollTokenCreateEvent:
+	case DeviceCreateEvent,
+		DeviceDeleteEvent,
+		DeviceUpdateEvent,
+		DeviceEnrollEvent,
+		DeviceAuthenticateEvent,
+		DeviceEnrollTokenCreateEvent,
+		DeviceWebTokenCreateEvent,
+		DeviceAuthenticateConfirmEvent:
 		e = &events.DeviceEvent2{}
 	case LockCreatedEvent:
 		e = &events.LockCreate{}
@@ -293,6 +306,12 @@ func FromEventFields(fields EventFields) (events.AuditEvent, error) {
 		e = &events.BotJoin{}
 	case InstanceJoinEvent:
 		e = &events.InstanceJoin{}
+	case BotCreateEvent:
+		e = &events.BotCreate{}
+	case BotUpdateEvent:
+		e = &events.BotUpdate{}
+	case BotDeleteEvent:
+		e = &events.BotDelete{}
 	case LoginRuleCreateEvent:
 		e = &events.LoginRuleCreate{}
 	case LoginRuleDeleteEvent:
@@ -317,6 +336,10 @@ func FromEventFields(fields EventFields) (events.AuditEvent, error) {
 		e = &events.OktaAssignmentResult{}
 	case OktaAssignmentCleanupEvent:
 		e = &events.OktaAssignmentResult{}
+	case OktaUserSyncEvent:
+		e = &events.OktaUserSync{}
+	case OktaAccessListSyncEvent:
+		e = &events.OktaAccessListSync{}
 	case AccessListCreateEvent:
 		e = &events.AccessListCreate{}
 	case AccessListUpdateEvent:
@@ -337,6 +360,22 @@ func FromEventFields(fields EventFields) (events.AuditEvent, error) {
 		e = &events.AuditQueryRun{}
 	case SecReportsReportRunEvent:
 		e = &events.SecurityReportRun{}
+	case ExternalAuditStorageEnableEvent:
+		e = &events.ExternalAuditStorageEnable{}
+	case ExternalAuditStorageDisableEvent:
+		e = &events.ExternalAuditStorageDisable{}
+	case CreateMFAAuthChallengeEvent:
+		e = &events.CreateMFAAuthChallenge{}
+	case ValidateMFAAuthResponseEvent:
+		e = &events.ValidateMFAAuthResponse{}
+	case SPIFFESVIDIssuedEvent:
+		e = &events.SPIFFESVIDIssued{}
+	case AuthPreferenceUpdateEvent:
+		e = &events.AuthPreferenceUpdate{}
+	case ClusterNetworkingConfigUpdateEvent:
+		e = &events.ClusterNetworkingConfigUpdate{}
+	case SessionRecordingConfigUpdateEvent:
+		e = &events.SessionRecordingConfigUpdate{}
 
 	case UnknownEvent:
 		e = &events.Unknown{}

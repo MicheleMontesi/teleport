@@ -1,18 +1,20 @@
 /*
-Copyright 2018 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package web
 
@@ -140,8 +142,6 @@ func (h *Handler) transferFile(w http.ResponseWriter, r *http.Request, p httprou
 
 	ctx := r.Context()
 	if req.fileTransferRequestID != "" {
-		// These values should never exist independently of each other so we can set them at the same time
-		ctx = context.WithValue(ctx, sftp.FileTransferRequestID, req.fileTransferRequestID)
 		ctx = context.WithValue(ctx, sftp.ModeratedSessionID, req.moderatedSessionID)
 	}
 
@@ -205,7 +205,7 @@ func (f *fileTransfer) createClient(req fileTransferRequest, httpReq *http.Reque
 	return tc, nil
 }
 
-type mfaRequest struct {
+type mfaResponse struct {
 	// WebauthnResponse is the response from authenticators.
 	WebauthnAssertionResponse *wantypes.CredentialAssertionResponse `json:"webauthnAssertionResponse"`
 }
@@ -214,8 +214,8 @@ type mfaRequest struct {
 // and use that to generate a cert. This cert is added to the Teleport Client as an authmethod that
 // can be used to connect to a node.
 func (f *fileTransfer) issueSingleUseCert(webauthn string, httpReq *http.Request, tc *client.TeleportClient) error {
-	var mfaReq mfaRequest
-	err := json.Unmarshal([]byte(webauthn), &mfaReq)
+	var mfaResp mfaResponse
+	err := json.Unmarshal([]byte(webauthn), &mfaResp)
 	if err != nil {
 		return trace.Wrap(err)
 	}
@@ -238,7 +238,7 @@ func (f *fileTransfer) issueSingleUseCert(webauthn string, httpReq *http.Request
 		Expires:   time.Now().Add(time.Minute).UTC(),
 		MFAResponse: &proto.MFAAuthenticateResponse{
 			Response: &proto.MFAAuthenticateResponse_Webauthn{
-				Webauthn: wantypes.CredentialAssertionResponseToProto(mfaReq.WebauthnAssertionResponse),
+				Webauthn: wantypes.CredentialAssertionResponseToProto(mfaResp.WebauthnAssertionResponse),
 			},
 		},
 	})

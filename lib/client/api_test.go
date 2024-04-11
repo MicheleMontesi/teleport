@@ -1,18 +1,20 @@
 /*
-Copyright 2016 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package client
 
@@ -35,6 +37,8 @@ import (
 
 	"github.com/gravitational/teleport/api/client/webclient"
 	"github.com/gravitational/teleport/api/types"
+	"github.com/gravitational/teleport/api/utils/grpc/interceptors"
+	"github.com/gravitational/teleport/api/utils/keys"
 	"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/teleport/lib/events"
 	"github.com/gravitational/teleport/lib/observability/tracing"
@@ -219,26 +223,26 @@ func TestParseLabels(t *testing.T) {
 	require.NotNil(t, m)
 	require.NoError(t, err)
 	require.Len(t, m, 3)
-	require.Equal(t, m["role"], "master")
-	require.Equal(t, m["type"], "database")
-	require.Equal(t, m["ver"], "mongoDB v1,2")
+	require.Equal(t, "master", m["role"])
+	require.Equal(t, "database", m["type"])
+	require.Equal(t, "mongoDB v1,2", m["ver"])
 
 	// multiple and unicode:
 	m, err = ParseLabelSpec(`服务器环境=测试,操作系统类别=Linux,机房=华北`)
 	require.NoError(t, err)
 	require.NotNil(t, m)
 	require.Len(t, m, 3)
-	require.Equal(t, m["服务器环境"], "测试")
-	require.Equal(t, m["操作系统类别"], "Linux")
-	require.Equal(t, m["机房"], "华北")
+	require.Equal(t, "测试", m["服务器环境"])
+	require.Equal(t, "Linux", m["操作系统类别"])
+	require.Equal(t, "华北", m["机房"])
 
 	// invalid specs
 	m, err = ParseLabelSpec(`type="database,"role"=master,ver="mongoDB v1,2"`)
 	require.Nil(t, m)
-	require.NotNil(t, err)
+	require.Error(t, err)
 	m, err = ParseLabelSpec(`type="database",role,master`)
 	require.Nil(t, m)
-	require.NotNil(t, err)
+	require.Error(t, err)
 }
 
 func TestPortsParsing(t *testing.T) {
@@ -374,7 +378,7 @@ func TestDynamicPortsParsing(t *testing.T) {
 	for _, tt := range dynamicPortForwardParsingTestCases {
 		specs, err := ParseDynamicPortForwardSpec(tt.spec)
 		if tt.isError {
-			require.NotNil(t, err)
+			require.Error(t, err)
 			continue
 		} else {
 			require.NoError(t, err)
@@ -539,6 +543,51 @@ func TestApplyProxySettings(t *testing.T) {
 			tc := &TeleportClient{Config: test.tcConfigIn}
 			err := tc.applyProxySettings(test.settingsIn)
 			require.NoError(t, err)
+			require.EqualValues(t, test.tcConfigOut, tc.Config)
+		})
+	}
+}
+
+func TestApplyAuthSettings(t *testing.T) {
+	tests := []struct {
+		desc        string
+		settingsIn  webclient.AuthenticationSettings
+		tcConfigIn  Config
+		tcConfigOut Config
+	}{
+		{
+			desc: "PIV slot set by server",
+			settingsIn: webclient.AuthenticationSettings{
+				PIVSlot: "9c",
+			},
+			tcConfigOut: Config{
+				PIVSlot: "9c",
+			},
+		}, {
+			desc: "PIV slot set by client",
+			tcConfigIn: Config{
+				PIVSlot: "9a",
+			},
+			tcConfigOut: Config{
+				PIVSlot: "9a",
+			},
+		}, {
+			desc: "PIV slot set on server and client, client takes precedence",
+			settingsIn: webclient.AuthenticationSettings{
+				PIVSlot: "9c",
+			},
+			tcConfigIn: Config{
+				PIVSlot: "9a",
+			},
+			tcConfigOut: Config{
+				PIVSlot: "9a",
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.desc, func(t *testing.T) {
+			tc := &TeleportClient{Config: test.tcConfigIn}
+			tc.applyAuthSettings(test.settingsIn)
 			require.EqualValues(t, test.tcConfigOut, tc.Config)
 		})
 	}
@@ -746,6 +795,15 @@ func TestVirtualPathNames(t *testing.T) {
 			},
 		},
 		{
+			name:   "database client ca",
+			kind:   VirtualPathCA,
+			params: VirtualPathCAParams(types.DatabaseClientCA),
+			expected: []string{
+				"TSH_VIRTUAL_PATH_CA_DB_CLIENT",
+				"TSH_VIRTUAL_PATH_CA",
+			},
+		},
+		{
 			name:   "host ca",
 			kind:   VirtualPathCA,
 			params: VirtualPathCAParams(types.HostCA),
@@ -823,16 +881,15 @@ func TestFormatConnectToProxyErr(t *testing.T) {
 				require.NoError(t, err)
 				return
 			}
-			traceErr, isTraceErr := err.(*trace.TraceErr)
-
-			if isTraceErr {
+			var traceErr *trace.TraceErr
+			if errors.As(err, &traceErr) {
 				require.EqualError(t, traceErr.OrigError(), tt.wantError)
 			} else {
 				require.EqualError(t, err, tt.wantError)
 			}
 
 			if tt.wantUserMessage != "" {
-				require.True(t, isTraceErr)
+				require.NotNil(t, traceErr)
 				require.Contains(t, traceErr.Messages, tt.wantUserMessage)
 			}
 		})
@@ -1155,7 +1212,36 @@ func TestConnectToProxyCancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	proxy, err := clt.ConnectToProxy(ctx)
-	require.Nil(t, proxy)
+	clusterClient, err := clt.ConnectToCluster(ctx)
+	require.Nil(t, clusterClient)
 	require.Error(t, err)
+}
+
+func TestIsErrorResolvableWithRelogin(t *testing.T) {
+	for _, tt := range []struct {
+		name             string
+		err              error
+		expectResolvable bool
+	}{
+		{
+			name:             "private key policy error should be resolvable",
+			err:              keys.NewPrivateKeyPolicyError(keys.PrivateKeyPolicyHardwareKey),
+			expectResolvable: true,
+		}, {
+			name: "wrapped private key policy error should be resolvable",
+			err: &interceptors.RemoteError{
+				Err: keys.NewPrivateKeyPolicyError(keys.PrivateKeyPolicyHardwareKey),
+			},
+			expectResolvable: true,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			resolvable := IsErrorResolvableWithRelogin(tt.err)
+			if tt.expectResolvable {
+				require.True(t, resolvable, "Expected error to be resolvable with relogin")
+			} else {
+				require.False(t, resolvable, "Expected error to be unresolvable with relogin")
+			}
+		})
+	}
 }

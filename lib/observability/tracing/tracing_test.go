@@ -1,16 +1,20 @@
-// Copyright 2022 Gravitational, Inc
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package tracing
 
@@ -123,16 +127,21 @@ func TestNewClient(t *testing.T) {
 	require.NoError(t, err, "NewClient failed even though it doesn't dial the Collector")
 	require.NotNil(t, clt)
 
-	// Starting the client should fail when the Collector is down
+	// Starting clients when the Collector is offline is allowed since no IO occurs
+	// until issuing an RPC.
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel2()
-	require.Error(t, clt.Start(ctx2), "Start was successful when the Collector is down")
+	require.NoError(t, clt.Start(context.Background()))
+	require.Error(t, clt.UploadTraces(ctx2, nil))
 
-	// NewStartedClient will dial the collector, if the Collector is offline
-	// then it should return an error
+	// NewStartedClient won't dial the collector, if the Collector is offline
+	// then it shouldn't be detected until an RPC is issued.
 	clt, err = NewStartedClient(context.Background(), cfg)
-	require.Error(t, err, "NewStartedClient was successful dialing an offline Collector")
-	require.Nil(t, clt)
+	require.NoError(t, err, "NewStartedClient was successful dialing an offline Collector")
+	require.NotNil(t, clt)
+	ctx3, cancel3 := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel3()
+	require.Error(t, clt.UploadTraces(ctx3, nil))
 }
 
 func TestNewExporter(t *testing.T) {
@@ -172,19 +181,6 @@ func TestNewExporter(t *testing.T) {
 			errAssertion: func(t require.TestingT, err error, i ...interface{}) {
 				require.Error(t, err, i...)
 				require.True(t, trace.IsBadParameter(err), i...)
-			},
-			exporterAssertion: require.Nil,
-		},
-		{
-			name: "connection timeout",
-			config: Config{
-				Service:     "test",
-				ExporterURL: "localhost:123",
-				DialTimeout: time.Millisecond,
-			},
-			errAssertion: func(t require.TestingT, err error, i ...interface{}) {
-				require.Error(t, err, i...)
-				require.True(t, trace.IsConnectionProblem(err), i...)
 			},
 			exporterAssertion: require.Nil,
 		},

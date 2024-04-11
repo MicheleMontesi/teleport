@@ -1,16 +1,20 @@
-// Copyright 2023 Gravitational, Inc
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package watcherjob
 
@@ -106,6 +110,8 @@ func NewJobWithEvents(events types.Events, config Config, fn EventFunc) (lib.Ser
 			// We are not supporting liveness/readiness yet, but if we do it would make sense to use job's readiness
 			job.SetReady(false)
 
+			// Note: we must always return an error, even if everything went great and we're doing a graceful shutdown.
+			// The process library will trigger a complete shutdown only if the critical job exits with an error.
 			switch {
 			case trace.IsConnectionProblem(err):
 				if config.FailFast {
@@ -119,8 +125,7 @@ func NewJobWithEvents(events types.Events, config Config, fn EventFunc) (lib.Ser
 				log.WithError(err).Error("Watcher stream closed. Attempting to reconnect.")
 			case lib.IsCanceled(err):
 				log.Debug("Watcher context is canceled")
-				// Context cancellation is not an error
-				return nil
+				return trace.Wrap(err)
 			default:
 				log.WithError(err).Error("Watcher event loop failed")
 				return trace.Wrap(err)
@@ -129,7 +134,7 @@ func NewJobWithEvents(events types.Events, config Config, fn EventFunc) (lib.Ser
 			// To mitigate a potentially aggressive retry loop, we wait
 			if err := bk.Do(ctx); err != nil {
 				log.Debug("Watcher context was canceled while waiting before a reconnection")
-				return nil
+				return trace.Wrap(err)
 			}
 		}
 	})
@@ -168,7 +173,10 @@ func (job job) watchEvents(ctx context.Context) error {
 					return trace.Wrap(ctx.Err())
 				}
 			}
-			return trace.Wrap(watcher.Error())
+			if err := watcher.Error(); err != nil {
+				return trace.Wrap(err)
+			}
+			return trace.Errorf("watcher closed without error")
 		}
 	}
 }

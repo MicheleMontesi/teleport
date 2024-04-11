@@ -1,24 +1,27 @@
 /*
-Copyright 2022 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package ui
 
 import (
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	apidefaults "github.com/gravitational/teleport/api/defaults"
@@ -377,7 +380,6 @@ func TestMakeServersHiddenLabels(t *testing.T) {
 		clusterName    string
 		servers        []types.Server
 		expectedLabels [][]Label
-		roleSet        services.RoleSet
 	}
 
 	testCases := []testCase{
@@ -403,11 +405,9 @@ func TestMakeServersHiddenLabels(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			accessChecker := services.NewAccessCheckerWithRoleSet(&services.AccessInfo{}, "clustername", tc.roleSet)
-			servers, err := MakeServers(tc.clusterName, tc.servers, accessChecker)
-			require.NoError(t, err)
-			for i, server := range servers {
-				require.Equal(t, tc.expectedLabels[i], server.Labels)
+			for i, srv := range tc.servers {
+				server := MakeServer(tc.clusterName, srv, nil)
+				assert.Equal(t, tc.expectedLabels[i], server.Labels)
 			}
 		})
 	}
@@ -451,9 +451,7 @@ func TestMakeDesktopHiddenLabel(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	accessChecker := services.NewAccessCheckerWithRoleSet(&services.AccessInfo{}, "clustername", services.RoleSet{})
-	desktop, err := MakeDesktop(windowsDesktop, accessChecker)
-	require.NoError(t, err)
+	desktop := MakeDesktop(windowsDesktop, nil)
 	labels := []Label{
 		{
 			Name:  "label3",
@@ -493,7 +491,6 @@ func TestSortedLabels(t *testing.T) {
 		clusterName    string
 		servers        []types.Server
 		expectedLabels [][]Label
-		roleSet        services.RoleSet
 	}
 
 	testCases := []testCase{
@@ -502,8 +499,10 @@ func TestSortedLabels(t *testing.T) {
 			clusterName: "cluster1",
 			servers: []types.Server{
 				makeTestServer(t, "server1", map[string]string{
+					"teleport.dev/origin":   "config-file",
 					"aws/asdfasdf":          "hello",
 					"simple":                "value1",
+					"ultra-cool-label":      "value1",
 					"teleport.internal/app": "app1",
 				}),
 			},
@@ -512,6 +511,14 @@ func TestSortedLabels(t *testing.T) {
 					{
 						Name:  "simple",
 						Value: "value1",
+					},
+					{
+						Name:  "ultra-cool-label",
+						Value: "value1",
+					},
+					{
+						Name:  "teleport.dev/origin",
+						Value: "config-file",
 					},
 					{
 						Name:  "aws/asdfasdf",
@@ -575,11 +582,9 @@ func TestSortedLabels(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			accessChecker := services.NewAccessCheckerWithRoleSet(&services.AccessInfo{}, "clustername", tc.roleSet)
-			servers, err := MakeServers(tc.clusterName, tc.servers, accessChecker)
-			require.NoError(t, err)
-			for i, server := range servers {
-				require.Equal(t, tc.expectedLabels[i], server.Labels)
+			for i, srv := range tc.servers {
+				server := MakeServer(tc.clusterName, srv, nil)
+				assert.Equal(t, tc.expectedLabels[i], server.Labels)
 			}
 		})
 	}

@@ -1,25 +1,28 @@
 /**
- * Copyright 2022 Gravitational, Inc.
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
  *
- *     http://www.apache.org/licenses/LICENSE-2.0
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+import { SubmitConnectEventRequest } from 'gen-proto-ts/prehog/v1alpha/connect_pb';
+
+import { Timestamp } from 'gen-proto-ts/google/protobuf/timestamp_pb';
+
 import { ClusterOrResourceUri, ClusterUri, routing } from 'teleterm/ui/uri';
-import {
-  Cluster,
-  ReportUsageEventRequest,
-  TshClient,
-} from 'teleterm/services/tshd/types';
+import { Cluster } from 'teleterm/services/tshd/types';
+import { TshdClient } from 'teleterm/services/tshd';
 import { RuntimeSettings } from 'teleterm/mainProcess/types';
 import { ConfigService } from 'teleterm/services/config';
 import Logger from 'teleterm/logger';
@@ -28,7 +31,7 @@ import { NotificationsService } from 'teleterm/ui/services/notifications';
 import { DocumentOrigin } from 'teleterm/ui/services/workspacesService';
 
 type PrehogEventReq = Omit<
-  ReportUsageEventRequest['prehogReq'],
+  SubmitConnectEventRequest,
   'distinctId' | 'timestamp'
 >;
 
@@ -36,7 +39,7 @@ export class UsageService {
   private logger = new Logger('UsageService');
 
   constructor(
-    private tshClient: TshClient,
+    private tshClient: TshdClient,
     private configService: ConfigService,
     private notificationsService: NotificationsService,
     // `findCluster` function - it is a workaround that allows to use `UsageEventService` in `ClustersService`.
@@ -57,21 +60,24 @@ export class UsageService {
     }
     const { arch, platform, osVersion, appVersion } = this.runtimeSettings;
     this.reportEvent(clusterProperties.authClusterId, {
-      clusterLogin: {
-        clusterName: clusterProperties.clusterName,
-        userName: clusterProperties.userName,
-        connectorType,
-        arch,
-        os: platform,
-        osVersion,
-        appVersion,
+      event: {
+        oneofKind: 'clusterLogin',
+        clusterLogin: {
+          clusterName: clusterProperties.clusterName,
+          userName: clusterProperties.userName,
+          connectorType,
+          arch,
+          os: platform,
+          osVersion,
+          appVersion,
+        },
       },
     });
   }
 
   captureProtocolUse(
     uri: ClusterOrResourceUri,
-    protocol: 'ssh' | 'kube' | 'db',
+    protocol: 'ssh' | 'kube' | 'db' | 'app',
     origin: DocumentOrigin
   ): void {
     const clusterProperties = this.getClusterProperties(uri);
@@ -82,11 +88,14 @@ export class UsageService {
       return;
     }
     this.reportEvent(clusterProperties.authClusterId, {
-      protocolUse: {
-        clusterName: clusterProperties.clusterName,
-        userName: clusterProperties.userName,
-        protocol,
-        origin,
+      event: {
+        oneofKind: 'protocolUse',
+        protocolUse: {
+          clusterName: clusterProperties.clusterName,
+          userName: clusterProperties.userName,
+          protocol,
+          origin,
+        },
       },
     });
   }
@@ -103,10 +112,13 @@ export class UsageService {
       return;
     }
     this.reportEvent(clusterProperties.authClusterId, {
-      accessRequestCreate: {
-        clusterName: clusterProperties.clusterName,
-        userName: clusterProperties.userName,
-        kind,
+      event: {
+        oneofKind: 'accessRequestCreate',
+        accessRequestCreate: {
+          clusterName: clusterProperties.clusterName,
+          userName: clusterProperties.userName,
+          kind,
+        },
       },
     });
   }
@@ -120,9 +132,12 @@ export class UsageService {
       return;
     }
     this.reportEvent(clusterProperties.authClusterId, {
-      accessRequestReview: {
-        clusterName: clusterProperties.clusterName,
-        userName: clusterProperties.userName,
+      event: {
+        oneofKind: 'accessRequestReview',
+        accessRequestReview: {
+          clusterName: clusterProperties.clusterName,
+          userName: clusterProperties.userName,
+        },
       },
     });
   }
@@ -136,9 +151,12 @@ export class UsageService {
       return;
     }
     this.reportEvent(clusterProperties.authClusterId, {
-      accessRequestAssumeRole: {
-        clusterName: clusterProperties.clusterName,
-        userName: clusterProperties.userName,
+      event: {
+        oneofKind: 'accessRequestAssumeRole',
+        accessRequestAssumeRole: {
+          clusterName: clusterProperties.clusterName,
+          userName: clusterProperties.userName,
+        },
       },
     });
   }
@@ -155,18 +173,24 @@ export class UsageService {
       return;
     }
     this.reportEvent(clusterProperties.authClusterId, {
-      fileTransferRun: {
-        clusterName: clusterProperties.clusterName,
-        userName: clusterProperties.userName,
-        isUpload,
+      event: {
+        oneofKind: 'fileTransferRun',
+        fileTransferRun: {
+          clusterName: clusterProperties.clusterName,
+          userName: clusterProperties.userName,
+          isUpload,
+        },
       },
     });
   }
 
   captureUserJobRoleUpdate(jobRole: string): void {
     this.reportNonAnonymizedEvent({
-      userJobRoleUpdate: {
-        jobRole,
+      event: {
+        oneofKind: 'userJobRoleUpdate',
+        userJobRoleUpdate: {
+          jobRole,
+        },
       },
     });
   }
@@ -183,12 +207,16 @@ export class UsageService {
       return;
     }
     this.reportEvent(clusterProperties.authClusterId, {
-      connectMyComputerSetup: {
-        clusterName: clusterProperties.clusterName,
-        userName: clusterProperties.userName,
-        success: properties.success,
-        failedStep:
-          (properties.success === false && properties.failedStep) || undefined,
+      event: {
+        oneofKind: 'connectMyComputerSetup',
+        connectMyComputerSetup: {
+          clusterName: clusterProperties.clusterName,
+          userName: clusterProperties.userName,
+          success: properties.success,
+          failedStep:
+            (properties.success === false && properties.failedStep) ||
+            undefined,
+        },
       },
     });
   }
@@ -202,9 +230,12 @@ export class UsageService {
       return;
     }
     this.reportEvent(clusterProperties.authClusterId, {
-      connectMyComputerAgentStart: {
-        clusterName: clusterProperties.clusterName,
-        userName: clusterProperties.userName,
+      event: {
+        oneofKind: 'connectMyComputerAgentStart',
+        connectMyComputerAgentStart: {
+          clusterName: clusterProperties.clusterName,
+          userName: clusterProperties.userName,
+        },
       },
     });
   }
@@ -230,7 +261,7 @@ export class UsageService {
         authClusterId,
         prehogReq: {
           distinctId: this.runtimeSettings.installationId,
-          timestamp: new Date(),
+          timestamp: Timestamp.now(),
           ...prehogEventReq,
         },
       });

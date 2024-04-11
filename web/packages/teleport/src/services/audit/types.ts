@@ -1,18 +1,20 @@
-/*
-Copyright 2019 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+/**
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 // eventGroupTypes contains a map of events that were grouped under the same
 // event type but have different event codes. This is used to filter out duplicate
@@ -25,6 +27,7 @@ export const eventGroupTypes = {
   sftp: 'SFTP',
   subsystem: 'Subsystem Request',
   'user.login': 'User Logins',
+  'spiffe.svid.issued': 'SPIFFE SVID Issuance',
 };
 
 /**
@@ -65,6 +68,11 @@ export const eventCodes = {
   DATABASE_SESSION_STARTED_FAILURE: 'TDB00W',
   DATABASE_SESSION_STARTED: 'TDB00I',
   DATABASE_SESSION_MALFORMED_PACKET: 'TDB06I',
+  DATABASE_SESSION_PERMISSIONS_UPDATE: 'TDB07I',
+  DATABASE_SESSION_USER_CREATE: 'TDB08I',
+  DATABASE_SESSION_USER_CREATE_FAILURE: 'TDB08W',
+  DATABASE_SESSION_USER_DEACTIVATE: 'TDB09I',
+  DATABASE_SESSION_USER_DEACTIVATE_FAILURE: 'TDB09W',
   DATABASE_CREATED: 'TDB03I',
   DATABASE_UPDATED: 'TDB04I',
   DATABASE_DELETED: 'TDB05I',
@@ -116,11 +124,13 @@ export const eventCodes = {
   DEVICE_ENROLL: 'TV005I',
   DEVICE_AUTHENTICATE: 'TV006I',
   DEVICE_UPDATE: 'TV007I',
+  DEVICE_WEB_TOKEN_CREATE: 'TV008I',
+  DEVICE_AUTHENTICATE_CONFIRM: 'TV009I',
   EXEC_FAILURE: 'T3002E',
   EXEC: 'T3002I',
   GITHUB_CONNECTOR_CREATED: 'T8000I',
   GITHUB_CONNECTOR_DELETED: 'T8001I',
-  GITHUB_CONNECTOR_UPDATED: 'T8002I',
+  GITHUB_CONNECTOR_UPDATED: 'T80002I', // extra 0 is intentional
   KUBE_REQUEST: 'T3009I',
   KUBE_CREATED: 'T3010I',
   KUBE_UPDATED: 'T3011I',
@@ -150,6 +160,7 @@ export const eventCodes = {
   SCP_DOWNLOAD: 'T3004I',
   SCP_UPLOAD_FAILURE: 'T3005E',
   SCP_UPLOAD: 'T3005I',
+  SCP_DISALLOWED: 'T3010E',
   SFTP_OPEN_FAILURE: 'TS001E',
   SFTP_OPEN: 'TS001I',
   SFTP_CLOSE_FAILURE: 'TS002E',
@@ -186,6 +197,9 @@ export const eventCodes = {
   SFTP_READLINK: 'TS017I',
   SFTP_SYMLINK_FAILURE: 'TS018E',
   SFTP_SYMLINK: 'TS018I',
+  SFTP_LINK: 'TS019I',
+  SFTP_LINK_FAILURE: 'TS019E',
+  SFTP_DISALLOWED: 'TS020E',
   SESSION_COMMAND: 'T4000I',
   SESSION_DATA: 'T2006I',
   SESSION_DISK: 'T4001I',
@@ -222,6 +236,9 @@ export const eventCodes = {
   USER_HEADLESS_LOGIN_APPROVED: 'T1013I',
   USER_HEADLESS_LOGIN_APPROVEDFAILURE: 'T1013W',
   USER_HEADLESS_LOGIN_REJECTED: 'T1014W',
+  CREATE_MFA_AUTH_CHALLENGE: 'T1015I',
+  VALIDATE_MFA_AUTH_RESPONSE: 'T1016I',
+  VALIDATE_MFA_AUTH_RESPONSEFAILURE: 'T1016W',
   USER_UPDATED: 'T1003I',
   X11_FORWARD: 'T3008I',
   X11_FORWARD_FAILURE: 'T3008W',
@@ -229,6 +246,9 @@ export const eventCodes = {
   UPGRADE_WINDOW_UPDATED: 'TUW01I',
   BOT_JOIN: 'TJ001I',
   INSTANCE_JOIN: 'TJ002I',
+  BOT_CREATED: 'TB001I',
+  BOT_UPDATED: 'TB002I',
+  BOT_DELETED: 'TB003I',
   LOGIN_RULE_CREATE: 'TLR00I',
   LOGIN_RULE_DELETE: 'TLR01I',
   SAML_IDP_AUTH_ATTEMPT: 'TSI000I',
@@ -247,6 +267,10 @@ export const eventCodes = {
   OKTA_ASSIGNMENT_PROCESS_FAILURE: 'TOK004E',
   OKTA_ASSIGNMENT_CLEANUP: 'TOK005I',
   OKTA_ASSIGNMENT_CLEANUP_FAILURE: 'TOK005E',
+  OKTA_ACCESS_LIST_SYNC: 'TOK006I',
+  OKTA_ACCESS_LIST_SYNC_FAILURE: 'TOK006E',
+  OKTA_USER_SYNC: 'TOK007I',
+  OKTA_USER_SYNC_FAILURE: 'TOK007E',
   ACCESS_LIST_CREATE: 'TAL001I',
   ACCESS_LIST_CREATE_FAILURE: 'TAL001E',
   ACCESS_LIST_UPDATE: 'TAL002I',
@@ -265,6 +289,13 @@ export const eventCodes = {
   ACCESS_LIST_MEMBER_DELETE_ALL_FOR_ACCESS_LIST_FAILURE: 'TAL008E',
   SECURITY_REPORT_AUDIT_QUERY_RUN: 'SRE001I',
   SECURITY_REPORT_RUN: 'SRE002I',
+  EXTERNAL_AUDIT_STORAGE_ENABLE: 'TEA001I',
+  EXTERNAL_AUDIT_STORAGE_DISABLE: 'TEA002I',
+  SPIFFE_SVID_ISSUED: 'TSPIFFE000I',
+  SPIFFE_SVID_ISSUED_FAILURE: 'TSPIFFE000E',
+  AUTH_PREFERENCE_UPDATE: 'TCAUTH001I',
+  CLUSTER_NETWORKING_CONFIG_UPDATE: 'TCNET002I',
+  SESSION_RECORDING_CONFIG_UPDATE: 'TCREC003I',
 } as const;
 
 /**
@@ -285,7 +316,7 @@ export type RawEvents = {
   >;
   [eventCodes.ACCESS_REQUEST_RESOURCE_SEARCH]: RawEvent<
     typeof eventCodes.ACCESS_REQUEST_RESOURCE_SEARCH,
-    { resource_type: string; search_as_roles: string }
+    { resource_type: string; search_as_roles: string[] }
   >;
   [eventCodes.AUTH_ATTEMPT_FAILURE]: RawEventAuthFailure<
     typeof eventCodes.AUTH_ATTEMPT_FAILURE
@@ -395,6 +426,12 @@ export type RawEvents = {
       exitError: string;
     }
   >;
+  [eventCodes.SCP_DISALLOWED]: RawEvent<
+    typeof eventCodes.SCP_DISALLOWED,
+    {
+      user: string;
+    }
+  >;
   [eventCodes.SFTP_OPEN]: RawEventSFTP<typeof eventCodes.SFTP_OPEN>;
   [eventCodes.SFTP_OPEN_FAILURE]: RawEventSFTP<
     typeof eventCodes.SFTP_OPEN_FAILURE
@@ -467,6 +504,11 @@ export type RawEvents = {
   [eventCodes.SFTP_SYMLINK_FAILURE]: RawEventSFTP<
     typeof eventCodes.SFTP_SYMLINK_FAILURE
   >;
+  [eventCodes.SFTP_LINK]: RawEventSFTP<typeof eventCodes.SFTP_LINK>;
+  [eventCodes.SFTP_LINK_FAILURE]: RawEventSFTP<
+    typeof eventCodes.SFTP_LINK_FAILURE
+  >;
+  [eventCodes.SFTP_DISALLOWED]: RawEventSFTP<typeof eventCodes.SFTP_DISALLOWED>;
   [eventCodes.SESSION_COMMAND]: RawEventCommand<
     typeof eventCodes.SESSION_COMMAND
   >;
@@ -735,6 +777,47 @@ export type RawEvents = {
       name: string;
       db_service: string;
       db_name: string;
+    }
+  >;
+  [eventCodes.DATABASE_SESSION_PERMISSIONS_UPDATE]: RawEvent<
+    typeof eventCodes.DATABASE_SESSION_PERMISSIONS_UPDATE,
+    {
+      name: string;
+      db_service: string;
+      db_name: string;
+      db_user: string;
+      permission_summary: {
+        permission: string;
+        counts: { [key: string]: number };
+      }[];
+    }
+  >;
+  [eventCodes.DATABASE_SESSION_USER_CREATE]: RawDatabaseSessionEvent<
+    typeof eventCodes.DATABASE_SESSION_USER_CREATE,
+    {
+      roles: string[];
+    }
+  >;
+  [eventCodes.DATABASE_SESSION_USER_CREATE_FAILURE]: RawDatabaseSessionEvent<
+    typeof eventCodes.DATABASE_SESSION_USER_CREATE_FAILURE,
+    {
+      error: string;
+      message: string;
+      roles: string[];
+    }
+  >;
+  [eventCodes.DATABASE_SESSION_USER_DEACTIVATE]: RawDatabaseSessionEvent<
+    typeof eventCodes.DATABASE_SESSION_USER_DEACTIVATE,
+    {
+      delete: boolean;
+    }
+  >;
+  [eventCodes.DATABASE_SESSION_USER_DEACTIVATE_FAILURE]: RawDatabaseSessionEvent<
+    typeof eventCodes.DATABASE_SESSION_USER_DEACTIVATE_FAILURE,
+    {
+      error: string;
+      message: string;
+      delete: boolean;
     }
   >;
   [eventCodes.DATABASE_CREATED]: RawEvent<
@@ -1055,6 +1138,7 @@ export type RawEvents = {
     typeof eventCodes.DESKTOP_SESSION_STARTED,
     {
       desktop_addr: string;
+      desktop_name: string;
       windows_user: string;
       windows_domain: string;
     }
@@ -1063,6 +1147,7 @@ export type RawEvents = {
     typeof eventCodes.DESKTOP_SESSION_STARTED_FAILED,
     {
       desktop_addr: string;
+      desktop_name: string;
       windows_user: string;
       windows_domain: string;
     }
@@ -1071,6 +1156,7 @@ export type RawEvents = {
     typeof eventCodes.DESKTOP_SESSION_ENDED,
     {
       desktop_addr: string;
+      desktop_name: string;
       windows_user: string;
       windows_domain: string;
     }
@@ -1160,6 +1246,12 @@ export type RawEvents = {
     typeof eventCodes.DEVICE_AUTHENTICATE
   >;
   [eventCodes.DEVICE_UPDATE]: RawDeviceEvent<typeof eventCodes.DEVICE_UPDATE>;
+  [eventCodes.DEVICE_WEB_TOKEN_CREATE]: RawDeviceEvent<
+    typeof eventCodes.DEVICE_WEB_TOKEN_CREATE
+  >;
+  [eventCodes.DEVICE_AUTHENTICATE_CONFIRM]: RawDeviceEvent<
+    typeof eventCodes.DEVICE_AUTHENTICATE_CONFIRM
+  >;
   [eventCodes.UNKNOWN]: RawEvent<
     typeof eventCodes.UNKNOWN,
     {
@@ -1233,6 +1325,9 @@ export type RawEvents = {
       role: string;
     }
   >;
+  [eventCodes.BOT_CREATED]: RawEvent<typeof eventCodes.BOT_CREATED, HasName>;
+  [eventCodes.BOT_UPDATED]: RawEvent<typeof eventCodes.BOT_UPDATED, HasName>;
+  [eventCodes.BOT_DELETED]: RawEvent<typeof eventCodes.BOT_DELETED, HasName>;
   [eventCodes.LOGIN_RULE_CREATE]: RawEvent<
     typeof eventCodes.LOGIN_RULE_CREATE,
     HasName
@@ -1356,6 +1451,23 @@ export type RawEvents = {
       source: string;
     }
   >;
+  [eventCodes.OKTA_USER_SYNC]: RawEvent<
+    typeof eventCodes.OKTA_USER_SYNC,
+    {
+      num_users_created: number;
+      num_users_modified: number;
+      num_users_deleted: number;
+    }
+  >;
+  [eventCodes.OKTA_USER_SYNC_FAILURE]: RawEvent<
+    typeof eventCodes.OKTA_USER_SYNC_FAILURE
+  >;
+  [eventCodes.OKTA_ACCESS_LIST_SYNC]: RawEvent<
+    typeof eventCodes.OKTA_ACCESS_LIST_SYNC
+  >;
+  [eventCodes.OKTA_ACCESS_LIST_SYNC_FAILURE]: RawEvent<
+    typeof eventCodes.OKTA_ACCESS_LIST_SYNC_FAILURE
+  >;
   [eventCodes.ACCESS_LIST_CREATE]: RawEvent<
     typeof eventCodes.ACCESS_LIST_CREATE,
     {
@@ -1453,11 +1565,71 @@ export type RawEvents = {
     }
   >;
   [eventCodes.SECURITY_REPORT_RUN]: RawEvent<
-    typeof eventCodes.SECURITY_REPORT_AUDIT_QUERY_RUN,
+    typeof eventCodes.SECURITY_REPORT_RUN,
     {
       name: string;
       total_execution_time_in_millis: string;
       total_data_scanned_in_bytes: string;
+    }
+  >;
+  [eventCodes.EXTERNAL_AUDIT_STORAGE_ENABLE]: RawEvent<
+    typeof eventCodes.EXTERNAL_AUDIT_STORAGE_ENABLE,
+    {
+      updated_by: string;
+    }
+  >;
+  [eventCodes.EXTERNAL_AUDIT_STORAGE_DISABLE]: RawEvent<
+    typeof eventCodes.EXTERNAL_AUDIT_STORAGE_DISABLE,
+    {
+      updated_by: string;
+    }
+  >;
+  [eventCodes.CREATE_MFA_AUTH_CHALLENGE]: RawEvent<
+    typeof eventCodes.CREATE_MFA_AUTH_CHALLENGE,
+    {
+      user: string;
+    }
+  >;
+  [eventCodes.VALIDATE_MFA_AUTH_RESPONSE]: RawEvent<
+    typeof eventCodes.VALIDATE_MFA_AUTH_RESPONSE,
+    {
+      user: string;
+    }
+  >;
+  [eventCodes.VALIDATE_MFA_AUTH_RESPONSEFAILURE]: RawEvent<
+    typeof eventCodes.VALIDATE_MFA_AUTH_RESPONSEFAILURE,
+    {
+      user: string;
+    }
+  >;
+  [eventCodes.SPIFFE_SVID_ISSUED]: RawEvent<
+    typeof eventCodes.SPIFFE_SVID_ISSUED,
+    {
+      spiffe_id: string;
+    }
+  >;
+  [eventCodes.SPIFFE_SVID_ISSUED_FAILURE]: RawEvent<
+    typeof eventCodes.SPIFFE_SVID_ISSUED_FAILURE,
+    {
+      spiffe_id: string;
+    }
+  >;
+  [eventCodes.AUTH_PREFERENCE_UPDATE]: RawEvent<
+    typeof eventCodes.AUTH_PREFERENCE_UPDATE,
+    {
+      user: string;
+    }
+  >;
+  [eventCodes.CLUSTER_NETWORKING_CONFIG_UPDATE]: RawEvent<
+    typeof eventCodes.CLUSTER_NETWORKING_CONFIG_UPDATE,
+    {
+      user: string;
+    }
+  >;
+  [eventCodes.SESSION_RECORDING_CONFIG_UPDATE]: RawEvent<
+    typeof eventCodes.SESSION_RECORDING_CONFIG_UPDATE,
+    {
+      user: string;
     }
   >;
 };
@@ -1465,7 +1637,7 @@ export type RawEvents = {
 /**
  * Event Code
  */
-export type EventCode = typeof eventCodes[keyof typeof eventCodes];
+export type EventCode = (typeof eventCodes)[keyof typeof eventCodes];
 
 type HasName = {
   name: string;
@@ -1634,6 +1806,20 @@ type RawEventSFTP<T extends EventCode> = RawEvent<
     error: string;
     ['addr.local']: string;
   }
+>;
+
+type RawDatabaseSessionEvent<T extends EventCode, K = unknown> = Merge<
+  RawEvent<
+    T,
+    {
+      name: string;
+      db_service: string;
+      db_name: string;
+      db_user: string;
+      username: string;
+    }
+  >,
+  K
 >;
 
 /**

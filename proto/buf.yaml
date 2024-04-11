@@ -1,4 +1,7 @@
 version: v1
+deps:
+  # gogo/protobuf v1.3.2, keep in sync with build.assets/Makefile.
+  - buf.build/gogo/protobuf:b03c65ea87cdc3521ede29f62fe3ce239267c1bc
 lint:
   use:
     - DEFAULT
@@ -31,13 +34,25 @@ lint:
     # https://github.com/twitchtv/twirp/issues/70#issuecomment-470367807
     UNARY_RPC:
       - teleport/lib/teleterm/v1/service.proto
+      - accessgraph/v1alpha/access_graph_service.proto
     # TODO(ravicious): Fix protos and re-enable lib/teleterm lint rules below.
     RPC_REQUEST_STANDARD_NAME:
       - teleport/lib/teleterm/v1/service.proto
     # TODO(espadolini): Fix protos and re-enable prehog lint rules below.
     COMMENT_MESSAGE:
-      - teleport/lib/teleterm
       - prehog
+      - teleport/lib/teleterm/v1/access_request.proto
+      - teleport/lib/teleterm/v1/app.proto
+      - teleport/lib/teleterm/v1/auth_settings.proto
+      - teleport/lib/teleterm/v1/cluster.proto
+      - teleport/lib/teleterm/v1/database.proto
+      - teleport/lib/teleterm/v1/gateway.proto
+      - teleport/lib/teleterm/v1/kube.proto
+      - teleport/lib/teleterm/v1/label.proto
+      - teleport/lib/teleterm/v1/server.proto
+      - teleport/lib/teleterm/v1/service.proto
+      - teleport/lib/teleterm/v1/tshd_events_service.proto
+      - teleport/lib/teleterm/v1/usage_events.proto
     COMMENT_RPC:
       - prehog
     COMMENT_SERVICE:
@@ -45,3 +60,7 @@ lint:
 breaking:
   use:
     - WIRE_JSON
+    - ENUM_VALUE_NO_DELETE
+  ignore_only:
+    RESERVED_ENUM_NO_DELETE:
+      - teleport/legacy/types/types.proto

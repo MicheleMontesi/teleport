@@ -1,18 +1,20 @@
 /*
-Copyright 2023 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-	http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package integrationv1
 
@@ -38,9 +40,10 @@ import (
 func TestIntegrationCRUD(t *testing.T) {
 	t.Parallel()
 	clusterName := "test-cluster"
+	proxyPublicAddr := "127.0.0.1.nip.io"
 
 	ca := newCertAuthority(t, types.HostCA, clusterName)
-	ctx, localClient, resourceSvc := initSvc(t, types.KindIntegration, ca, clusterName)
+	ctx, localClient, resourceSvc := initSvc(t, ca, clusterName, proxyPublicAddr)
 
 	noError := func(err error) bool {
 		return err == nil
@@ -321,7 +324,14 @@ type localClient interface {
 	CreateIntegration(ctx context.Context, ig types.Integration) (types.Integration, error)
 }
 
-func initSvc(t *testing.T, kind string, ca types.CertAuthority, clusterName string) (context.Context, localClient, *Service) {
+type testClient struct {
+	services.ClusterConfiguration
+	services.Trust
+	services.RoleGetter
+	services.UserGetter
+}
+
+func initSvc(t *testing.T, ca types.CertAuthority, clusterName string, proxyPublicAddr string) (context.Context, localClient, *Service) {
 	ctx := context.Background()
 	backend, err := memory.New(memory.Config{})
 	require.NoError(t, err)
@@ -330,19 +340,17 @@ func initSvc(t *testing.T, kind string, ca types.CertAuthority, clusterName stri
 	require.NoError(t, err)
 	trustSvc := local.NewCAService(backend)
 	roleSvc := local.NewAccessService(backend)
-	userSvc := local.NewIdentityService(backend)
+	userSvc := local.NewTestIdentityService(backend)
 
-	require.NoError(t, clusterConfigSvc.SetAuthPreference(ctx, types.DefaultAuthPreference()))
+	_, err = clusterConfigSvc.UpsertAuthPreference(ctx, types.DefaultAuthPreference())
+	require.NoError(t, err)
 	require.NoError(t, clusterConfigSvc.SetClusterAuditConfig(ctx, types.DefaultClusterAuditConfig()))
-	require.NoError(t, clusterConfigSvc.SetClusterNetworkingConfig(ctx, types.DefaultClusterNetworkingConfig()))
-	require.NoError(t, clusterConfigSvc.SetSessionRecordingConfig(ctx, types.DefaultSessionRecordingConfig()))
+	_, err = clusterConfigSvc.UpsertClusterNetworkingConfig(ctx, types.DefaultClusterNetworkingConfig())
+	require.NoError(t, err)
+	_, err = clusterConfigSvc.UpsertSessionRecordingConfig(ctx, types.DefaultSessionRecordingConfig())
+	require.NoError(t, err)
 
-	accessPoint := struct {
-		services.ClusterConfiguration
-		services.Trust
-		services.RoleGetter
-		services.UserGetter
-	}{
+	accessPoint := &testClient{
 		ClusterConfiguration: clusterConfigSvc,
 		Trust:                trustSvc,
 		RoleGetter:           roleSvc,
@@ -377,17 +385,22 @@ func initSvc(t *testing.T, kind string, ca types.CertAuthority, clusterName stri
 	})
 	require.NoError(t, err)
 
-	caGetter := &mockCAGetter{
+	cache := &mockCache{
 		domainName: clusterName,
 		ca:         ca,
-		keystore:   keystoreManager,
+		proxies: []types.Server{
+			&types.ServerV2{Spec: types.ServerSpecV2{
+				PublicAddrs: []string{proxyPublicAddr},
+			}},
+		},
+		IntegrationsService: *localResourceService,
 	}
 
 	resourceSvc, err := NewService(&ServiceConfig{
-		Backend:    localResourceService,
-		Authorizer: authorizer,
-		Cache:      localResourceService,
-		CAGetter:   caGetter,
+		Backend:         localResourceService,
+		Authorizer:      authorizer,
+		Cache:           cache,
+		KeyStoreManager: keystoreManager,
 	})
 	require.NoError(t, err)
 
@@ -402,27 +415,44 @@ func initSvc(t *testing.T, kind string, ca types.CertAuthority, clusterName stri
 	}, resourceSvc
 }
 
-// mockCAGetter implements CAGetter.
-type mockCAGetter struct {
+type mockCache struct {
 	domainName string
 	ca         types.CertAuthority
-	keystore   *keystore.Manager
+
+	proxies   []types.Server
+	returnErr error
+
+	local.IntegrationsService
 }
 
-// GetDomainName returns local auth domain of the current auth server
-func (m *mockCAGetter) GetDomainName() (string, error) {
-	return m.domainName, nil
+func (m *mockCache) GetProxies() ([]types.Server, error) {
+	if m.returnErr != nil {
+		return nil, m.returnErr
+	}
+	return m.proxies, nil
+}
+
+func (m *mockCache) GetToken(ctx context.Context, token string) (types.ProvisionToken, error) {
+	return nil, nil
+}
+
+func (m *mockCache) UpsertToken(ctx context.Context, token types.ProvisionToken) error {
+	return nil
+}
+
+// GetClusterName returns local auth domain of the current auth server
+func (m *mockCache) GetClusterName(...services.MarshalOption) (types.ClusterName, error) {
+	return &types.ClusterNameV2{
+		Spec: types.ClusterNameSpecV2{
+			ClusterName: m.domainName,
+		},
+	}, nil
 }
 
 // GetCertAuthority returns certificate authority by given id. Parameter loadSigningKeys
 // controls if signing keys are loaded
-func (m *mockCAGetter) GetCertAuthority(ctx context.Context, id types.CertAuthID, loadSigningKeys bool) (types.CertAuthority, error) {
+func (m *mockCache) GetCertAuthority(ctx context.Context, id types.CertAuthID, loadSigningKeys bool) (types.CertAuthority, error) {
 	return m.ca, nil
-}
-
-// GetKeyStore returns the KeyStore used by the auth server
-func (m *mockCAGetter) GetKeyStore() *keystore.Manager {
-	return m.keystore
 }
 
 func newCertAuthority(t *testing.T, caType types.CertAuthType, domain string) types.CertAuthority {

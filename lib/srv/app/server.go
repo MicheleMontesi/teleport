@@ -1,18 +1,20 @@
 /*
-Copyright 2020 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 // Package app runs the application proxy process. It keeps dynamic labels
 // updated, heart beats its presence, checks access controls, and forwards
@@ -22,6 +24,7 @@ package app
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"net"
 	"net/http"
@@ -214,7 +217,11 @@ type Server struct {
 
 	proxyPort string
 
-	cache *sessionChunkCache
+	// cache holds sessionChunk objects for in-flight app sessions.
+	cache *utils.FnCache
+	// cacheCloseWg prevents closing the app server until all app
+	// sessions have been removed from the cache and closed.
+	cacheCloseWg sync.WaitGroup
 
 	awsHandler   http.Handler
 	azureHandler http.Handler
@@ -247,10 +254,10 @@ func (m *monitoredApps) setResources(apps types.Apps) {
 	m.resources = apps
 }
 
-func (m *monitoredApps) get() types.ResourcesWithLabelsMap {
+func (m *monitoredApps) get() map[string]types.Application {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return append(m.static, m.resources...).AsResources().ToMap()
+	return utils.FromSlice(append(m.static, m.resources...), types.Application.GetName)
 }
 
 // New returns a new application server.
@@ -295,7 +302,7 @@ func New(ctx context.Context, c *Config) (*Server, error) {
 	s := &Server{
 		c: c,
 		log: logrus.WithFields(logrus.Fields{
-			trace.Component: teleport.ComponentApp,
+			teleport.ComponentKey: teleport.ComponentApp,
 		}),
 		heartbeats:    make(map[string]*srv.Heartbeat),
 		dynamicLabels: make(map[string]*labels.Dynamic),
@@ -336,16 +343,38 @@ func New(ctx context.Context, c *Config) (*Server, error) {
 
 	// Create a new session cache, this holds sessions that can be used to
 	// forward requests.
-	s.cache, err = s.newSessionChunkCache()
+	s.cache, err = utils.NewFnCache(utils.FnCacheConfig{
+		TTL:             5 * time.Minute,
+		Context:         s.closeContext,
+		Clock:           s.c.Clock,
+		CleanupInterval: time.Second,
+		OnExpiry:        s.onSessionExpired,
+	})
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
+
+	go s.expireSessions()
 
 	// Figure out the port the proxy is running on.
 	s.proxyPort = s.getProxyPort()
 
 	callClose = false
 	return s, nil
+}
+
+func (s *Server) expireSessions() {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			s.cache.RemoveExpired()
+		case <-s.closeContext.Done():
+			return
+		}
+	}
 }
 
 // startApp registers the specified application.
@@ -618,10 +647,12 @@ func (s *Server) close(ctx context.Context) error {
 		errs = append(errs, err)
 	}
 
-	// Close the session cache and its remaining sessions. Sessions
-	// use server.closeContext to complete cleanup, so we must wait
-	// for sessions to finish closing before closing the context.
-	s.cache.closeAllSessions()
+	// Close the session cache and its remaining sessions.
+	s.cache.Shutdown(s.closeContext)
+	// Any sessions still in the cache during shutdown are closed in
+	// background goroutines. We must wait for sessions to finish closing
+	// before proceeding any further.
+	s.cacheCloseWg.Wait()
 
 	// Signal to any blocking go routine that it should exit.
 	s.closeFunc()
@@ -720,7 +751,7 @@ func (s *Server) handleConnection(conn net.Conn) (func(), error) {
 		return nil, trace.Wrap(err)
 	}
 
-	ctx = authz.ContextWithUser(s.closeContext, user)
+	ctx = authz.ContextWithUser(ctx, user)
 	ctx = authz.ContextWithClientSrcAddr(ctx, conn.RemoteAddr())
 	authCtx, _, err := s.authorizeContext(ctx)
 
@@ -744,16 +775,23 @@ func (s *Server) handleConnection(conn net.Conn) (func(), error) {
 		}
 	}
 
+	// Add user certificate into the context after the monitor connection
+	// initialization to ensure value is present on the context.
+	ctx = authz.ContextWithUserCertificate(ctx, leafCertFromConn(tlsConn))
+
 	// Application access supports plain TCP connections which are handled
 	// differently than HTTP requests from web apps.
 	if app.IsTCP() {
 		identity := authCtx.Identity.GetIdentity()
-		return nil, s.handleTCPApp(ctx, tlsConn, &identity, app)
+		defer cancel(nil)
+		return nil, trace.Wrap(s.handleTCPApp(ctx, tlsConn, &identity, app))
 	}
 
-	return func() {
+	cleanup := func() {
+		cancel(nil)
 		s.deleteConnAuth(tlsConn)
-	}, s.handleHTTPApp(ctx, tlsConn)
+	}
+	return cleanup, trace.Wrap(s.handleHTTPApp(ctx, tlsConn))
 }
 
 // handleTCPApp handles connection for a TCP application.
@@ -800,8 +838,20 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// Covert trace error type to HTTP and write response, make sure we close the
 		// connection afterwards so that the monitor is recreated if needed.
 		code := trace.ErrorToCode(err)
+
+		var text string
+		if errors.Is(err, services.ErrTrustedDeviceRequired) {
+			// Return a nicer error message for device trust errors.
+			text = `Access to this app requires a trusted device.
+
+See https://goteleport.com/docs/access-controls/device-trust/device-management/#troubleshooting for help.
+`
+		} else {
+			text = http.StatusText(code)
+		}
+
 		w.Header().Set("Connection", "close")
-		http.Error(w, http.StatusText(code), code)
+		http.Error(w, text, code)
 	}
 }
 
@@ -865,8 +915,16 @@ func (s *Server) serveAWSWebConsole(w http.ResponseWriter, r *http.Request, iden
 func (s *Server) serveSession(w http.ResponseWriter, r *http.Request, identity *tlsca.Identity, app types.Application, opts ...sessionOpt) error {
 	// Fetch a cached request forwarder (or create one) that lives about 5
 	// minutes. Used to stream session chunks to the Audit Log.
-	session, err := s.getSession(r.Context(), identity, app, opts...)
+	ttl := min(identity.Expires.Sub(s.c.Clock.Now()), 5*time.Minute)
+	session, err := utils.FnCacheGetWithTTL(r.Context(), s.cache, identity.RouteToApp.SessionID, ttl, func(ctx context.Context) (*sessionChunk, error) {
+		session, err := s.newSessionChunk(ctx, identity, app, s.sessionStartTime(r.Context()), opts...)
+		return session, trace.Wrap(err)
+	})
 	if err != nil {
+		return trace.Wrap(err)
+	}
+
+	if err := session.acquire(); err != nil {
 		return trace.Wrap(err)
 	}
 	defer session.release()
@@ -966,37 +1024,19 @@ func (s *Server) authorizeContext(ctx context.Context) (*authz.Context, types.Ap
 	}
 
 	state := authContext.GetAccessState(authPref)
-	err = authContext.Checker.CheckAccess(
+	switch err := authContext.Checker.CheckAccess(
 		app,
 		state,
-		matchers...)
-	if err != nil {
+		matchers...); {
+	case errors.Is(err, services.ErrTrustedDeviceRequired):
+		// Let the trusted device error through for clarity.
+		return nil, nil, trace.Wrap(services.ErrTrustedDeviceRequired)
+	case err != nil:
 		s.log.WithError(err).Warnf("access denied to application %v", app.GetName())
 		return nil, nil, utils.OpaqueAccessDenied(err)
 	}
 
 	return authContext, app, nil
-}
-
-// getSession returns a request session used to proxy the request to the
-// target application. Always checks if the session is valid first and if so,
-// will return a cached session, otherwise will create one.
-// The in-flight request count is automatically incremented on the session.
-// The caller must call session.release() after finishing its use
-func (s *Server) getSession(ctx context.Context, identity *tlsca.Identity, app types.Application, opts ...sessionOpt) (*sessionChunk, error) {
-	session, err := s.cache.get(identity.RouteToApp.SessionID)
-	// If a cached forwarder exists, return it right away.
-	if err == nil && session.acquire() == nil {
-		return session, nil
-	}
-
-	// Create a new session with a recorder and forwarder in it.
-	session, err = s.newSessionChunk(ctx, identity, app, opts...)
-	if err != nil {
-		return nil, trace.Wrap(err)
-	}
-
-	return session, nil
 }
 
 // getApp returns an application matching the public address. If multiple
@@ -1051,10 +1091,10 @@ func (s *Server) newHTTPServer(clusterName string) *http.Server {
 	s.authMiddleware.Wrap(s)
 
 	return &http.Server{
+		// Note: read/write timeouts *should not* be set here because it will
+		// break application access.
 		Handler:           httplib.MakeTracingHandler(s.authMiddleware, teleport.ComponentApp),
-		ReadTimeout:       apidefaults.DefaultIOTimeout,
 		ReadHeaderTimeout: defaults.ReadHeadersTimeout,
-		WriteTimeout:      apidefaults.DefaultIOTimeout,
 		IdleTimeout:       apidefaults.DefaultIdleTimeout,
 		ErrorLog:          utils.NewStdlogger(s.log.Error, teleport.ComponentApp),
 		ConnContext: func(ctx context.Context, c net.Conn) context.Context {
@@ -1066,10 +1106,10 @@ func (s *Server) newHTTPServer(clusterName string) *http.Server {
 // newTCPServer creates a server that proxies TCP applications.
 func (s *Server) newTCPServer() (*tcpServer, error) {
 	return &tcpServer{
-		newAudit: func(sessionID string) (common.Audit, error) {
+		newAudit: func(ctx context.Context, sessionID string) (common.Audit, error) {
 			// Audit stream is using server context, not session context,
 			// to make sure that session is uploaded even after it is closed.
-			rec, err := s.newSessionRecorder(s.closeContext, sessionID)
+			rec, err := s.newSessionRecorder(s.closeContext, s.sessionStartTime(ctx), sessionID)
 			if err != nil {
 				return nil, trace.Wrap(err)
 			}
@@ -1102,6 +1142,17 @@ func (s *Server) getProxyPort() string {
 		return strconv.Itoa(defaults.HTTPListenPort)
 	}
 	return port
+}
+
+// sessionStartTime fetches the session start time based on the the certificate
+// valid date.
+func (s *Server) sessionStartTime(ctx context.Context) time.Time {
+	if userCert, err := authz.UserCertificateFromContext(ctx); err == nil {
+		return userCert.NotBefore
+	}
+
+	s.log.Warn("Unable to retrieve session start time from certificate.")
+	return time.Time{}
 }
 
 // CopyAndConfigureTLS can be used to copy and modify an existing *tls.Config
@@ -1151,4 +1202,14 @@ func newGetConfigForClientFn(log logrus.FieldLogger, client auth.AccessCache, tl
 		tlsCopy.ClientCAs = pool
 		return tlsCopy, nil
 	}
+}
+
+// leafCertFromConn returns the leaf certificate from the connection.
+func leafCertFromConn(tlsConn *tls.Conn) *x509.Certificate {
+	state := tlsConn.ConnectionState()
+	if len(state.PeerCertificates) == 0 {
+		return nil
+	}
+
+	return state.PeerCertificates[0]
 }

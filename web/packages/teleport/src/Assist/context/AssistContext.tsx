@@ -1,17 +1,19 @@
 /**
- * Copyright 2023 Gravitational, Inc.
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
  *
- *     http://www.apache.org/licenses/LICENSE-2.0
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 import React, {
@@ -29,7 +31,7 @@ import { AssistStateActionType, reducer } from 'teleport/Assist/context/state';
 import { convertServerMessages } from 'teleport/Assist/context/utils';
 import useStickyClusterId from 'teleport/useStickyClusterId';
 import cfg from 'teleport/config';
-import { getAccessToken, getHostName } from 'teleport/services/api';
+import { getHostName } from 'teleport/services/api';
 
 import {
   AccessRequestClientMessage,
@@ -46,6 +48,7 @@ import {
   makeMfaAuthenticateChallenge,
   WebauthnAssertionResponse,
 } from 'teleport/services/auth';
+import { AuthenticatedWebSocket } from 'teleport/lib/AuthenticatedWebSocket';
 
 import * as service from '../service';
 import {
@@ -82,9 +85,9 @@ let lastCommandExecutionResultId = 0;
 const TEN_MINUTES = 10 * 60 * 1000;
 
 export function AssistContextProvider(props: PropsWithChildren<unknown>) {
-  const activeWebSocket = useRef<WebSocket>(null);
+  const activeWebSocket = useRef<AuthenticatedWebSocket>(null);
   // TODO(ryan): this should be removed once https://github.com/gravitational/teleport.e/pull/1609 is implemented
-  const executeCommandWebSocket = useRef<WebSocket>(null);
+  const executeCommandWebSocket = useRef<AuthenticatedWebSocket>(null);
   const refreshWebSocketTimeout = useRef<number | null>(null);
 
   const { clusterId } = useStickyClusterId();
@@ -122,11 +125,10 @@ export function AssistContextProvider(props: PropsWithChildren<unknown>) {
   }
 
   function setupWebSocket(conversationId: string, initialMessage?: string) {
-    activeWebSocket.current = new WebSocket(
+    activeWebSocket.current = new AuthenticatedWebSocket(
       cfg.getAssistConversationWebSocketUrl(
         getHostName(),
         clusterId,
-        getAccessToken(),
         conversationId
       )
     );
@@ -272,9 +274,8 @@ export function AssistContextProvider(props: PropsWithChildren<unknown>) {
 
     setupWebSocket(conversationId);
 
-    const serverMessages = await service.loadConversationMessages(
-      conversationId
-    );
+    const serverMessages =
+      await service.loadConversationMessages(conversationId);
     const messages: ResolvedServerMessage[] = [];
 
     for (const message of serverMessages) {
@@ -313,9 +314,8 @@ export function AssistContextProvider(props: PropsWithChildren<unknown>) {
         loading: true,
       });
 
-      const serverMessages = await service.loadConversationMessages(
-        conversationId
-      );
+      const serverMessages =
+        await service.loadConversationMessages(conversationId);
       const messages: ResolvedServerMessage[] = [];
 
       for (const message of serverMessages) {
@@ -348,7 +348,7 @@ export function AssistContextProvider(props: PropsWithChildren<unknown>) {
 
     if (
       !activeWebSocket.current ||
-      activeWebSocket.current.readyState === WebSocket.CLOSED
+      activeWebSocket.current.readyState === AuthenticatedWebSocket.CLOSED
     ) {
       setupWebSocket(state.conversations.selectedId, data);
     } else {
@@ -378,7 +378,8 @@ export function AssistContextProvider(props: PropsWithChildren<unknown>) {
   function sendMfaChallenge(data: WebauthnAssertionResponse) {
     if (
       !executeCommandWebSocket.current ||
-      executeCommandWebSocket.current.readyState !== WebSocket.OPEN ||
+      executeCommandWebSocket.current.readyState !==
+        AuthenticatedWebSocket.OPEN ||
       !data
     ) {
       console.warn(
@@ -446,12 +447,11 @@ export function AssistContextProvider(props: PropsWithChildren<unknown>) {
     const url = cfg.getAssistExecuteCommandUrl(
       getHostName(),
       clusterId,
-      getAccessToken(),
       execParams
     );
 
     const proto = new Protobuf();
-    executeCommandWebSocket.current = new WebSocket(url);
+    executeCommandWebSocket.current = new AuthenticatedWebSocket(url);
     executeCommandWebSocket.current.binaryType = 'arraybuffer';
 
     executeCommandWebSocket.current.onmessage = event => {

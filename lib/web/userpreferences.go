@@ -1,17 +1,19 @@
-/**
- * Copyright 2023 Gravitational, Inc.
+/*
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
  *
- *     http://www.apache.org/licenses/LICENSE-2.0
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 package web
@@ -51,7 +53,14 @@ type ClusterUserPreferencesResponse struct {
 }
 
 type UnifiedResourcePreferencesResponse struct {
-	DefaultTab userpreferencesv1.DefaultTab `json:"defaultTab"`
+	DefaultTab     userpreferencesv1.DefaultTab     `json:"defaultTab"`
+	ViewMode       userpreferencesv1.ViewMode       `json:"viewMode"`
+	LabelsViewMode userpreferencesv1.LabelsViewMode `json:"labelsViewMode"`
+}
+
+// AccessGraphPreferencesResponse is the JSON response for Access Graph preferences.
+type AccessGraphPreferencesResponse struct {
+	HasBeenRedirected bool `json:"hasBeenRedirected"`
 }
 
 // UserPreferencesResponse is the JSON response for the user preferences.
@@ -61,6 +70,7 @@ type UserPreferencesResponse struct {
 	UnifiedResourcePreferences UnifiedResourcePreferencesResponse `json:"unifiedResourcePreferences"`
 	Onboard                    OnboardUserPreferencesResponse     `json:"onboard"`
 	ClusterPreferences         ClusterUserPreferencesResponse     `json:"clusterPreferences,omitempty"`
+	AccessGraph                AccessGraphPreferencesResponse     `json:"accessGraph,omitempty"`
 }
 
 func (h *Handler) getUserClusterPreferences(_ http.ResponseWriter, r *http.Request, p httprouter.Params, sctx *SessionContext, site reversetunnelclient.RemoteSite) (interface{}, error) {
@@ -119,7 +129,9 @@ func makePreferenceRequest(req UserPreferencesResponse) *userpreferencesv1.Upser
 		Preferences: &userpreferencesv1.UserPreferences{
 			Theme: req.Theme,
 			UnifiedResourcePreferences: &userpreferencesv1.UnifiedResourcePreferences{
-				DefaultTab: req.UnifiedResourcePreferences.DefaultTab,
+				DefaultTab:     req.UnifiedResourcePreferences.DefaultTab,
+				ViewMode:       req.UnifiedResourcePreferences.ViewMode,
+				LabelsViewMode: req.UnifiedResourcePreferences.LabelsViewMode,
 			},
 			Assist: &userpreferencesv1.AssistUserPreferences{
 				PreferredLogins: req.Assist.PreferredLogins,
@@ -138,6 +150,9 @@ func makePreferenceRequest(req UserPreferencesResponse) *userpreferencesv1.Upser
 				PinnedResources: &userpreferencesv1.PinnedResourcesUserPreferences{
 					ResourceIds: req.ClusterPreferences.PinnedResources,
 				},
+			},
+			AccessGraph: &userpreferencesv1.AccessGraphUserPreferences{
+				HasBeenRedirected: req.AccessGraph.HasBeenRedirected,
 			},
 		},
 	}
@@ -172,15 +187,21 @@ func userPreferencesResponse(resp *userpreferencesv1.UserPreferences) *UserPrefe
 		Onboard:                    onboardUserPreferencesResponse(resp.Onboard),
 		ClusterPreferences:         clusterPreferencesResponse(resp.ClusterPreferences),
 		UnifiedResourcePreferences: unifiedResourcePreferencesResponse(resp.UnifiedResourcePreferences),
+		AccessGraph:                accessGraphPreferencesResponse(resp.AccessGraph),
 	}
 
 	return jsonResp
 }
 
-func clusterPreferencesResponse(resp *userpreferencesv1.ClusterUserPreferences) ClusterUserPreferencesResponse {
-	return ClusterUserPreferencesResponse{
-		PinnedResources: resp.PinnedResources.ResourceIds,
+func clusterPreferencesResponse(prefs *userpreferencesv1.ClusterUserPreferences) ClusterUserPreferencesResponse {
+	resp := ClusterUserPreferencesResponse{}
+
+	if prefs == nil {
+		return resp
 	}
+
+	resp.PinnedResources = append(resp.PinnedResources, prefs.PinnedResources.ResourceIds...)
+	return resp
 }
 
 // assistUserPreferencesResponse creates a JSON response for the assist user preferences.
@@ -198,7 +219,9 @@ func assistUserPreferencesResponse(resp *userpreferencesv1.AssistUserPreferences
 // unifiedResourcePreferencesResponse creates a JSON response for the assist user preferences.
 func unifiedResourcePreferencesResponse(resp *userpreferencesv1.UnifiedResourcePreferences) UnifiedResourcePreferencesResponse {
 	return UnifiedResourcePreferencesResponse{
-		DefaultTab: resp.DefaultTab,
+		DefaultTab:     resp.DefaultTab,
+		ViewMode:       resp.ViewMode,
+		LabelsViewMode: resp.LabelsViewMode,
 	}
 }
 
@@ -217,4 +240,17 @@ func onboardUserPreferencesResponse(resp *userpreferencesv1.OnboardUserPreferenc
 	jsonResp.PreferredResources = append(jsonResp.PreferredResources, resp.PreferredResources...)
 
 	return jsonResp
+}
+
+// accessGraphPreferencesResponse creates a JSON response for the access graph preferences.
+func accessGraphPreferencesResponse(resp *userpreferencesv1.AccessGraphUserPreferences) AccessGraphPreferencesResponse {
+	if resp == nil {
+		return AccessGraphPreferencesResponse{
+			HasBeenRedirected: false,
+		}
+	}
+
+	return AccessGraphPreferencesResponse{
+		HasBeenRedirected: resp.HasBeenRedirected,
+	}
 }

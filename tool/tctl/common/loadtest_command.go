@@ -1,18 +1,20 @@
 /*
-Copyright 2023 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package common
 
@@ -36,7 +38,7 @@ import (
 	"github.com/gravitational/teleport/lib/auth"
 	"github.com/gravitational/teleport/lib/cache"
 	"github.com/gravitational/teleport/lib/service/servicecfg"
-	"github.com/gravitational/teleport/lib/utils"
+	"github.com/gravitational/teleport/lib/services"
 )
 
 // LoadtestCommand implements the `tctl loadtest` family of commands.
@@ -77,7 +79,7 @@ func (c *LoadtestCommand) Initialize(app *kingpin.Application, config *servicecf
 }
 
 // TryRun takes the CLI command as an argument (like "loadtest node-heartbeats") and executes it.
-func (c *LoadtestCommand) TryRun(ctx context.Context, cmd string, client auth.ClientI) (match bool, err error) {
+func (c *LoadtestCommand) TryRun(ctx context.Context, cmd string, client *auth.Client) (match bool, err error) {
 	switch cmd {
 	case c.nodeHeartbeats.FullCommand():
 		err = c.NodeHeartbeats(ctx, client)
@@ -89,7 +91,7 @@ func (c *LoadtestCommand) TryRun(ctx context.Context, cmd string, client auth.Cl
 	return true, trace.Wrap(err)
 }
 
-func (c *LoadtestCommand) NodeHeartbeats(ctx context.Context, client auth.ClientI) error {
+func (c *LoadtestCommand) NodeHeartbeats(ctx context.Context, client *auth.Client) error {
 	infof := func(format string, args ...any) {
 		fmt.Fprintf(os.Stderr, "[i] "+format+"\n", args...)
 	}
@@ -141,11 +143,7 @@ func (c *LoadtestCommand) NodeHeartbeats(ctx context.Context, client auth.Client
 
 	sampleNode := mknode(uuid.New().String())
 
-	if err := sampleNode.CheckAndSetDefaults(); err != nil {
-		return trace.Wrap(err)
-	}
-
-	sn, err := utils.FastMarshal(sampleNode)
+	sn, err := services.MarshalServer(sampleNode)
 	if err != nil {
 		return trace.Wrap(err)
 	}
@@ -213,7 +211,7 @@ func (c *LoadtestCommand) NodeHeartbeats(ctx context.Context, client auth.Client
 	}
 }
 
-func (c *LoadtestCommand) Watch(ctx context.Context, client auth.ClientI) error {
+func (c *LoadtestCommand) Watch(ctx context.Context, client *auth.Client) error {
 	var kinds []types.WatchKind
 	for _, kind := range strings.Split(c.kind, ",") {
 		kind = strings.TrimSpace(kind)

@@ -19,6 +19,19 @@ outputs:
     destination:
       type: kubernetes_secret
       name: my-secret
+services:
+  - type: spiffe-workload-api
+    listen: unix:///var/run/spiffe.sock
+    svids:
+      - path: /bar
+        hint: my hint
+        sans:
+          dns:
+            - foo.bar
+          ip:
+            - 10.0.0.1
+  - type: example
+    message: llama
 debug: true
 auth_server: example.teleport.sh:443
 certificate_ttl: 1m0s

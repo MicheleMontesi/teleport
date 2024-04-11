@@ -17,26 +17,56 @@ package interceptors
 import (
 	"context"
 	"errors"
+	"log/slog"
+	"strings"
 
 	"github.com/gravitational/trace"
 	"github.com/gravitational/trace/trail"
 	"google.golang.org/grpc"
 
-	"github.com/gravitational/teleport/api/client/proto"
 	"github.com/gravitational/teleport/api/mfa"
 )
 
-// RetryWithMFAUnaryInterceptor intercepts a GRPC client unary call to check if the
-// error indicates that the client should retry with MFA verification.
-func RetryWithMFAUnaryInterceptor(mfaCeremony func(ctx context.Context) (*proto.MFAAuthenticateResponse, error)) grpc.UnaryClientInterceptor {
+// WithMFAUnaryInterceptor intercepts a GRPC client unary call to add MFA credentials
+// to the rpc call when an MFA response is provided through the context. Additionally,
+// when the call returns an error that indicates that MFA is required, this interceptor
+// will prompt for MFA using the given mfaCeremony and retry.
+func WithMFAUnaryInterceptor(mfaCeremony mfa.MFACeremony) grpc.UnaryClientInterceptor {
 	return func(ctx context.Context, method string, req, reply interface{}, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+		// Check for MFA response passed through the context.
+		if mfaResp, err := mfa.MFAResponseFromContext(ctx); err == nil {
+			// If we find an MFA response passed through the context, attach it to the
+			// request. Note: this may still fail if the MFA response allows reuse and
+			// the specified endpoint doesn't allow reuse. In this case, the client
+			// prompts for MFA again below.
+			opts = append(opts, mfa.WithCredentials(mfaResp))
+		} else if !trace.IsNotFound(err) {
+			return trace.Wrap(err)
+		}
+
 		err := invoker(ctx, method, req, reply, cc, opts...)
 		if !errors.Is(trail.FromGRPC(err), &mfa.ErrAdminActionMFARequired) {
 			return err
 		}
 
-		mfaResp, ceremonyErr := mfaCeremony(ctx)
+		// In this context, method looks like "/proto.<grpc-service-name>/<method-name>",
+		// we just want the method name.
+		splitMethod := strings.Split(method, "/")
+		readableMethodName := splitMethod[len(splitMethod)-1]
+		slog.DebugContext(ctx, "Retrying API request with Admin MFA", "method", readableMethodName)
+
+		// Start an MFA prompt that shares what API request caused MFA to be prompted.
+		// ex: MFA is required for admin-level API request: "CreateUser"
+		mfaResp, ceremonyErr := mfa.PerformAdminActionMFACeremony(ctx, mfaCeremony, false /*allowReuse*/)
 		if ceremonyErr != nil {
+			// If the client does not support MFA ceremonies, return the original error.
+			if errors.Is(ceremonyErr, &mfa.ErrMFANotSupported) {
+				return trail.FromGRPC(err)
+			} else if errors.Is(ceremonyErr, &mfa.ErrMFANotRequired) {
+				// This error should never occur since the auth server uses the same mechanism
+				// to check for an MFA requirement as it does to authorize said requirement.
+				return trace.Wrap(trail.FromGRPC(err), "server is reporting that MFA is not required when it is (this is a bug)")
+			}
 			return trace.NewAggregate(trail.FromGRPC(err), ceremonyErr)
 		}
 

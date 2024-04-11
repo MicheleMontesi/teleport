@@ -2,24 +2,27 @@
 // +build linux
 
 /*
-Copyright 2022 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package botfs
 
 import (
+	"errors"
 	"io"
 	"io/fs"
 	"os"
@@ -89,14 +92,14 @@ func openSymlinksMode(path string, mode OpenMode, symlinksMode SymlinksMode) (*o
 	switch symlinksMode {
 	case SymlinksSecure:
 		file, err = openSecure(path, mode)
-		if err == unix.ENOSYS {
+		if errors.Is(err, unix.ENOSYS) {
 			return nil, trace.Errorf("openSecure failed due to missing syscall; configure `symlinks: insecure` for %q", path)
 		} else if err != nil {
 			return nil, trace.Wrap(err)
 		}
 	case SymlinksTrySecure:
 		file, err = openSecure(path, mode)
-		if err == unix.ENOSYS {
+		if errors.Is(err, unix.ENOSYS) {
 			missingSyscallWarning.Do(func() {
 				log.Warnf("Failed to open file securely due to missing syscall; falling back to regular file handling. Configure `symlinks: insecure` for %q to disable this warning.", path)
 			})
@@ -136,7 +139,7 @@ func createSecure(path string, isDir bool) error {
 	}
 
 	f, err := openSecure(path, WriteMode)
-	if err == unix.ENOSYS {
+	if errors.Is(err, unix.ENOSYS) {
 		// bubble up the original error for comparison
 		return err
 	} else if err != nil {
@@ -163,7 +166,7 @@ func Create(path string, isDir bool, symlinksMode SymlinksMode) error {
 	switch symlinksMode {
 	case SymlinksSecure:
 		if err := createSecure(path, isDir); err != nil {
-			if err == unix.ENOSYS {
+			if errors.Is(err, unix.ENOSYS) {
 				return trace.Errorf("createSecure failed due to missing syscall; configure `symlinks: insecure` for %q", path)
 			}
 
@@ -176,7 +179,7 @@ func Create(path string, isDir bool, symlinksMode SymlinksMode) error {
 			return nil
 		}
 
-		if err != unix.ENOSYS {
+		if !errors.Is(err, unix.ENOSYS) {
 			// Something else went wrong, fail.
 			return trace.Wrap(err)
 		}
@@ -422,10 +425,10 @@ func ConfigureACL(path string, owner *user.User, opts *ACLOptions) error {
 }
 
 // HasACLSupport determines if this binary / system supports ACLs.
-func HasACLSupport() (bool, error) {
+func HasACLSupport() bool {
 	// We just assume Linux _can_ support ACLs here, and will test for support
 	// at runtime.
-	return true, nil
+	return true
 }
 
 // HasSecureWriteSupport determines if `CreateSecure()` should be supported
@@ -434,15 +437,16 @@ func HasACLSupport() (bool, error) {
 //
 // We've encountered this being incorrect in environments where access to the
 // kernel is hampered e.g. seccomp/apparmor/container runtimes.
-func HasSecureWriteSupport() (bool, error) {
+func HasSecureWriteSupport() bool {
 	minKernel := semver.New(Openat2MinKernel)
 	version, err := utils.KernelVersion()
 	if err != nil {
-		return false, trace.Wrap(err)
+		log.WithError(err).Info("Failed to determine kernel version. It will be assumed secure write support is not available.")
+		return false
 	}
 	if version.LessThan(*minKernel) {
-		return false, nil
+		return false
 	}
 
-	return true, nil
+	return true
 }

@@ -1,4 +1,12 @@
 issues:
+  exclude-dirs:
+    - (^|/)node_modules/
+    - ^api/gen/
+    - ^docs/
+    - ^gen/
+    - ^rfd/
+    - ^web/
+  exclude-dirs-use-default: false
   exclude-rules:
     - linters:
       - gosimple
@@ -10,6 +18,11 @@ issues:
     - linters:
       - unused
       path: 'integrations/operator/controllers/resources/(.+)_controller_test\.go'
+    # TODO(codingllama): Remove once we move to grpc.NewClient.
+    - linters: [staticcheck]
+      text: "grpc.Dial is deprecated"
+    - linters: [staticcheck]
+      text: "grpc.DialContext is deprecated"
   exclude-use-default: true
   max-same-issues: 0
   max-issues-per-linter: 0
@@ -19,6 +32,7 @@ linters:
   enable:
     - bodyclose
     - depguard
+    - errorlint
     - gci
     - goimports
     - gosimple
@@ -27,7 +41,9 @@ linters:
     - misspell
     - nolintlint
     - revive
+    - sloglint
     - staticcheck
+    - testifylint
     - unconvert
     - unused
 
@@ -54,6 +70,12 @@ linters-settings:
             desc: 'use "sync/atomic" instead'
           - pkg: golang.design
             desc: 'experimental project, not to be confused with official Go packages'
+          - pkg: golang.org/x/exp/slices
+            desc: 'use "slices" instead'
+  errorlint:
+    comparison: true
+    asserts: true
+    errorf: true
   gci:
     sections:
       - standard # Standard section: captures all standard packages.
@@ -71,6 +93,23 @@ linters-settings:
     rules:
     - name: unused-parameter
       disabled: true
+  sloglint:
+    context-only: true
+    key-naming-case: snake
+    static-msg: true
+  testifylint:
+    disable-all: true
+    enable:
+      - bool-compare
+      - compares
+      - empty
+      - error-is-as
+      - error-nil
+      - expected-actual
+      - float-compare
+      - len
+      - suite-extra-assert-call
+      - suite-thelper
 
 output:
   uniq-by-line: false
@@ -78,12 +117,4 @@ output:
 run:
   go: '1.21'
   build-tags: []
-  skip-dirs:
-    - (^|/)node_modules/
-    - ^api/gen/
-    - ^docs/
-    - ^gen/
-    - ^rfd/
-    - ^web/
-  skip-dirs-use-default: false
   timeout: 15m

@@ -1,18 +1,20 @@
 /*
-Copyright 2020 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package sshutils
 
@@ -29,7 +31,34 @@ import (
 	"golang.org/x/crypto/ssh/agent"
 
 	"github.com/gravitational/teleport/lib/teleagent"
+	"github.com/gravitational/teleport/lib/utils/uds"
 )
+
+// TCPIPForwardDialer represents a dialer used to handle TCPIP forward requests.
+type TCPIPForwardDialer func(string) (net.Conn, error)
+
+// TCPIPForwardProcess represents an instance of a port forwarding process.
+type TCPIPForwardProcess struct {
+	// Conn is the socket used to request a dialer or listener in the process.
+	Conn *uds.Conn
+	// Done signals when the process completes.
+	Done <-chan struct{}
+	// Closer contains and extra io.Closer to run when the process as a whole
+	// is closed.
+	Closer io.Closer
+}
+
+// Close stops the process and frees up its related resources.
+func (p *TCPIPForwardProcess) Close() error {
+	var errs []error
+	if p.Conn != nil {
+		errs = append(errs, p.Conn.Close())
+	}
+	if p.Closer != nil {
+		errs = append(errs, p.Closer.Close())
+	}
+	return trace.NewAggregate(errs...)
+}
 
 // ConnectionContext manages connection-level state.
 type ConnectionContext struct {
@@ -53,6 +82,13 @@ type ConnectionContext struct {
 	// sessions is the number of currently active session channels; only tracked
 	// when handling node-side connections for users with MaxSessions applied.
 	sessions int64
+
+	// tcpipForwardDialer is a lazily initialized dialer used to handle all tcpip
+	// forwarding requests.
+	tcpipForwardDialer TCPIPForwardDialer
+	// tcpipForwardProcess is a lazily initialized connection to the subprocess that
+	// handles remote port forwarding.
+	tcpipForwardProcess *TCPIPForwardProcess
 
 	// closers is a list of io.Closer that will be called when session closes
 	// this is handy as sometimes client closes session, in this case resources
@@ -223,6 +259,25 @@ func (c *ConnectionContext) UpdateClientActivity() {
 	c.clientLastActive = c.clock.Now().UTC()
 }
 
+// TrySetDirectTCPIPForwardDialer attempts to registers a DirectTCPIPForwardDialer. If a different dialer was
+// concurrently registered, ok is false and the previously registered dialer is returned.
+func (c *ConnectionContext) TrySetDirectTCPIPForwardDialer(d TCPIPForwardDialer) (registered TCPIPForwardDialer, ok bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.tcpipForwardDialer != nil {
+		return c.tcpipForwardDialer, false
+	}
+	c.tcpipForwardDialer = d
+	return c.tcpipForwardDialer, true
+}
+
+// GetDirectTCPIPForwardDialer gets the registered DirectTCPIPForwardDialer if one exists.
+func (c *ConnectionContext) GetDirectTCPIPForwardDialer() (d TCPIPForwardDialer, ok bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.tcpipForwardDialer, c.tcpipForwardDialer != nil
+}
+
 // AddCloser adds any closer in ctx that will be called
 // when the underlying connection is closed.
 func (c *ConnectionContext) AddCloser(closer io.Closer) {
@@ -235,6 +290,26 @@ func (c *ConnectionContext) AddCloser(closer io.Closer) {
 		return
 	}
 	c.closers = append(c.closers, closer)
+}
+
+// TrySetTCPIPForwardProcess attempts to registers a TCPIPForwardProcess. If a
+// different process was concurrently registered, ok is false and the previously
+// registered process is returned.
+func (c *ConnectionContext) TrySetTCPIPForwardProcess(proc *TCPIPForwardProcess) (*TCPIPForwardProcess, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.tcpipForwardProcess != nil {
+		return c.tcpipForwardProcess, false
+	}
+	c.tcpipForwardProcess = proc
+	return proc, true
+}
+
+// GetTCPIPForwardProcess gets the registered TCPIPForwardProcess if one exists.
+func (c *ConnectionContext) GetTCPIPForwardProcess() (*TCPIPForwardProcess, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.tcpipForwardProcess, c.tcpipForwardProcess != nil
 }
 
 // takeClosers returns all resources that should be closed and sets the properties to null

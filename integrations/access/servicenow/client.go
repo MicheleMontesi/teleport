@@ -1,18 +1,20 @@
 /*
-Copyright 2015-2023 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package servicenow
 
@@ -40,7 +42,14 @@ const (
 	DateTimeFormat = "2006-01-02 15:04:05"
 )
 
-// Client is a wrapper around resty.Client.
+// Client is a wrapper around resty.Client that implements a few ServiceNow
+// incident methods to create incidents, update them, and check who is on-call.
+//
+// The on_call_rota API is not publicly documented, but you can access
+// swagger-like interface by registering a dev SNow account and requesting a dev
+// instance.
+// When the dev instance is created, you can open the "ALL" tab and search for
+// the REST API explorer.
 type Client struct {
 	ClientConfig
 
@@ -135,7 +144,7 @@ func (snc *Client) CreateIncident(ctx context.Context, reqID string, reqData Req
 		body.AssignedTo = reqData.SuggestedReviewers[0]
 	}
 
-	var result incidentResult
+	var result IncidentResult
 	resp, err := snc.client.NewRequest().
 		SetContext(ctx).
 		SetBody(body).
@@ -205,7 +214,7 @@ func (snc *Client) ResolveIncident(ctx context.Context, incidentID string, resol
 // GetOnCall returns the current users on-call for the given rota ID.
 func (snc *Client) GetOnCall(ctx context.Context, rotaID string) ([]string, error) {
 	formattedTime := time.Now().Format(DateTimeFormat)
-	var result onCallResult
+	var result OnCallResult
 	resp, err := snc.client.NewRequest().
 		SetContext(ctx).
 		SetQueryParams(map[string]string{
@@ -224,15 +233,15 @@ func (snc *Client) GetOnCall(ctx context.Context, rotaID string) ([]string, erro
 	if len(result.Result) == 0 {
 		return nil, trace.NotFound("no user found for given rota: %q", rotaID)
 	}
-	var emails []string
+	var userNames []string
 	for _, result := range result.Result {
-		email, err := snc.GetUserEmail(ctx, result.UserID)
+		userName, err := snc.GetUserName(ctx, result.UserID)
 		if err != nil {
 			return nil, trace.Wrap(err)
 		}
-		emails = append(emails, email)
+		userNames = append(userNames, userName)
 	}
-	return emails, nil
+	return userNames, nil
 }
 
 // CheckHealth pings servicenow to check if it is reachable.
@@ -270,13 +279,13 @@ func (snc *Client) CheckHealth(ctx context.Context) error {
 	return nil
 }
 
-// GetUserEmail returns the email address for the given user ID
-func (snc *Client) GetUserEmail(ctx context.Context, userID string) (string, error) {
-	var result userResult
+// GetUserName returns the name for the given user ID
+func (snc *Client) GetUserName(ctx context.Context, userID string) (string, error) {
+	var result UserResult
 	resp, err := snc.client.NewRequest().
 		SetContext(ctx).
 		SetQueryParams(map[string]string{
-			"sysparm_fields": "email",
+			"sysparm_fields": "user_name",
 		}).
 		SetPathParams(map[string]string{"user_id": userID}).
 		SetResult(&result).
@@ -288,13 +297,10 @@ func (snc *Client) GetUserEmail(ctx context.Context, userID string) (string, err
 	if resp.IsError() {
 		return "", errWrapper(resp.StatusCode(), string(resp.Body()))
 	}
-	if len(result.Result) == 0 {
-		return "", trace.NotFound("no user found for given id")
+	if result.Result.UserName == "" {
+		return "", trace.NotFound("no username found for given id: %v", userID)
 	}
-	if len(result.Result) != 1 {
-		return "", trace.NotFound("more than one user returned for given id")
-	}
-	return result.Result[0].Email, nil
+	return result.Result.UserName, nil
 }
 
 var (

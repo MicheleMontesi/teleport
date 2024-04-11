@@ -1,16 +1,20 @@
-// Copyright 2023 Gravitational, Inc
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package userloginstate
 
@@ -68,8 +72,8 @@ func TestGetUserLoginStates(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, getResp.UserLoginStates)
 
-	uls1 := newUserLoginState(t, "1", stRoles, stTraits)
-	uls2 := newUserLoginState(t, "2", stRoles, stTraits)
+	uls1 := newUserLoginState(t, "1", nil, stRoles, stTraits, stRoles, stTraits)
+	uls2 := newUserLoginState(t, "2", nil, stRoles, stTraits, stRoles, stTraits)
 
 	_, err = svc.UpsertUserLoginState(ctx, &userloginstatev1.UpsertUserLoginStateRequest{UserLoginState: conv.ToProto(uls1)})
 	require.NoError(t, err)
@@ -94,8 +98,8 @@ func TestUpsertUserLoginStates(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, getResp.UserLoginStates)
 
-	uls1 := newUserLoginState(t, "1", stRoles, stTraits)
-	uls2 := newUserLoginState(t, "2", stRoles, stTraits)
+	uls1 := newUserLoginState(t, "1", nil, stRoles, stTraits, stRoles, stTraits)
+	uls2 := newUserLoginState(t, "2", nil, stRoles, stTraits, stRoles, stTraits)
 
 	_, err = svc.UpsertUserLoginState(ctx, &userloginstatev1.UpsertUserLoginStateRequest{UserLoginState: conv.ToProto(uls1)})
 	require.NoError(t, err)
@@ -117,7 +121,7 @@ func TestGetUserLoginState(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, getResp.UserLoginStates)
 
-	uls1 := newUserLoginState(t, "1", stRoles, stTraits)
+	uls1 := newUserLoginState(t, "1", nil, stRoles, stTraits, stRoles, stTraits)
 
 	_, err = svc.UpsertUserLoginState(ctx, &userloginstatev1.UpsertUserLoginStateRequest{UserLoginState: conv.ToProto(uls1)})
 	require.NoError(t, err)
@@ -143,7 +147,7 @@ func TestDeleteUserLoginState(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, getResp.UserLoginStates)
 
-	uls1 := newUserLoginState(t, "1", stRoles, stTraits)
+	uls1 := newUserLoginState(t, "1", nil, stRoles, stTraits, stRoles, stTraits)
 
 	_, err = svc.UpsertUserLoginState(ctx, &userloginstatev1.UpsertUserLoginStateRequest{UserLoginState: conv.ToProto(uls1)})
 	require.NoError(t, err)
@@ -170,8 +174,8 @@ func TestDeleteAllAccessLists(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, getResp.UserLoginStates)
 
-	uls1 := newUserLoginState(t, "1", stRoles, stTraits)
-	uls2 := newUserLoginState(t, "2", stRoles, stTraits)
+	uls1 := newUserLoginState(t, "1", nil, stRoles, stTraits, stRoles, stTraits)
+	uls2 := newUserLoginState(t, "2", nil, stRoles, stTraits, stRoles, stTraits)
 
 	_, err = svc.UpsertUserLoginState(ctx, &userloginstatev1.UpsertUserLoginStateRequest{UserLoginState: conv.ToProto(uls1)})
 	require.NoError(t, err)
@@ -191,6 +195,13 @@ func TestDeleteAllAccessLists(t *testing.T) {
 	require.Empty(t, getResp.UserLoginStates)
 }
 
+type testClient struct {
+	services.ClusterConfiguration
+	services.Trust
+	services.RoleGetter
+	services.UserGetter
+}
+
 func initSvc(t *testing.T) (userContext context.Context, noAccessContext context.Context, svc *Service) {
 	ctx := context.Background()
 	clock := clockwork.NewFakeClock()
@@ -203,25 +214,22 @@ func initSvc(t *testing.T) (userContext context.Context, noAccessContext context
 	require.NoError(t, err)
 	trustSvc := local.NewCAService(backend)
 	roleSvc := local.NewAccessService(backend)
-	userSvc := local.NewIdentityService(backend)
+	userSvc := local.NewTestIdentityService(backend)
 
-	require.NoError(t, clusterConfigSvc.SetAuthPreference(ctx, types.DefaultAuthPreference()))
+	_, err = clusterConfigSvc.UpsertAuthPreference(ctx, types.DefaultAuthPreference())
+	require.NoError(t, err)
 	require.NoError(t, clusterConfigSvc.SetClusterAuditConfig(ctx, types.DefaultClusterAuditConfig()))
-	require.NoError(t, clusterConfigSvc.SetClusterNetworkingConfig(ctx, types.DefaultClusterNetworkingConfig()))
-	require.NoError(t, clusterConfigSvc.SetSessionRecordingConfig(ctx, types.DefaultSessionRecordingConfig()))
+	_, err = clusterConfigSvc.UpsertClusterNetworkingConfig(ctx, types.DefaultClusterNetworkingConfig())
+	require.NoError(t, err)
+	_, err = clusterConfigSvc.UpsertSessionRecordingConfig(ctx, types.DefaultSessionRecordingConfig())
+	require.NoError(t, err)
 
-	accessPoint := struct {
-		services.ClusterConfiguration
-		services.Trust
-		services.RoleGetter
-		services.UserGetter
-	}{
+	accessPoint := &testClient{
 		ClusterConfiguration: clusterConfigSvc,
 		Trust:                trustSvc,
 		RoleGetter:           roleSvc,
 		UserGetter:           userSvc,
 	}
-
 	accessService := local.NewAccessService(backend)
 	eventService := local.NewEventsService(backend)
 	lockWatcher, err := services.NewLockWatcher(ctx, services.LockWatcherConfig{

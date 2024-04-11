@@ -1,18 +1,20 @@
 /*
-Copyright 2023 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package auth
 
@@ -336,28 +338,6 @@ func (c *HTTPClient) ProcessKubeCSR(req KubeCSR) (*KubeCSRResponse, error) {
 	return &re, nil
 }
 
-// RotateCertAuthority starts or restarts certificate authority rotation process.
-func (c *HTTPClient) RotateCertAuthority(ctx context.Context, req RotateRequest) error {
-	_, err := c.PostJSON(ctx, c.Endpoint("authorities", string(req.Type), "rotate"), req)
-	return trace.Wrap(err)
-}
-
-// RotateExternalCertAuthority rotates external certificate authority,
-// this method is used to update only public keys and certificates of the
-// the certificate authorities of trusted clusters.
-func (c *HTTPClient) RotateExternalCertAuthority(ctx context.Context, ca types.CertAuthority) error {
-	if err := services.ValidateCertAuthority(ca); err != nil {
-		return trace.Wrap(err)
-	}
-	data, err := services.MarshalCertAuthority(ca)
-	if err != nil {
-		return trace.Wrap(err)
-	}
-	_, err = c.PostJSON(ctx, c.Endpoint("authorities", string(ca.GetType()), "rotate", "external"),
-		&rotateExternalCertAuthorityRawReq{CA: data})
-	return trace.Wrap(err)
-}
-
 // RegisterUsingToken calls the auth service API to register a new node using a registration token
 // which was previously issued via CreateToken/UpsertToken.
 func (c *HTTPClient) RegisterUsingToken(ctx context.Context, req *types.RegisterUsingTokenRequest) (*proto.Certs, error) {
@@ -506,67 +486,6 @@ func (c *HTTPClient) DeleteTunnelConnections(clusterName string) error {
 // DeleteAllTunnelConnections deletes all tunnel connections
 func (c *HTTPClient) DeleteAllTunnelConnections() error {
 	_, err := c.Delete(context.TODO(), c.Endpoint("tunnelconnections"))
-	return trace.Wrap(err)
-}
-
-// GetRemoteClusters returns a list of remote clusters
-func (c *HTTPClient) GetRemoteClusters(opts ...services.MarshalOption) ([]types.RemoteCluster, error) {
-	out, err := c.Get(context.TODO(), c.Endpoint("remoteclusters"), url.Values{})
-	if err != nil {
-		return nil, trace.Wrap(err)
-	}
-	var items []json.RawMessage
-	if err := json.Unmarshal(out.Bytes(), &items); err != nil {
-		return nil, trace.Wrap(err)
-	}
-	conns := make([]types.RemoteCluster, len(items))
-	for i, raw := range items {
-		conn, err := services.UnmarshalRemoteCluster(raw)
-		if err != nil {
-			return nil, trace.Wrap(err)
-		}
-		conns[i] = conn
-	}
-	return conns, nil
-}
-
-// GetRemoteCluster returns a remote cluster by name
-func (c *HTTPClient) GetRemoteCluster(clusterName string) (types.RemoteCluster, error) {
-	if clusterName == "" {
-		return nil, trace.BadParameter("missing cluster name")
-	}
-	out, err := c.Get(context.TODO(), c.Endpoint("remoteclusters", clusterName), url.Values{})
-	if err != nil {
-		return nil, trace.Wrap(err)
-	}
-	return services.UnmarshalRemoteCluster(out.Bytes())
-}
-
-// DeleteRemoteCluster deletes remote cluster by name
-func (c *HTTPClient) DeleteRemoteCluster(ctx context.Context, clusterName string) error {
-	if clusterName == "" {
-		return trace.BadParameter("missing parameter cluster name")
-	}
-	_, err := c.Delete(ctx, c.Endpoint("remoteclusters", clusterName))
-	return trace.Wrap(err)
-}
-
-// DeleteAllRemoteClusters deletes all remote clusters
-func (c *HTTPClient) DeleteAllRemoteClusters() error {
-	_, err := c.Delete(context.TODO(), c.Endpoint("remoteclusters"))
-	return trace.Wrap(err)
-}
-
-// CreateRemoteCluster creates remote cluster resource
-func (c *HTTPClient) CreateRemoteCluster(rc types.RemoteCluster) error {
-	data, err := services.MarshalRemoteCluster(rc)
-	if err != nil {
-		return trace.Wrap(err)
-	}
-	args := &createRemoteClusterRawReq{
-		RemoteCluster: data,
-	}
-	_, err = c.PostJSON(context.TODO(), c.Endpoint("remoteclusters"), args)
 	return trace.Wrap(err)
 }
 
@@ -734,34 +653,6 @@ func (c *HTTPClient) DeleteWebSession(ctx context.Context, user string, sid stri
 	return trace.Wrap(err)
 }
 
-// GenerateHostCert takes the public key in the Open SSH “authorized_keys“
-// plain text format, signs it using Host Certificate Authority private key and returns the
-// resulting certificate.
-func (c *HTTPClient) GenerateHostCert(
-	ctx context.Context, key []byte, hostID, nodeName string, principals []string, clusterName string, role types.SystemRole, ttl time.Duration,
-) ([]byte, error) {
-	out, err := c.PostJSON(ctx, c.Endpoint("ca", "host", "certs"),
-		generateHostCertReq{
-			Key:         key,
-			HostID:      hostID,
-			NodeName:    nodeName,
-			Principals:  principals,
-			ClusterName: clusterName,
-			Roles:       types.SystemRoles{role},
-			TTL:         ttl,
-		})
-	if err != nil {
-		return nil, trace.Wrap(err)
-	}
-
-	var cert string
-	if err := json.Unmarshal(out.Bytes(), &cert); err != nil {
-		return nil, err
-	}
-
-	return []byte(cert), nil
-}
-
 // ValidateOIDCAuthCallback validates OIDC auth callback returned from redirect
 func (c *HTTPClient) ValidateOIDCAuthCallback(ctx context.Context, q url.Values) (*OIDCAuthResponse, error) {
 	out, err := c.PostJSON(ctx, c.Endpoint("oidc", "requests", "validate"), ValidateOIDCAuthCallbackReq{
@@ -800,10 +691,11 @@ func (c *HTTPClient) ValidateOIDCAuthCallback(ctx context.Context, q url.Values)
 }
 
 // ValidateSAMLResponse validates response returned by SAML identity provider
-func (c *HTTPClient) ValidateSAMLResponse(ctx context.Context, re string, connectorID string) (*SAMLAuthResponse, error) {
+func (c *HTTPClient) ValidateSAMLResponse(ctx context.Context, samlResponse, connectorID, clientIP string) (*SAMLAuthResponse, error) {
 	out, err := c.PostJSON(ctx, c.Endpoint("saml", "requests", "validate"), ValidateSAMLResponseReq{
-		Response:    re,
+		Response:    samlResponse,
 		ConnectorID: connectorID,
+		ClientIP:    clientIP,
 	})
 	if err != nil {
 		return nil, trace.Wrap(err)
@@ -877,7 +769,10 @@ func (c *HTTPClient) ValidateGithubAuthCallback(ctx context.Context, q url.Value
 // GetSessionChunk allows clients to receive a byte array (chunk) from a recorded
 // session stream, starting from 'offset', up to 'max' in length. The upper bound
 // of 'max' is set to events.MaxChunkBytes
+//
+// Deprecated: use StreamSessionEvents API instead
 func (c *HTTPClient) GetSessionChunk(namespace string, sid session.ID, offsetBytes, maxBytes int) ([]byte, error) {
+	// DELETE IN 16(zmb3): v15 web UIs stopped calling this
 	if namespace == "" {
 		return nil, trace.BadParameter(MissingNamespaceError)
 	}
@@ -892,12 +787,10 @@ func (c *HTTPClient) GetSessionChunk(namespace string, sid session.ID, offsetByt
 	return response.Bytes(), nil
 }
 
-// Returns events that happen during a session sorted by time
-// (oldest first).
-//
-// afterN allows to filter by "newer than N" value where N is the cursor ID
-// of previously returned bunch (good for polling for latest)
+// Deprecated: use StreamSessionEvents API instead.
+// TODO(zmb3): remove from ClientI interface
 func (c *HTTPClient) GetSessionEvents(namespace string, sid session.ID, afterN int) (retval []events.EventFields, err error) {
+	// DELETE IN 16(zmb3): v15 web UIs stopped calling this
 	if namespace == "" {
 		return nil, trace.BadParameter(MissingNamespaceError)
 	}
@@ -977,42 +870,6 @@ func (c *HTTPClient) SetClusterName(cn types.ClusterName) error {
 	}
 
 	_, err = c.PostJSON(context.TODO(), c.Endpoint("configuration", "name"), &setClusterNameReq{ClusterName: data})
-	if err != nil {
-		return trace.Wrap(err)
-	}
-
-	return nil
-}
-
-// DeleteStaticTokens deletes static tokens
-func (c *HTTPClient) DeleteStaticTokens() error {
-	_, err := c.Delete(context.TODO(), c.Endpoint("configuration", "static_tokens"))
-	return trace.Wrap(err)
-}
-
-// GetStaticTokens returns a list of static register tokens
-func (c *HTTPClient) GetStaticTokens() (types.StaticTokens, error) {
-	out, err := c.Get(context.TODO(), c.Endpoint("configuration", "static_tokens"), url.Values{})
-	if err != nil {
-		return nil, trace.Wrap(err)
-	}
-
-	st, err := services.UnmarshalStaticTokens(out.Bytes())
-	if err != nil {
-		return nil, trace.Wrap(err)
-	}
-
-	return st, err
-}
-
-// SetStaticTokens sets a list of static register tokens
-func (c *HTTPClient) SetStaticTokens(st types.StaticTokens) error {
-	data, err := services.MarshalStaticTokens(st)
-	if err != nil {
-		return trace.Wrap(err)
-	}
-
-	_, err = c.PostJSON(context.TODO(), c.Endpoint("configuration", "static_tokens"), &setStaticTokensReq{StaticTokens: data})
 	if err != nil {
 		return trace.Wrap(err)
 	}

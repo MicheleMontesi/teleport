@@ -1,25 +1,29 @@
-// Copyright 2022 Gravitational, Inc
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package daemon
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"os/exec"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -39,6 +43,7 @@ import (
 	"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/teleport/lib/teleterm/api/uri"
 	"github.com/gravitational/teleport/lib/teleterm/clusters"
+	"github.com/gravitational/teleport/lib/teleterm/cmd"
 	"github.com/gravitational/teleport/lib/teleterm/gateway"
 	"github.com/gravitational/teleport/lib/teleterm/gatewaytest"
 	"github.com/gravitational/teleport/lib/tlsca"
@@ -58,7 +63,20 @@ func (m *mockGatewayCreator) CreateGateway(ctx context.Context, params clusters.
 		hs.Close()
 	})
 
-	keyPairPaths := gatewaytest.MustGenAndSaveCert(m.t, tlsca.Identity{
+	config := gateway.Config{
+		LocalPort:             params.LocalPort,
+		TargetURI:             params.TargetURI,
+		TargetUser:            params.TargetUser,
+		TargetName:            params.TargetURI.GetDbName() + params.TargetURI.GetKubeName(),
+		TargetSubresourceName: params.TargetSubresourceName,
+		Protocol:              defaults.ProtocolPostgres,
+		Insecure:              true,
+		WebProxyAddr:          hs.Listener.Addr().String(),
+		TCPPortAllocator:      m.tcpPortAllocator,
+		KubeconfigsDir:        m.t.TempDir(),
+	}
+
+	identity := tlsca.Identity{
 		Username: "user",
 		Groups:   []string{"test-group"},
 		RouteToDatabase: tlsca.RouteToDatabase{
@@ -67,22 +85,23 @@ func (m *mockGatewayCreator) CreateGateway(ctx context.Context, params clusters.
 			Username:    params.TargetUser,
 		},
 		KubernetesCluster: params.TargetURI.GetKubeName(),
-	})
+	}
 
-	gateway, err := gateway.New(gateway.Config{
-		LocalPort:             params.LocalPort,
-		TargetURI:             params.TargetURI,
-		TargetUser:            params.TargetUser,
-		TargetName:            params.TargetURI.GetDbName() + params.TargetURI.GetKubeName(),
-		TargetSubresourceName: params.TargetSubresourceName,
-		Protocol:              defaults.ProtocolPostgres,
-		CertPath:              keyPairPaths.CertPath,
-		KeyPath:               keyPairPaths.KeyPath,
-		Insecure:              true,
-		WebProxyAddr:          hs.Listener.Addr().String(),
-		TCPPortAllocator:      m.tcpPortAllocator,
-		KubeconfigsDir:        m.t.TempDir(),
-	})
+	ca := gatewaytest.MustGenCACert(m.t)
+
+	if params.TargetURI.IsDB() {
+		keyPairPaths := gatewaytest.MustGenAndSaveCert(m.t, ca, identity)
+
+		config.CertPath = keyPairPaths.CertPath
+		config.KeyPath = keyPairPaths.KeyPath
+	}
+
+	if params.TargetURI.IsKube() {
+		cert := gatewaytest.MustGenCertSignedWithCA(m.t, ca, identity)
+		config.Cert = cert
+	}
+
+	gateway, err := gateway.New(config)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
@@ -135,7 +154,7 @@ func TestGatewayCRUD(t *testing.T) {
 					gatewayURIs[gateway.URI()] = struct{}{}
 				}
 
-				require.Equal(t, 2, len(gateways))
+				require.Len(t, gateways, 2)
 				require.Contains(t, gatewayURIs, c.nameToGateway["gateway1"].URI())
 				require.Contains(t, gatewayURIs, c.nameToGateway["gateway2"].URI())
 			},
@@ -243,23 +262,19 @@ func TestGatewayCRUD(t *testing.T) {
 				tt.tcpPortAllocator = &gatewaytest.MockTCPPortAllocator{}
 			}
 
-			homeDir := t.TempDir()
 			mockGatewayCreator := &mockGatewayCreator{
 				t:                t,
 				tcpPortAllocator: tt.tcpPortAllocator,
 			}
 
-			storage, err := clusters.NewStorage(clusters.Config{
-				Dir:                homeDir,
-				InsecureSkipVerify: true,
-			})
-			require.NoError(t, err)
-
 			daemon, err := New(Config{
-				Storage:        storage,
+				Storage:        fakeStorage{},
 				GatewayCreator: mockGatewayCreator,
 				KubeconfigsDir: t.TempDir(),
 				AgentsDir:      t.TempDir(),
+				CreateClientCacheFunc: func(resolver ResolveClusterFunc) ClientCache {
+					return fakeClientCache{}
+				},
 			})
 			require.NoError(t, err)
 
@@ -438,6 +453,9 @@ func TestRetryWithRelogin(t *testing.T) {
 				},
 				KubeconfigsDir: t.TempDir(),
 				AgentsDir:      t.TempDir(),
+				CreateClientCacheFunc: func(resolver ResolveClusterFunc) ClientCache {
+					return fakeClientCache{}
+				},
 			})
 			require.NoError(t, err)
 
@@ -488,6 +506,9 @@ func TestImportantModalSemaphore(t *testing.T) {
 		},
 		KubeconfigsDir: t.TempDir(),
 		AgentsDir:      t.TempDir(),
+		CreateClientCacheFunc: func(resolver ResolveClusterFunc) ClientCache {
+			return fakeClientCache{}
+		},
 	})
 	require.NoError(t, err)
 
@@ -600,7 +621,7 @@ func newMockTSHDEventsServiceServer(t *testing.T) (service *mockTSHDEventsServic
 		// before grpcServer.Serve is called and grpcServer.Serve will return
 		// grpc.ErrServerStopped.
 		err := <-serveErr
-		if err != grpc.ErrServerStopped {
+		if !errors.Is(err, grpc.ErrServerStopped) {
 			assert.NoError(t, err)
 		}
 	})
@@ -636,6 +657,9 @@ func TestGetGatewayCLICommand(t *testing.T) {
 		},
 		KubeconfigsDir: t.TempDir(),
 		AgentsDir:      t.TempDir(),
+		CreateClientCacheFunc: func(resolver ResolveClusterFunc) ClientCache {
+			return fakeClientCache{}
+		},
 	})
 	require.NoError(t, err)
 
@@ -643,7 +667,7 @@ func TestGetGatewayCLICommand(t *testing.T) {
 		name         string
 		inputGateway gateway.Gateway
 		checkError   require.ErrorAssertionFunc
-		checkCmd     func(*testing.T, *exec.Cmd)
+		checkCmds    func(*testing.T, cmd.Cmds)
 	}{
 		{
 			name: "unsupported gateway",
@@ -651,7 +675,7 @@ func TestGetGatewayCLICommand(t *testing.T) {
 				targetURI: uri.NewClusterURI("profile").AppendServer("server"),
 			},
 			checkError: require.Error,
-			checkCmd:   func(*testing.T, *exec.Cmd) {},
+			checkCmds:  func(*testing.T, cmd.Cmds) {},
 		},
 		{
 			name: "database gateway",
@@ -660,10 +684,12 @@ func TestGetGatewayCLICommand(t *testing.T) {
 				subresourceName: "subresource-name",
 			},
 			checkError: require.NoError,
-			checkCmd: func(t *testing.T, cmd *exec.Cmd) {
+			checkCmds: func(t *testing.T, cmds cmd.Cmds) {
 				t.Helper()
-				require.Len(t, cmd.Args, 2)
-				require.Contains(t, cmd.Args[1], "subresource-name")
+				require.Len(t, cmds.Exec.Args, 2)
+				require.Contains(t, cmds.Exec.Args[1], "subresource-name")
+				require.Len(t, cmds.Preview.Args, 2)
+				require.Contains(t, cmds.Preview.Args[1], "subresource-name")
 			},
 		},
 		{
@@ -672,18 +698,19 @@ func TestGetGatewayCLICommand(t *testing.T) {
 				targetURI: uri.NewClusterURI("profile").AppendKube("kube"),
 			},
 			checkError: require.NoError,
-			checkCmd: func(t *testing.T, cmd *exec.Cmd) {
+			checkCmds: func(t *testing.T, cmds cmd.Cmds) {
 				t.Helper()
-				require.Equal(t, []string{"KUBECONFIG=test.kubeconfig"}, cmd.Env)
+				require.Equal(t, []string{"KUBECONFIG=test.kubeconfig"}, cmds.Exec.Env)
+				require.Equal(t, []string{"KUBECONFIG=test.kubeconfig"}, cmds.Preview.Env)
 			},
 		},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			cmd, err := daemon.GetGatewayCLICommand(test.inputGateway)
+			cmds, err := daemon.GetGatewayCLICommand(test.inputGateway)
 			test.checkError(t, err)
-			test.checkCmd(t, cmd)
+			test.checkCmds(t, cmds)
 		})
 	}
 }
@@ -711,4 +738,12 @@ type fakeStorage struct {
 
 func (f fakeStorage) GetByResourceURI(resourceURI uri.ResourceURI) (*clusters.Cluster, *client.TeleportClient, error) {
 	return &clusters.Cluster{}, &client.TeleportClient{}, nil
+}
+
+type fakeClientCache struct {
+	ClientCache
+}
+
+func (f fakeClientCache) Get(ctx context.Context, clusterURI uri.ResourceURI) (*client.ProxyClient, error) {
+	return &client.ProxyClient{}, nil
 }

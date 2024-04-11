@@ -1,18 +1,20 @@
 /*
-Copyright 2015-2019 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package services
 
@@ -23,7 +25,8 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	ec2Types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	ec2v1 "github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/uuid"
 	"github.com/gravitational/trace"
@@ -381,10 +384,6 @@ func UnmarshalServer(bytes []byte, kind string, opts ...MarshalOption) (types.Se
 
 // MarshalServer marshals the Server resource to JSON.
 func MarshalServer(server types.Server, opts ...MarshalOption) ([]byte, error) {
-	if err := server.CheckAndSetDefaults(); err != nil {
-		return nil, trace.Wrap(err)
-	}
-
 	cfg, err := CollectOptions(opts)
 	if err != nil {
 		return nil, trace.Wrap(err)
@@ -392,15 +391,11 @@ func MarshalServer(server types.Server, opts ...MarshalOption) ([]byte, error) {
 
 	switch server := server.(type) {
 	case *types.ServerV2:
-		if !cfg.PreserveResourceID {
-			// avoid modifying the original object
-			// to prevent unexpected data races
-			copy := *server
-			copy.SetResourceID(0)
-			copy.SetRevision("")
-			server = &copy
+		if err := server.CheckAndSetDefaults(); err != nil {
+			return nil, trace.Wrap(err)
 		}
-		return utils.FastMarshal(server)
+
+		return utils.FastMarshal(maybeResetProtoResourceID(cfg.PreserveResourceID, server))
 	default:
 		return nil, trace.BadParameter("unrecognized server version %T", server)
 	}
@@ -440,7 +435,7 @@ func NodeHasMissedKeepAlives(s types.Server) bool {
 
 // NewAWSNodeFromEC2Instance creates a Node resource from an EC2 Instance.
 // It has a pre-populated spec which contains info that is not available in the ec2.Instance object.
-func NewAWSNodeFromEC2Instance(instance ec2Types.Instance, awsCloudMetadata *types.AWSInfo) (types.Server, error) {
+func NewAWSNodeFromEC2Instance(instance ec2types.Instance, awsCloudMetadata *types.AWSInfo) (types.Server, error) {
 	labels := libaws.TagsToLabels(instance.Tags)
 	if labels == nil {
 		labels = make(map[string]string)
@@ -449,6 +444,7 @@ func NewAWSNodeFromEC2Instance(instance ec2Types.Instance, awsCloudMetadata *typ
 
 	instanceID := aws.ToString(instance.InstanceId)
 	labels[types.AWSInstanceIDLabel] = instanceID
+	labels[types.AWSAccountIDLabel] = awsCloudMetadata.AccountID
 
 	awsCloudMetadata.InstanceID = instanceID
 	awsCloudMetadata.VPCID = aws.ToString(instance.VpcId)
@@ -478,4 +474,31 @@ func NewAWSNodeFromEC2Instance(instance ec2Types.Instance, awsCloudMetadata *typ
 	}
 
 	return server, nil
+}
+
+// NewAWSNodeFromEC2v1Instance creates a Node resource from an EC2 Instance.
+// It has a pre-populated spec which contains info that is not available in the ec2.Instance object.
+// Uses AWS SDK Go V1
+func NewAWSNodeFromEC2v1Instance(instance ec2v1.Instance, awsCloudMetadata *types.AWSInfo) (types.Server, error) {
+	server, err := NewAWSNodeFromEC2Instance(ec2InstanceV1ToV2(instance), awsCloudMetadata)
+	return server, trace.Wrap(err)
+}
+
+func ec2InstanceV1ToV2(instance ec2v1.Instance) ec2types.Instance {
+	tags := make([]ec2types.Tag, 0, len(instance.Tags))
+	for _, tag := range instance.Tags {
+		tags = append(tags, ec2types.Tag{
+			Key:   tag.Key,
+			Value: tag.Value,
+		})
+	}
+
+	return ec2types.Instance{
+		InstanceId:       instance.InstanceId,
+		VpcId:            instance.VpcId,
+		SubnetId:         instance.SubnetId,
+		PrivateIpAddress: instance.PrivateIpAddress,
+		PrivateDnsName:   instance.PrivateDnsName,
+		Tags:             tags,
+	}
 }

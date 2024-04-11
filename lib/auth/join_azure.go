@@ -1,18 +1,20 @@
 /*
-Copyright 2023 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package auth
 
@@ -22,21 +24,20 @@ import (
 	"encoding/base64"
 	"encoding/pem"
 	"net/url"
+	"slices"
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/arm"
 	"github.com/coreos/go-oidc"
 	"github.com/digitorus/pkcs7"
+	"github.com/go-jose/go-jose/v3/jwt"
 	"github.com/gravitational/trace"
 	"github.com/jonboulle/clockwork"
-	"golang.org/x/exp/slices"
-	"gopkg.in/square/go-jose.v2/jwt"
 
 	"github.com/gravitational/teleport/api/client"
 	"github.com/gravitational/teleport/api/client/proto"
 	"github.com/gravitational/teleport/api/types"
-	"github.com/gravitational/teleport/lib/authz"
 	"github.com/gravitational/teleport/lib/cloud/azure"
 	"github.com/gravitational/teleport/lib/utils"
 )
@@ -280,7 +281,7 @@ func verifyVMIdentity(ctx context.Context, cfg *azureRegisterConfig, accessToken
 	return vm, nil
 }
 
-func checkAzureAllowRules(vm *azure.VirtualMachine, allowRules []*types.ProvisionTokenSpecV2Azure_Rule) error {
+func checkAzureAllowRules(vm *azure.VirtualMachine, token string, allowRules []*types.ProvisionTokenSpecV2Azure_Rule) error {
 	for _, rule := range allowRules {
 		if rule.Subscription != vm.Subscription {
 			continue
@@ -292,7 +293,7 @@ func checkAzureAllowRules(vm *azure.VirtualMachine, allowRules []*types.Provisio
 		}
 		return nil
 	}
-	return trace.AccessDenied("instance did not match any allow rules")
+	return trace.AccessDenied("instance %v did not match any allow rules in token %v", vm.Name, token)
 }
 
 func (a *Server) checkAzureRequest(ctx context.Context, challenge string, req *proto.RegisterUsingAzureMethodRequest, cfg *azureRegisterConfig) error {
@@ -321,7 +322,7 @@ func (a *Server) checkAzureRequest(ctx context.Context, challenge string, req *p
 		return trace.BadParameter("azure join method only supports ProvisionTokenV2, '%T' was provided", provisionToken)
 	}
 
-	if err := checkAzureAllowRules(vm, token.Spec.Azure.Allow); err != nil {
+	if err := checkAzureAllowRules(vm, token.GetName(), token.Spec.Azure.Allow); err != nil {
 		return trace.Wrap(err)
 	}
 
@@ -348,11 +349,6 @@ func (a *Server) RegisterUsingAzureMethod(ctx context.Context, challengeResponse
 		return nil, trace.Wrap(err)
 	}
 
-	clientAddr, err := authz.ClientSrcAddrFromContext(ctx)
-	if err != nil {
-		return nil, trace.Wrap(err)
-	}
-
 	challenge, err := generateAzureChallenge()
 	if err != nil {
 		return nil, trace.Wrap(err)
@@ -362,7 +358,6 @@ func (a *Server) RegisterUsingAzureMethod(ctx context.Context, challengeResponse
 		return nil, trace.Wrap(err)
 	}
 
-	req.RegisterUsingTokenRequest.RemoteAddr = clientAddr.String()
 	if err := req.CheckAndSetDefaults(); err != nil {
 		return nil, trace.Wrap(err)
 	}

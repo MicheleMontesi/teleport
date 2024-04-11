@@ -1,33 +1,43 @@
 /**
- * Copyright 2023 Gravitational, Inc
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
  *
- *      http://www.apache.org/licenses/LICENSE-2.0
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 import * as tsh from './types';
+import { TshdRpcError } from './cloneableClient';
+
+import type { App } from 'teleterm/ui/services/clusters';
+
+export const rootClusterUri = '/clusters/teleport-local';
+export const leafClusterUri = `${rootClusterUri}/leaves/leaf`;
 
 export const makeServer = (props: Partial<tsh.Server> = {}): tsh.Server => ({
-  uri: '/clusters/teleport-local/servers/1234abcd-1234-abcd-1234-abcd1234abcd',
+  uri: `${rootClusterUri}/servers/1234abcd-1234-abcd-1234-abcd1234abcd`,
   tunnel: false,
   name: '1234abcd-1234-abcd-1234-abcd1234abcd',
   hostname: 'foo',
   addr: '127.0.0.1:3022',
-  labelsList: [],
+  labels: [],
+  subKind: 'teleport',
   ...props,
 });
 
-export const databaseUri = '/clusters/teleport-local/dbs/foo';
-export const kubeUri = '/clusters/teleport-local/kubes/foo';
+export const databaseUri = `${rootClusterUri}/dbs/foo`;
+export const kubeUri = `${rootClusterUri}/kubes/foo`;
+export const appUri = `${rootClusterUri}/apps/foo`;
 
 export const makeDatabase = (
   props: Partial<tsh.Database> = {}
@@ -39,14 +49,30 @@ export const makeDatabase = (
   desc: '',
   hostname: '',
   addr: '',
-  labelsList: [],
+  labels: [],
   ...props,
 });
 
 export const makeKube = (props: Partial<tsh.Kube> = {}): tsh.Kube => ({
   name: 'foo',
-  labelsList: [],
-  uri: '/clusters/bar/kubes/foo',
+  labels: [],
+  uri: `${rootClusterUri}/kubes/foo`,
+  ...props,
+});
+
+export const makeApp = (props: Partial<App> = {}): App => ({
+  name: 'foo',
+  labels: [],
+  endpointUri: 'tcp://localhost:3000',
+  friendlyName: '',
+  desc: '',
+  awsConsole: false,
+  publicAddr: 'local-app.example.com:3000',
+  fqdn: 'local-app.example.com:3000',
+  samlApp: false,
+  uri: appUri,
+  addrWithProtocol: 'tcp://local-app.example.com:3000',
+  awsRoles: [],
   ...props,
 });
 
@@ -56,7 +82,7 @@ export const makeLabelsList = (labels: Record<string, string>): tsh.Label[] =>
 export const makeRootCluster = (
   props: Partial<tsh.Cluster> = {}
 ): tsh.Cluster => ({
-  uri: '/clusters/teleport-local',
+  uri: rootClusterUri,
   name: 'teleport-local',
   connected: true,
   leaf: false,
@@ -70,7 +96,7 @@ export const makeRootCluster = (
 export const makeLeafCluster = (
   props: Partial<tsh.Cluster> = {}
 ): tsh.Cluster => ({
-  uri: '/clusters/teleport-local/leaves/leaf',
+  uri: leafClusterUri,
   name: 'teleport-local-leaf',
   connected: true,
   leaf: true,
@@ -84,8 +110,7 @@ export const makeLeafCluster = (
 export const makeLoggedInUser = (
   props: Partial<tsh.LoggedInUser> = {}
 ): tsh.LoggedInUser => ({
-  activeRequestsList: [],
-  assumedRequests: {},
+  activeRequests: [],
   name: 'alice',
   acl: {
     recordedSessions: {
@@ -93,7 +118,7 @@ export const makeLoggedInUser = (
       read: true,
       edit: true,
       create: true,
-      pb_delete: true,
+      delete: true,
       use: true,
     },
     activeSessions: {
@@ -101,7 +126,7 @@ export const makeLoggedInUser = (
       read: true,
       edit: true,
       create: true,
-      pb_delete: true,
+      delete: true,
       use: true,
     },
     authConnectors: {
@@ -109,7 +134,7 @@ export const makeLoggedInUser = (
       read: true,
       edit: true,
       create: true,
-      pb_delete: true,
+      delete: true,
       use: true,
     },
     roles: {
@@ -117,7 +142,7 @@ export const makeLoggedInUser = (
       read: true,
       edit: true,
       create: true,
-      pb_delete: true,
+      delete: true,
       use: true,
     },
     users: {
@@ -125,7 +150,7 @@ export const makeLoggedInUser = (
       read: true,
       edit: true,
       create: true,
-      pb_delete: true,
+      delete: true,
       use: true,
     },
     trustedClusters: {
@@ -133,7 +158,7 @@ export const makeLoggedInUser = (
       read: true,
       edit: true,
       create: true,
-      pb_delete: true,
+      delete: true,
       use: true,
     },
     events: {
@@ -141,7 +166,7 @@ export const makeLoggedInUser = (
       read: true,
       edit: true,
       create: true,
-      pb_delete: true,
+      delete: true,
       use: true,
     },
     tokens: {
@@ -149,7 +174,7 @@ export const makeLoggedInUser = (
       read: true,
       edit: true,
       create: true,
-      pb_delete: true,
+      delete: true,
       use: true,
     },
     servers: {
@@ -157,7 +182,7 @@ export const makeLoggedInUser = (
       read: true,
       edit: true,
       create: true,
-      pb_delete: true,
+      delete: true,
       use: true,
     },
     apps: {
@@ -165,7 +190,7 @@ export const makeLoggedInUser = (
       read: true,
       edit: true,
       create: true,
-      pb_delete: true,
+      delete: true,
       use: true,
     },
     dbs: {
@@ -173,7 +198,7 @@ export const makeLoggedInUser = (
       read: true,
       edit: true,
       create: true,
-      pb_delete: true,
+      delete: true,
       use: true,
     },
     kubeservers: {
@@ -181,7 +206,7 @@ export const makeLoggedInUser = (
       read: true,
       edit: true,
       create: true,
-      pb_delete: true,
+      delete: true,
       use: true,
     },
     accessRequests: {
@@ -189,15 +214,15 @@ export const makeLoggedInUser = (
       read: true,
       edit: true,
       create: true,
-      pb_delete: true,
+      delete: true,
       use: true,
     },
   },
-  sshLoginsList: [],
-  rolesList: [],
-  requestableRolesList: [],
-  suggestedReviewersList: [],
-  userType: tsh.UserType.USER_TYPE_LOCAL,
+  sshLogins: [],
+  roles: [],
+  requestableRoles: [],
+  suggestedReviewers: [],
+  userType: tsh.LoggedInUser_UserType.LOCAL,
   ...props,
 });
 
@@ -213,8 +238,8 @@ export const makeDatabaseGateway = (
   protocol: 'postgres',
   gatewayCliCommand: {
     path: '/foo/psql',
-    argsList: ['psql', 'localhost:1337'],
-    envList: [],
+    args: ['psql', 'localhost:1337'],
+    env: [],
     preview: 'psql localhost:1337',
   },
   targetSubresourceName: 'bar',
@@ -233,10 +258,37 @@ export const makeKubeGateway = (
   protocol: '',
   gatewayCliCommand: {
     path: '/bin/kubectl',
-    argsList: ['version'],
-    envList: ['KUBECONFIG=/path/to/kubeconfig'],
+    args: ['version'],
+    env: ['KUBECONFIG=/path/to/kubeconfig'],
     preview: 'KUBECONFIG=/path/to/kubeconfig /bin/kubectl version',
   },
   targetSubresourceName: '',
   ...props,
+});
+
+export const makeAppGateway = (
+  props: Partial<tsh.Gateway> = {}
+): tsh.Gateway => ({
+  uri: '/gateways/bar',
+  targetName: 'sales-production',
+  targetUri: appUri,
+  localAddress: 'localhost',
+  localPort: '1337',
+  targetSubresourceName: 'bar',
+  gatewayCliCommand: {
+    path: '',
+    preview: 'curl http://localhost:1337',
+    env: [],
+    args: [],
+  },
+  targetUser: '',
+  protocol: 'HTTP',
+  ...props,
+});
+
+export const makeRetryableError = (): TshdRpcError => ({
+  name: 'TshdRpcError',
+  isResolvableWithRelogin: true,
+  code: 'UNKNOWN',
+  message: 'ssh: handshake failed',
 });

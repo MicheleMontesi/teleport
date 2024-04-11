@@ -1,28 +1,34 @@
-/*
-Copyright 2019 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+/**
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 import React, {
+  createContext,
+  lazy,
   ReactNode,
   Suspense,
+  useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useState,
 } from 'react';
 import styled from 'styled-components';
-import { Indicator } from 'design';
+import { Box, Indicator } from 'design';
 import { Failed } from 'design/CardError';
 
 import useAttempt from 'shared/hooks/useAttemptNext';
@@ -30,6 +36,9 @@ import useAttempt from 'shared/hooks/useAttemptNext';
 import { matchPath, useHistory } from 'react-router';
 
 import Dialog from 'design/Dialog';
+import { sharedStyles } from 'design/theme/themes/sharedStyles';
+
+import { AssistViewMode } from 'gen-proto-ts/teleport/userpreferences/v1/assist_pb';
 
 import { Redirect, Route, Switch } from 'teleport/components/Router';
 import { CatchError } from 'teleport/components/CatchError';
@@ -37,23 +46,17 @@ import cfg from 'teleport/config';
 import useTeleport from 'teleport/useTeleport';
 import { TopBar } from 'teleport/TopBar';
 import { BannerList } from 'teleport/components/BannerList';
-import localStorage from 'teleport/services/localStorage';
-
+import { storageService } from 'teleport/services/storageService';
 import { ClusterAlert, LINK_LABEL } from 'teleport/services/alerts/alerts';
-
-import { Navigation } from 'teleport/Navigation';
-
 import { useAlerts } from 'teleport/components/BannerList/useAlerts';
-
 import { FeaturesContextProvider, useFeatures } from 'teleport/FeaturesContext';
-
 import {
   getFirstRouteForCategory,
-  NavigationProps,
+  Navigation,
 } from 'teleport/Navigation/Navigation';
-
 import { NavigationCategory } from 'teleport/Navigation/categories';
-
+import { TopBarProps } from 'teleport/TopBar/TopBar';
+import { useUser } from 'teleport/User/UserContext';
 import { QuestionnaireProps } from 'teleport/Welcome/NewCredentials';
 
 import { MainContainer } from './MainContainer';
@@ -62,13 +65,15 @@ import { OnboardDiscover } from './OnboardDiscover';
 import type { BannerType } from 'teleport/components/BannerList/BannerList';
 import type { LockedFeatures, TeleportFeature } from 'teleport/types';
 
+const Assist = lazy(() => import('teleport/Assist'));
+
 export interface MainProps {
   initialAlerts?: ClusterAlert[];
   customBanners?: ReactNode[];
   features: TeleportFeature[];
   billingBanners?: ReactNode[];
   Questionnaire?: (props: QuestionnaireProps) => React.ReactElement;
-  navigationProps?: NavigationProps;
+  topBarProps?: TopBarProps;
   inviteCollaboratorsFeedback?: ReactNode;
 }
 
@@ -78,21 +83,34 @@ export function Main(props: MainProps) {
 
   const { attempt, setAttempt, run } = useAttempt('processing');
 
+  const { preferences } = useUser();
+
   useEffect(() => {
     if (ctx.storeUser.state) {
       setAttempt({ status: 'success' });
       return;
     }
 
-    run(() => ctx.init());
+    run(() => ctx.init(preferences));
   }, []);
 
+  const viewMode = preferences?.assist?.viewMode;
+  const assistEnabled = ctx.getFeatureFlags().assist && ctx.assistEnabled;
+  const [showAssist, setShowAssist] = useState(false);
   const featureFlags = ctx.getFeatureFlags();
 
   const features = useMemo(
     () => props.features.filter(feature => feature.hasAccess(featureFlags)),
     [featureFlags, props.features]
   );
+  const feature = features
+    .filter(feature => Boolean(feature.route))
+    .find(f =>
+      matchPath(history.location.pathname, {
+        path: f.route.path,
+        exact: f.route.exact ?? false,
+      })
+    );
 
   const { alerts, dismissAlert } = useAlerts(props.initialAlerts);
 
@@ -100,6 +118,17 @@ export function Main(props: MainProps) {
   const [showOnboardSurvey, setShowOnboardSurvey] = useState<boolean>(
     !!props.Questionnaire
   );
+
+  useEffect(() => {
+    if (
+      matchPath(history.location.pathname, {
+        path: ctx.redirectUrl,
+        exact: true,
+      })
+    ) {
+      ctx.redirectUrl = null;
+    }
+  }, [ctx, history.location.pathname]);
 
   if (attempt.status === 'failed') {
     return <Failed message={attempt.statusText} />;
@@ -124,18 +153,21 @@ export function Main(props: MainProps) {
   }
 
   function updateOnboardDiscover() {
-    const discover = localStorage.getOnboardDiscover();
-    localStorage.setOnboardDiscover({ ...discover, notified: true });
+    const discover = storageService.getOnboardDiscover();
+    storageService.setOnboardDiscover({ ...discover, notified: true });
   }
 
   // redirect to the default feature when hitting the root /web URL
   if (
     matchPath(history.location.pathname, { path: cfg.routes.root, exact: true })
   ) {
-    const indexRoute = getFirstRouteForCategory(
-      features,
-      NavigationCategory.Resources
-    );
+    if (ctx.redirectUrl) {
+      return <Redirect to={ctx.redirectUrl} />;
+    }
+
+    const indexRoute = cfg.isDashboard
+      ? cfg.routes.downloadCenter
+      : getFirstRouteForCategory(features, NavigationCategory.Resources);
 
     return <Redirect to={indexRoute} />;
   }
@@ -159,31 +191,55 @@ export function Main(props: MainProps) {
     id: alert.metadata.name,
   }));
 
-  const onboard = localStorage.getOnboardDiscover();
+  const onboard = storageService.getOnboardDiscover();
   const requiresOnboarding =
     onboard && !onboard.hasResource && !onboard.notified;
   const displayOnboardDiscover = requiresOnboarding && showOnboardDiscover;
+  const hasSidebar =
+    feature?.category === NavigationCategory.Management &&
+    !feature?.hideNavigation;
 
   return (
     <FeaturesContextProvider value={features}>
-      <BannerList
-        banners={banners}
-        customBanners={props.customBanners}
-        billingBanners={featureFlags.billing && props.billingBanners}
-        onBannerDismiss={dismissAlert}
-      >
+      <TopBar
+        CustomLogo={
+          props.topBarProps?.showPoweredByLogo
+            ? props.topBarProps.CustomLogo
+            : null
+        }
+        assistProps={{
+          showAssist,
+          setShowAssist,
+          assistEnabled,
+        }}
+      />
+      <Wrapper>
         <MainContainer>
-          <Navigation {...props.navigationProps} />
-          <HorizontalSplit>
+          <Navigation />
+          <HorizontalSplit
+            dockedView={showAssist && viewMode === AssistViewMode.DOCKED}
+            hasSidebar={hasSidebar}
+          >
             <ContentMinWidth>
+              <BannerList
+                banners={banners}
+                customBanners={props.customBanners}
+                billingBanners={featureFlags.billing && props.billingBanners}
+                onBannerDismiss={dismissAlert}
+              />
               <Suspense fallback={null}>
-                <TopBar hidePopup={displayOnboardDiscover} />
                 <FeatureRoutes lockedFeatures={ctx.lockedFeatures} />
               </Suspense>
             </ContentMinWidth>
           </HorizontalSplit>
+
+          {showAssist && (
+            <Suspense fallback={null}>
+              <Assist onClose={() => setShowAssist(false)} />
+            </Suspense>
+          )}
         </MainContainer>
-      </BannerList>
+      </Wrapper>
       {displayOnboardDiscover && (
         <OnboardDiscover onClose={handleOnClose} onOnboard={handleOnboard} />
       )}
@@ -263,18 +319,87 @@ function FeatureRoutes({ lockedFeatures }: { lockedFeatures: LockedFeatures }) {
   return <Switch>{routes}</Switch>;
 }
 
-export const ContentMinWidth = styled.div`
-  min-width: calc(1250px - var(--sidebar-width));
-`;
+// This context allows children components to disable this min-width in case they want to be able to shrink smaller.
+type MinWidthContextState = {
+  setEnforceMinWidth: (enforceMinWidth: boolean) => void;
+};
+
+const ContentMinWidthContext = createContext<MinWidthContextState>(null);
+
+/**
+ * @deprecated Use useNoMinWidth instead.
+ */
+export const useContentMinWidthContext = () =>
+  useContext(ContentMinWidthContext);
+
+export const useNoMinWidth = () => {
+  const { setEnforceMinWidth } = useContext(ContentMinWidthContext);
+
+  useLayoutEffect(() => {
+    setEnforceMinWidth(false);
+
+    return () => {
+      setEnforceMinWidth(true);
+    };
+  }, []);
+};
+
+const ContentMinWidth = ({ children }: { children: ReactNode }) => {
+  const [enforceMinWidth, setEnforceMinWidth] = useState(true);
+
+  return (
+    <ContentMinWidthContext.Provider value={{ setEnforceMinWidth }}>
+      <div
+        css={`
+          display: flex;
+          flex-direction: column;
+          flex: 1;
+          ${enforceMinWidth ? 'min-width: 1000px;' : ''}
+        `}
+      >
+        {children}
+      </div>
+    </ContentMinWidthContext.Provider>
+  );
+};
+
+function getWidth(hasSidebar: boolean, isDockedView: boolean) {
+  const { dockedAssistWidth, sidebarWidth } = sharedStyles;
+  if (hasSidebar && isDockedView) {
+    return `max-width: calc(100% - ${sidebarWidth}px - ${dockedAssistWidth}px);`;
+  }
+  if (isDockedView) {
+    return `max-width: calc(100% - ${dockedAssistWidth}px);`;
+  }
+  if (hasSidebar) {
+    return `max-width: calc(100% - ${sidebarWidth}px);`;
+  }
+  return 'max-width: 100%;';
+}
 
 export const HorizontalSplit = styled.div`
   display: flex;
   flex-direction: column;
   flex: 1;
+  ${props => getWidth(props.hasSidebar, props.dockedView)}
   overflow-x: auto;
 `;
 
 export const StyledIndicator = styled(HorizontalSplit)`
   align-items: center;
   justify-content: center;
+  position: absolute;
+  overflow: hidden;
+  top: 50%;
+  left: 50%;
+`;
+
+const Wrapper = styled(Box)<{ hasDockedElement: boolean }>`
+  display: flex;
+  height: 100vh;
+  flex-direction: column;
+  width: ${p =>
+    p.hasDockedElement
+      ? `calc(100vw - ${p.theme.dockedAssistWidth}px)`
+      : '100vw'};
 `;

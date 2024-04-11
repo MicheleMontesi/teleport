@@ -1,24 +1,28 @@
 /**
- * Copyright 2023 Gravitational, Inc
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
  *
- *      http://www.apache.org/licenses/LICENSE-2.0
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 import {
   makeDatabase,
   makeKube,
   makeServer,
+  makeApp,
 } from 'teleterm/services/tshd/testHelpers';
+import { MockedUnaryCall } from 'teleterm/services/tshd/cloneableClient';
 
 import {
   AmbiguousHostnameError,
@@ -26,6 +30,7 @@ import {
   ResourcesService,
 } from './resourcesService';
 
+import type { TshdClient } from 'teleterm/services/tshd';
 import type * as tsh from 'teleterm/services/tshd/types';
 
 describe('getServerByHostname', () => {
@@ -33,7 +38,7 @@ describe('getServerByHostname', () => {
   const getServerByHostnameTests: Array<
     {
       name: string;
-      getServersMockedValue: Awaited<ReturnType<tsh.TshClient['getServers']>>;
+      getServersMockedValue: ReturnType<TshdClient['getServers']>;
     } & (
       | { expectedServer: tsh.Server; expectedErr?: never }
       | { expectedErr: any; expectedServer?: never }
@@ -41,39 +46,39 @@ describe('getServerByHostname', () => {
   > = [
     {
       name: 'returns a server when the hostname matches a single server',
-      getServersMockedValue: {
-        agentsList: [server],
+      getServersMockedValue: new MockedUnaryCall({
+        agents: [server],
         totalCount: 1,
         startKey: 'foo',
-      },
+      }),
       expectedServer: server,
     },
     {
       name: 'throws an error when the hostname matches multiple servers',
-      getServersMockedValue: {
-        agentsList: [server, server],
+      getServersMockedValue: new MockedUnaryCall({
+        agents: [server, server],
         totalCount: 2,
         startKey: 'foo',
-      },
+      }),
       expectedErr: AmbiguousHostnameError,
     },
     {
       name: 'returns nothing if the hostname does not match any servers',
-      getServersMockedValue: {
-        agentsList: [],
+      getServersMockedValue: new MockedUnaryCall({
+        agents: [],
         totalCount: 0,
         startKey: 'foo',
-      },
+      }),
       expectedServer: undefined,
     },
   ];
   test.each(getServerByHostnameTests)(
     '$name',
     async ({ getServersMockedValue, expectedServer, expectedErr }) => {
-      const tshClient: Partial<tsh.TshClient> = {
+      const tshClient: Partial<TshdClient> = {
         getServers: jest.fn().mockResolvedValueOnce(getServersMockedValue),
       };
-      const service = new ResourcesService(tshClient as tsh.TshClient);
+      const service = new ResourcesService(tshClient as TshdClient);
 
       const promise = service.getServerByHostname('/clusters/bar', 'foo');
 
@@ -90,6 +95,10 @@ describe('getServerByHostname', () => {
         query: 'name == "foo"',
         limit: 2,
         sort: null,
+        sortBy: '',
+        startKey: '',
+        search: '',
+        searchAsRoles: '',
       });
     }
   );
@@ -100,38 +109,57 @@ describe('searchResources', () => {
     const server = makeServer();
     const db = makeDatabase();
     const kube = makeKube();
+    const app = makeApp();
 
-    const tshClient: Partial<tsh.TshClient> = {
-      getServers: jest.fn().mockResolvedValueOnce({
-        agentsList: [server],
-        totalCount: 1,
-        startKey: '',
-      }),
-      getDatabases: jest.fn().mockResolvedValueOnce({
-        agentsList: [db],
-        totalCount: 1,
-        startKey: '',
-      }),
-      getKubes: jest.fn().mockResolvedValueOnce({
-        agentsList: [kube],
-        totalCount: 1,
-        startKey: '',
-      }),
+    const tshClient: Partial<TshdClient> = {
+      getServers: jest.fn().mockResolvedValueOnce(
+        new MockedUnaryCall({
+          agents: [server],
+          totalCount: 1,
+          startKey: '',
+        })
+      ),
+      getDatabases: jest.fn().mockResolvedValueOnce(
+        new MockedUnaryCall({
+          agents: [db],
+          totalCount: 1,
+          startKey: '',
+        })
+      ),
+      getKubes: jest.fn().mockResolvedValueOnce(
+        new MockedUnaryCall({
+          agents: [kube],
+          totalCount: 1,
+          startKey: '',
+        })
+      ),
+      getApps: jest.fn().mockResolvedValueOnce(
+        new MockedUnaryCall({
+          agents: [app],
+          totalCount: 1,
+          startKey: '',
+        })
+      ),
     };
-    const service = new ResourcesService(tshClient as tsh.TshClient);
+    const service = new ResourcesService(tshClient as TshdClient);
 
     const searchResults = await service.searchResources({
       clusterUri: '/clusters/foo',
       search: '',
-      filter: undefined,
+      filters: [],
       limit: 10,
     });
-    expect(searchResults).toHaveLength(3);
+    expect(searchResults).toHaveLength(4);
 
-    const [actualServers, actualDatabases, actualKubes] = searchResults;
+    const [actualServers, actualApps, actualDatabases, actualKubes] =
+      searchResults;
     expect(actualServers).toEqual({
       status: 'fulfilled',
       value: [{ kind: 'server', resource: server }],
+    });
+    expect(actualApps).toEqual({
+      status: 'fulfilled',
+      value: [{ kind: 'app', resource: app }],
     });
     expect(actualDatabases).toEqual({
       status: 'fulfilled',
@@ -145,22 +173,21 @@ describe('searchResources', () => {
 
   it('returns a single item if a filter is supplied', async () => {
     const server = makeServer();
-    const tshClient: Partial<tsh.TshClient> = {
-      getServers: jest.fn().mockResolvedValueOnce({
-        agentsList: [server],
-        totalCount: 1,
-        startKey: '',
-      }),
+    const tshClient: Partial<TshdClient> = {
+      getServers: jest.fn().mockResolvedValueOnce(
+        new MockedUnaryCall({
+          agents: [server],
+          totalCount: 1,
+          startKey: '',
+        })
+      ),
     };
-    const service = new ResourcesService(tshClient as tsh.TshClient);
+    const service = new ResourcesService(tshClient as TshdClient);
 
     const searchResults = await service.searchResources({
       clusterUri: '/clusters/foo',
       search: '',
-      filter: {
-        filter: 'resource-type',
-        resourceType: 'servers',
-      },
+      filters: ['node'],
       limit: 10,
     });
     expect(searchResults).toHaveLength(1);
@@ -174,22 +201,24 @@ describe('searchResources', () => {
 
   it('returns a custom error pointing at resource kind and cluster when an underlying promise gets rejected', async () => {
     const expectedCause = new Error('oops');
-    const tshClient: Partial<tsh.TshClient> = {
+    const tshClient: Partial<TshdClient> = {
       getServers: jest.fn().mockRejectedValueOnce(expectedCause),
       getDatabases: jest.fn().mockRejectedValueOnce(expectedCause),
       getKubes: jest.fn().mockRejectedValueOnce(expectedCause),
+      getApps: jest.fn().mockRejectedValueOnce(expectedCause),
     };
-    const service = new ResourcesService(tshClient as tsh.TshClient);
+    const service = new ResourcesService(tshClient as TshdClient);
 
     const searchResults = await service.searchResources({
       clusterUri: '/clusters/foo',
       search: '',
-      filter: undefined,
+      filters: [],
       limit: 10,
     });
-    expect(searchResults).toHaveLength(3);
+    expect(searchResults).toHaveLength(4);
 
-    const [actualServers, actualDatabases, actualKubes] = searchResults;
+    const [actualServers, actualApps, actualDatabases, actualKubes] =
+      searchResults;
     expect(actualServers).toEqual({
       status: 'rejected',
       reason: new ResourceSearchError('/clusters/foo', 'server', expectedCause),
@@ -205,6 +234,10 @@ describe('searchResources', () => {
     expect(actualKubes).toEqual({
       status: 'rejected',
       reason: new ResourceSearchError('/clusters/foo', 'kube', expectedCause),
+    });
+    expect(actualApps).toEqual({
+      status: 'rejected',
+      reason: new ResourceSearchError('/clusters/foo', 'app', expectedCause),
     });
 
     expect((actualServers as PromiseRejectedResult).reason).toBeInstanceOf(

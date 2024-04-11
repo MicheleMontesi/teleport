@@ -1,18 +1,20 @@
 /*
-Copyright 2022 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package client
 
@@ -207,7 +209,7 @@ func (ns *NodeSession) serveX11Channels(ctx context.Context, sess *tracessh.Sess
 func (ns *NodeSession) rejectX11Channels(ctx context.Context) error {
 	err := x11.ServeChannelRequests(ctx, ns.nodeClient.Client.Client, func(_ context.Context, nch ssh.NewChannel) {
 		// According to RFC 4254, client "implementations MUST reject any X11 channel
-		// open requests if they have not requested X11 forwarding. Following openssh's
+		// open requests if they have not requested X11 forwarding". Following openssh's
 		// example, we treat such a request as a break in attempt and warn the user.
 		log.Warn("server tried X11 forwarding without client requesting it, this is likely a break-in attempt by a malicious user")
 		nch.Reject(ssh.Prohibited, "")

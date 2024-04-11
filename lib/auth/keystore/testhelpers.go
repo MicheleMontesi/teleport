@@ -1,22 +1,25 @@
 /*
-Copyright 2021 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package keystore
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -26,16 +29,104 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
+
+	"github.com/gravitational/teleport/lib/cloud"
 )
+
+func HSMTestConfig(t *testing.T) Config {
+	if cfg, ok := yubiHSMTestConfig(t); ok {
+		t.Log("Running test with YubiHSM")
+		return cfg
+	}
+	if cfg, ok := cloudHSMTestConfig(t); ok {
+		t.Log("Running test with AWS CloudHSM")
+		return cfg
+	}
+	if cfg, ok := awsKMSTestConfig(t); ok {
+		t.Log("Running test with AWS KMS")
+		return cfg
+	}
+	if cfg, ok := gcpKMSTestConfig(t); ok {
+		t.Log("Running test with GCP KMS")
+		return cfg
+	}
+	if cfg, ok := softHSMTestConfig(t); ok {
+		t.Log("Running test with SoftHSM")
+		return cfg
+	}
+	t.Skip("No HSM available for test")
+	return Config{}
+}
+
+func yubiHSMTestConfig(t *testing.T) (Config, bool) {
+	yubiHSMPath := os.Getenv("TELEPORT_TEST_YUBIHSM_PKCS11_PATH")
+	yubiHSMPin := os.Getenv("TELEPORT_TEST_YUBIHSM_PIN")
+	if yubiHSMPath == "" || yubiHSMPin == "" {
+		return Config{}, false
+	}
+	slotNumber := 0
+	return Config{
+		PKCS11: PKCS11Config{
+			Path:       yubiHSMPath,
+			SlotNumber: &slotNumber,
+			Pin:        yubiHSMPin,
+		},
+	}, true
+}
+
+func cloudHSMTestConfig(t *testing.T) (Config, bool) {
+	cloudHSMPin := os.Getenv("TELEPORT_TEST_CLOUDHSM_PIN")
+	if cloudHSMPin == "" {
+		return Config{}, false
+	}
+	return Config{
+		PKCS11: PKCS11Config{
+			Path:       "/opt/cloudhsm/lib/libcloudhsm_pkcs11.so",
+			TokenLabel: "cavium",
+			Pin:        cloudHSMPin,
+		},
+	}, true
+}
+
+func awsKMSTestConfig(t *testing.T) (Config, bool) {
+	awsKMSAccount := os.Getenv("TELEPORT_TEST_AWS_KMS_ACCOUNT")
+	awsKMSRegion := os.Getenv("TELEPORT_TEST_AWS_KMS_REGION")
+	if awsKMSAccount == "" || awsKMSRegion == "" {
+		return Config{}, false
+	}
+	cloudClients, err := cloud.NewClients()
+	require.NoError(t, err)
+	return Config{
+		AWSKMS: AWSKMSConfig{
+			Cluster:      "test-cluster",
+			AWSAccount:   awsKMSAccount,
+			AWSRegion:    awsKMSRegion,
+			CloudClients: cloudClients,
+		},
+	}, true
+}
+
+func gcpKMSTestConfig(t *testing.T) (Config, bool) {
+	gcpKeyring := os.Getenv("TELEPORT_TEST_GCP_KMS_KEYRING")
+	if gcpKeyring == "" {
+		return Config{}, false
+	}
+	return Config{
+		GCPKMS: GCPKMSConfig{
+			KeyRing:         gcpKeyring,
+			ProtectionLevel: "SOFTWARE",
+		},
+	}, true
+}
 
 var (
-	cachedConfig *Config
-	cacheMutex   sync.Mutex
+	cachedSoftHSMConfig      *Config
+	cachedSoftHSMConfigMutex sync.Mutex
 )
 
-// SetupSoftHSMToken is for use in tests only and creates a test SOFTHSM2
-// token.  This should be used for all tests which need to use SoftHSM because
-// the library can only be initialized once and SOFTHSM2_PATH and SOFTHSM2_CONF
+// softHSMTestConfig is for use in tests only and creates a test SOFTHSM2 token.
+// This should be used for all tests which need to use SoftHSM because the
+// library can only be initialized once and SOFTHSM2_PATH and SOFTHSM2_CONF
 // cannot be changed. New tokens added after the library has been initialized
 // will not be found by the library.
 //
@@ -47,15 +138,17 @@ var (
 // delete the token or the entire token directory. Each test should clean up
 // all keys that it creates because SoftHSM2 gets really slow when there are
 // many keys for a given token.
-func SetupSoftHSMTest(t *testing.T) Config {
+func softHSMTestConfig(t *testing.T) (Config, bool) {
 	path := os.Getenv("SOFTHSM2_PATH")
-	require.NotEqual(t, path, "")
+	if path == "" {
+		return Config{}, false
+	}
 
-	cacheMutex.Lock()
-	defer cacheMutex.Unlock()
+	cachedSoftHSMConfigMutex.Lock()
+	defer cachedSoftHSMConfigMutex.Unlock()
 
-	if cachedConfig != nil {
-		return *cachedConfig
+	if cachedSoftHSMConfig != nil {
+		return *cachedSoftHSMConfig, true
 	}
 
 	if os.Getenv("SOFTHSM2_CONF") == "" {
@@ -83,18 +176,19 @@ func SetupSoftHSMTest(t *testing.T) Config {
 	cmd := exec.Command("softhsm2-util", "--init-token", "--free", "--label", tokenLabel, "--so-pin", "password", "--pin", "password")
 	t.Logf("Running command: %q", cmd)
 	if err := cmd.Run(); err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
 			require.NoError(t, exitErr, "error creating test softhsm token: %s", string(exitErr.Stderr))
 		}
 		require.NoError(t, err, "error attempting to run softhsm2-util")
 	}
 
-	cachedConfig = &Config{
+	cachedSoftHSMConfig = &Config{
 		PKCS11: PKCS11Config{
 			Path:       path,
 			TokenLabel: tokenLabel,
 			Pin:        "password",
 		},
 	}
-	return *cachedConfig
+	return *cachedSoftHSMConfig, true
 }

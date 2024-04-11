@@ -1,30 +1,33 @@
 /**
- * Copyright 2023 Gravitational, Inc.
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
  *
- *     http://www.apache.org/licenses/LICENSE-2.0
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 import React from 'react';
 import styled from 'styled-components';
 
+import { AssistViewMode } from 'gen-proto-ts/teleport/userpreferences/v1/assist_pb';
+
 import logoLight from 'teleport/Navigation/logoLight.svg';
 import logoDark from 'teleport/Navigation/logoDark.svg';
-import { ViewMode } from 'teleport/Assist/types';
 import { Description, Title } from 'teleport/Assist/Settings/shared';
 
 interface DisplaySettingsProps {
-  viewMode: ViewMode;
-  onChange: (viewMode: ViewMode) => void;
+  viewMode: AssistViewMode;
+  onChange: (viewMode: AssistViewMode) => void;
 }
 
 const ViewModes = styled.div`
@@ -149,8 +152,10 @@ const PageNavigation = styled.div`
   background: ${p => p.theme.colors.levels.surface};
   flex: 0 0 45px;
   height: inherit;
-  box-shadow: 0px 2px 1px -1px rgba(0, 0, 0, 0.2),
-    0px 1px 1px rgba(0, 0, 0, 0.14), 0px 1px 3px rgba(0, 0, 0, 0.12);
+  box-shadow:
+    0px 2px 1px -1px rgba(0, 0, 0, 0.2),
+    0px 1px 1px rgba(0, 0, 0, 0.14),
+    0px 1px 3px rgba(0, 0, 0, 0.12);
 `;
 
 const NavigationLogo = styled.div`
@@ -189,8 +194,10 @@ const PageTable = styled.div`
   width: 100%;
   height: 40px;
   border-radius: 3px;
-  box-shadow: 0px 2px 1px -1px rgba(0, 0, 0, 0.1),
-    0px 1px 1px rgba(0, 0, 0, 0.07), 0px 1px 3px rgba(0, 0, 0, 0.06);
+  box-shadow:
+    0px 2px 1px -1px rgba(0, 0, 0, 0.1),
+    0px 1px 1px rgba(0, 0, 0, 0.07),
+    0px 1px 3px rgba(0, 0, 0, 0.06);
 `;
 
 function MockPage() {
@@ -239,8 +246,8 @@ export function DisplaySettings(props: DisplaySettingsProps) {
 
       <ViewModes>
         <ViewModeContainer
-          active={props.viewMode === ViewMode.Popup}
-          onClick={() => props.onChange(ViewMode.Popup)}
+          active={props.viewMode === AssistViewMode.POPUP}
+          onClick={() => props.onChange(AssistViewMode.POPUP)}
         >
           <ViewModeExample>
             <DimmedBackground />
@@ -254,8 +261,8 @@ export function DisplaySettings(props: DisplaySettingsProps) {
           Popup
         </ViewModeContainer>
         <ViewModeContainer
-          active={props.viewMode === ViewMode.Docked}
-          onClick={() => props.onChange(ViewMode.Docked)}
+          active={props.viewMode === AssistViewMode.DOCKED}
+          onClick={() => props.onChange(AssistViewMode.DOCKED)}
         >
           <ViewModeExample>
             <MockPage />
@@ -267,8 +274,8 @@ export function DisplaySettings(props: DisplaySettingsProps) {
           Docked
         </ViewModeContainer>
         <ViewModeContainer
-          active={props.viewMode === ViewMode.PopupExpanded}
-          onClick={() => props.onChange(ViewMode.PopupExpanded)}
+          active={props.viewMode === AssistViewMode.POPUP_EXPANDED}
+          onClick={() => props.onChange(AssistViewMode.POPUP_EXPANDED)}
         >
           <ViewModeExample>
             <DimmedBackground />
@@ -282,8 +289,12 @@ export function DisplaySettings(props: DisplaySettingsProps) {
           Expanded popup
         </ViewModeContainer>
         <ViewModeContainer
-          active={props.viewMode === ViewMode.PopupExpandedSidebarVisible}
-          onClick={() => props.onChange(ViewMode.PopupExpandedSidebarVisible)}
+          active={
+            props.viewMode === AssistViewMode.POPUP_EXPANDED_SIDEBAR_VISIBLE
+          }
+          onClick={() =>
+            props.onChange(AssistViewMode.POPUP_EXPANDED_SIDEBAR_VISIBLE)
+          }
         >
           <ViewModeExample>
             <DimmedBackground />

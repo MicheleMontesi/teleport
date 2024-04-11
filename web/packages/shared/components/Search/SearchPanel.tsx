@@ -1,29 +1,30 @@
 /**
- * Copyright 2023 Gravitational, Inc
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
  *
- *      http://www.apache.org/licenses/LICENSE-2.0
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import styled from 'styled-components';
-import { Text, Flex } from 'design';
+import { Flex } from 'design';
 import { StyledPanel } from 'design/DataTable';
 import InputSearch from 'design/DataTable/InputSearch';
+import { PageIndicatorText } from 'design/DataTable/Pager/PageIndicatorText';
 import { ResourceFilter } from 'teleport/services/agents';
-import Toggle from 'teleport/components/Toggle';
-import Tooltip from 'teleport/components/ServersideSearchPanel/Tooltip';
 
-import { PredicateDoc } from './PredicateDoc';
+import { AdvancedSearchToggle } from 'shared/components/AdvancedSearchToggle';
 
 export function SearchPanel({
   updateQuery,
@@ -32,14 +33,16 @@ export function SearchPanel({
   filter,
   showSearchBar,
   disableSearch,
+  hideAdvancedSearch,
   extraChildren,
 }: {
   updateQuery(s: string): void;
   updateSearch(s: string): void;
-  pageIndicators: { from: number; to: number; total: number };
+  pageIndicators?: { from: number; to: number; total: number };
   filter: ResourceFilter;
   showSearchBar: boolean;
   disableSearch: boolean;
+  hideAdvancedSearch?: boolean;
   extraChildren?: JSX.Element;
 }) {
   const [query, setQuery] = useState(filter.search || filter.query || '');
@@ -81,70 +84,40 @@ export function SearchPanel({
           >
             {showSearchBar && (
               <InputSearch searchValue={query} setSearchValue={setQuery}>
-                <ToggleWrapper>
-                  <Toggle isToggled={isAdvancedSearch} onToggle={onToggle} />
-                  <Text typography="paragraph2">Advanced</Text>
-                </ToggleWrapper>
+                {!hideAdvancedSearch && (
+                  <AdvancedSearchToggle
+                    isToggled={isAdvancedSearch}
+                    onToggle={onToggle}
+                    px={3}
+                  />
+                )}
               </InputSearch>
             )}
           </StyledFlex>
-          {showSearchBar && (
-            <Tooltip>
-              <PredicateDoc />
-            </Tooltip>
-          )}
         </Flex>
         <Flex alignItems="center">
-          <PageIndicatorText
-            from={pageIndicators.from}
-            to={pageIndicators.to}
-            count={pageIndicators.total}
-          />
-          {extraChildren && extraChildren}
+          {pageIndicators && (
+            <PageIndicatorText
+              from={pageIndicators.from}
+              to={pageIndicators.to}
+              count={pageIndicators.total}
+            />
+          )}
+          {extraChildren}
         </Flex>
       </Flex>
     </StyledPanel>
   );
 }
 
-const ToggleWrapper = styled.div`
-  display: flex;
-  align-items: center;
-  justify-content: space-around;
-  padding-right: 16px;
-  padding-left: 16px;
-  width: 120px;
-`;
-
 const StyledFlex = styled(Flex)`
   // The timing functions of transitions have been chosen so that the element loses opacity slowly
   // when entering the disabled state but gains it quickly when going out of the disabled state.
   transition: opacity 150ms ease-out;
+
   &.disabled {
     pointer-events: none;
     opacity: 0.7;
     transition: opacity 150ms ease-in;
   }
 `;
-
-export function PageIndicatorText({
-  from,
-  to,
-  count,
-}: {
-  from: number;
-  to: number;
-  count: number;
-}) {
-  return (
-    <Text
-      typography="body2"
-      color="text.main"
-      style={{ textTransform: 'uppercase' }}
-      mr={1}
-    >
-      Showing <strong>{from}</strong> - <strong>{to}</strong> of{' '}
-      <strong>{count}</strong>
-    </Text>
-  );
-}

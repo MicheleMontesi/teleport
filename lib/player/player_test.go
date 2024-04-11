@@ -1,16 +1,20 @@
-// Copyright 2023 Gravitational, Inc
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package player_test
 
@@ -47,6 +51,7 @@ func TestBasicStream(t *testing.T) {
 	}
 
 	require.Equal(t, 3, count)
+	require.NoError(t, p.Err())
 }
 
 func TestPlayPause(t *testing.T) {
@@ -163,10 +168,13 @@ func TestClose(t *testing.T) {
 	// channel should have been closed
 	_, ok := <-p.C()
 	require.False(t, ok, "player channel should have been closed")
+	require.NoError(t, p.Err())
+	require.Equal(t, int64(1000), p.LastPlayed())
 }
 
 func TestSeekForward(t *testing.T) {
 	clk := clockwork.NewFakeClock()
+
 	p, err := player.New(&player.Config{
 		Clock:     clk,
 		SessionID: "test-session",
@@ -201,6 +209,57 @@ func TestSeekForward(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		require.FailNow(t, "player hasn't closed in time")
 	}
+}
+
+func TestSeekForwardTwice(t *testing.T) {
+	clk := clockwork.NewRealClock()
+	p, err := player.New(&player.Config{
+		Clock:     clk,
+		SessionID: "test-session",
+		Streamer:  &simpleStreamer{count: 1, delay: 6000},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { p.Close() })
+	require.NoError(t, p.Play())
+
+	time.Sleep(100 * time.Millisecond)
+	p.SetPos(500 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
+	p.SetPos(5900 * time.Millisecond)
+
+	select {
+	case <-p.C():
+	case <-time.After(5 * time.Second):
+		require.FailNow(t, "event not emitted on time")
+	}
+}
+
+// TestInterruptsDelay tests that the player responds to playback
+// controls even when it is waiting to emit an event.
+func TestInterruptsDelay(t *testing.T) {
+	clk := clockwork.NewFakeClock()
+	p, err := player.New(&player.Config{
+		Clock:     clk,
+		SessionID: "test-session",
+		Streamer:  &simpleStreamer{count: 3, delay: 5000},
+	})
+	require.NoError(t, err)
+	require.NoError(t, p.Play())
+
+	t.Cleanup(func() { p.Close() })
+
+	clk.BlockUntil(1) // player is now waiting to emit event 0
+
+	// emulate the user seeking forward while the player is waiting..
+	p.SetPos(10_001 * time.Millisecond)
+
+	// expect event 0 and event 1 to be emitted right away
+	// even without advancing the clock
+	evt0 := <-p.C()
+	evt1 := <-p.C()
+
+	require.Equal(t, int64(0), evt0.GetIndex())
+	require.Equal(t, int64(1), evt1.GetIndex())
 }
 
 func TestRewind(t *testing.T) {

@@ -1,20 +1,20 @@
 /*
-
- Copyright 2023 Gravitational, Inc.
-
- Licensed under the Apache License, Version 2.0 (the "License");
- you may not use this file except in compliance with the License.
- You may obtain a copy of the License at
-
-     http://www.apache.org/licenses/LICENSE-2.0
-
- Unless required by applicable law or agreed to in writing, software
- distributed under the License is distributed on an "AS IS" BASIS,
- WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- See the License for the specific language governing permissions and
- limitations under the License.
-
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package web
 
@@ -128,6 +128,7 @@ func (h *Handler) executeCommand(
 	_ httprouter.Params,
 	sessionCtx *SessionContext,
 	site reversetunnelclient.RemoteSite,
+	rawWS *websocket.Conn,
 ) (any, error) {
 	q := r.URL.Query()
 	params := q.Get("params")
@@ -170,20 +171,6 @@ func (h *Handler) executeCommand(
 	}
 
 	clusterName := site.GetName()
-
-	upgrader := websocket.Upgrader{
-		ReadBufferSize:  1024,
-		WriteBufferSize: 1024,
-		CheckOrigin:     func(r *http.Request) bool { return true },
-	}
-
-	rawWS, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		errMsg := "Error upgrading to websocket"
-		h.log.WithError(err).Error(errMsg)
-		http.Error(w, errMsg, http.StatusInternalServerError)
-		return nil, nil
-	}
 
 	defer func() {
 		rawWS.WriteMessage(websocket.CloseMessage, nil)
@@ -239,16 +226,19 @@ func (h *Handler) executeCommand(
 
 		commandHandlerConfig := CommandHandlerConfig{
 			SessionCtx:         sessionCtx,
-			AuthProvider:       clt,
+			UserAuthClient:     clt,
 			SessionData:        sessionData,
 			KeepAliveInterval:  keepAliveInterval,
 			ProxyHostPort:      h.ProxyHostPort(),
 			InteractiveCommand: interactiveCommand,
 			Router:             h.cfg.Router,
 			TracerProvider:     h.cfg.TracerProvider,
-			LocalAuthProvider:  h.auth.accessPoint,
+			LocalAccessPoint:   h.auth.accessPoint,
 			mfaFuncCache:       mfaCacheFn,
 			buffer:             buffer,
+			HostNameResolver: func(serverID string) (string, error) {
+				return serverID, nil
+			},
 		}
 
 		handler, err := newCommandHandler(ctx, commandHandlerConfig)
@@ -468,18 +458,19 @@ func newCommandHandler(ctx context.Context, cfg CommandHandlerConfig) (*commandH
 	return &commandHandler{
 		sshBaseHandler: sshBaseHandler{
 			log: logrus.WithFields(logrus.Fields{
-				trace.Component: teleport.ComponentWebsocket,
-				"session_id":    cfg.SessionData.ID.String(),
+				teleport.ComponentKey: teleport.ComponentWebsocket,
+				"session_id":          cfg.SessionData.ID.String(),
 			}),
 			ctx:                cfg.SessionCtx,
-			authProvider:       cfg.AuthProvider,
+			userAuthClient:     cfg.UserAuthClient,
 			sessionData:        cfg.SessionData,
 			keepAliveInterval:  cfg.KeepAliveInterval,
 			proxyHostPort:      cfg.ProxyHostPort,
 			interactiveCommand: cfg.InteractiveCommand,
 			router:             cfg.Router,
-			localAuthProvider:  cfg.LocalAuthProvider,
+			localAccessPoint:   cfg.LocalAccessPoint,
 			tracer:             cfg.tracer,
+			resolver:           cfg.HostNameResolver,
 		},
 		mfaAuthCache: cfg.mfaFuncCache,
 		buffer:       cfg.buffer,
@@ -490,8 +481,8 @@ func newCommandHandler(ctx context.Context, cfg CommandHandlerConfig) (*commandH
 type CommandHandlerConfig struct {
 	// SessionCtx is the context for the user's web session.
 	SessionCtx *SessionContext
-	// AuthProvider is used to fetch nodes and sessions from the backend.
-	AuthProvider AuthProvider
+	// UserAuthClient is used to fetch nodes and sessions from the backend via the users' identity.
+	UserAuthClient UserAuthClient
 	// SessionData is the data to send to the client on the initial session creation.
 	SessionData session.Session
 	// KeepAliveInterval is the interval for sending ping frames to a web client.
@@ -506,9 +497,15 @@ type CommandHandlerConfig struct {
 	Router *proxy.Router
 	// TracerProvider is used to create the tracer
 	TracerProvider oteltrace.TracerProvider
-	// LocalAuthProvider is used to fetch user information from the
-	// local cluster when connecting to agentless nodes.
-	LocalAuthProvider agentless.AuthProvider
+	// LocalAccessPoint is the subset of the Proxy cache required to
+	// look up information from the local cluster. This should not
+	// be used for anything that requires RBAC on behalf of the user.
+	// Anything requests that should be made on behalf of the user should
+	// use [UserAuthClient].
+	LocalAccessPoint localAccessPoint
+	// HostNameResolver allows the hostname to be determined from a server UUID
+	// so that a friendly name can be displayed in the console tab.
+	HostNameResolver func(serverID string) (hostname string, err error)
 	// tracer is used to create spans
 	tracer oteltrace.Tracer
 	// mfaFuncCache is used to cache the MFA auth method
@@ -534,8 +531,8 @@ func (t *CommandHandlerConfig) CheckAndSetDefaults() error {
 		return trace.BadParameter("server: missing server")
 	}
 
-	if t.AuthProvider == nil {
-		return trace.BadParameter("AuthProvider must be provided")
+	if t.UserAuthClient == nil {
+		return trace.BadParameter("UserAuthClient must be provided")
 	}
 
 	if t.SessionCtx == nil {
@@ -550,8 +547,8 @@ func (t *CommandHandlerConfig) CheckAndSetDefaults() error {
 		t.TracerProvider = tracing.DefaultProvider()
 	}
 
-	if t.LocalAuthProvider == nil {
-		return trace.BadParameter("LocalAuthProvider must be provided")
+	if t.LocalAccessPoint == nil {
+		return trace.BadParameter("localAccessPoint must be provided")
 	}
 
 	if t.mfaFuncCache == nil {

@@ -1,18 +1,20 @@
 /*
-Copyright 2020-2022 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package srv
 
@@ -47,6 +49,8 @@ import (
 	"github.com/gravitational/teleport/lib/sshutils"
 	"github.com/gravitational/teleport/lib/sshutils/x11"
 	"github.com/gravitational/teleport/lib/utils"
+	"github.com/gravitational/teleport/lib/utils/envutils"
+	"github.com/gravitational/teleport/lib/utils/uds"
 )
 
 // FileFD is a file descriptor passed down from a parent process when
@@ -608,9 +612,87 @@ func (o *osWrapper) startNewParker(ctx context.Context, credential *syscall.Cred
 	return nil
 }
 
-// RunForward reads in the command to run from the parent process (over a
+type forwardHandler func(ctx context.Context, addr string, file *os.File) error
+
+func handleLocalPortForward(ctx context.Context, addr string, file *os.File) error {
+	conn, err := uds.FromFile(file)
+	_ = file.Close()
+	if err != nil {
+		return trace.Wrap(err)
+	}
+
+	defer conn.Close()
+	var d net.Dialer
+	remote, err := d.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return trace.Wrap(err)
+	}
+	defer remote.Close()
+	if err := utils.ProxyConn(ctx, conn, remote); err != nil {
+		return trace.Wrap(err)
+	}
+
+	return nil
+}
+
+func createRemotePortForwardingListener(ctx context.Context, addr string) (*os.File, error) {
+	lc := net.ListenConfig{
+		Control: func(network, addr string, conn syscall.RawConn) error {
+			var err error
+			err2 := conn.Control(func(descriptor uintptr) {
+				// Disable address reuse to prevent socket replacement.
+				err = syscall.SetsockoptInt(int(descriptor), syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 0)
+			})
+			return trace.NewAggregate(err2, err)
+		},
+	}
+
+	listener, err := lc.Listen(ctx, "tcp", addr)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	defer listener.Close()
+
+	tcpListener, _ := listener.(*net.TCPListener)
+	if tcpListener == nil {
+		return nil, trace.Errorf("expected listener to be of type *net.TCPListener, but was %T", listener)
+	}
+
+	listenerFD, err := tcpListener.File()
+	return listenerFD, trace.Wrap(err)
+}
+
+func handleRemotePortForward(ctx context.Context, addr string, file *os.File) error {
+	controlConn, err := uds.FromFile(file)
+	_ = file.Close()
+	if err != nil {
+		return trace.Wrap(err)
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	// unblock the final write
+	context.AfterFunc(ctx, func() { _ = controlConn.Close() })
+	go func() {
+		defer cancel()
+		_, _ = controlConn.Read(make([]byte, 1))
+	}()
+
+	var payload []byte
+	var files []*os.File
+	listenerFD, err := createRemotePortForwardingListener(ctx, addr)
+	if err == nil {
+		files = []*os.File{listenerFD}
+	} else {
+		payload = []byte(err.Error())
+	}
+	_, _, err2 := controlConn.WriteWithFDs(payload, files)
+	return trace.NewAggregate(err, err2)
+}
+
+// runForward reads in the command to run from the parent process (over a
 // pipe) then port forwards.
-func RunForward() (errw io.Writer, code int, err error) {
+func runForward(handler forwardHandler) (errw io.Writer, code int, err error) {
 	// errorWriter is used to return any error message back to the client.
 	// Use stderr so that it's not forwarded to the remote client.
 	errorWriter := os.Stderr
@@ -663,19 +745,57 @@ func RunForward() (errw io.Writer, code int, err error) {
 		return errorWriter, teleport.RemoteCommandFailure, trace.NotFound(err.Error())
 	}
 
-	// Connect to the target host.
-	conn, err := net.Dial("tcp", c.DestinationAddress)
+	// build forwarder from first extra file that was passed to command
+	ffd := os.NewFile(FirstExtraFile, "listener")
+	if ffd == nil {
+		return errorWriter, teleport.RemoteCommandFailure, trace.BadParameter("missing socket fd")
+	}
+
+	conn, err := uds.FromFile(ffd)
+	ffd.Close()
 	if err != nil {
 		return errorWriter, teleport.RemoteCommandFailure, trace.Wrap(err)
 	}
-	defer conn.Close()
 
-	err = utils.ProxyConn(context.Background(), utils.CombineReadWriteCloser(os.Stdin, os.Stdout), conn)
-	if err != nil && !errors.Is(err, io.EOF) {
-		return errorWriter, teleport.RemoteCommandFailure, trace.Wrap(err)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	for {
+		buf := make([]byte, 1024)
+		fbuf := make([]*os.File, 1)
+		n, fn, err := conn.ReadWithFDs(buf, fbuf)
+		if err != nil {
+			if utils.IsOKNetworkError(err) {
+				return errorWriter, teleport.RemoteCommandSuccess, nil
+			}
+			return errorWriter, teleport.RemoteCommandFailure, trace.Wrap(err)
+		}
+		addr := string(buf[:n])
+		if fn == 0 {
+			log.Errorf("Parent did not send a file descriptor for address %q.", addr)
+			continue
+		}
+
+		go func() {
+			if err := handler(ctx, addr, fbuf[0]); err != nil {
+				log.WithError(err).Errorf("Error handling forwarding request for address %q.", addr)
+			}
+		}()
 	}
+}
 
-	return errorWriter, teleport.RemoteCommandSuccess, nil
+// RunLocalForward reads in the command to run from the parent process (over a
+// pipe) then port forwards.
+func RunLocalForward() (errw io.Writer, code int, err error) {
+	errw, code, err = runForward(handleLocalPortForward)
+	return errw, code, trace.Wrap(err)
+}
+
+// RunRemoteForward reads in the command to run from the parent process (over a
+// pipe) then listens for port forwarding.
+func RunRemoteForward() (errw io.Writer, code int, err error) {
+	errw, code, err = runForward(handleRemotePortForward)
+	return errw, code, trace.Wrap(err)
 }
 
 // runCheckHomeDir check's if the active user's $HOME dir exists.
@@ -710,8 +830,10 @@ func RunAndExit(commandType string) {
 	switch commandType {
 	case teleport.ExecSubCommand:
 		w, code, err = RunCommand()
-	case teleport.ForwardSubCommand:
-		w, code, err = RunForward()
+	case teleport.LocalForwardSubCommand:
+		w, code, err = RunLocalForward()
+	case teleport.RemoteForwardSubCommand:
+		w, code, err = RunRemoteForward()
 	case teleport.CheckHomeDirSubCommand:
 		w, code, err = runCheckHomeDir()
 	case teleport.ParkSubCommand:
@@ -731,8 +853,8 @@ func RunAndExit(commandType string) {
 func IsReexec() bool {
 	if len(os.Args) == 2 {
 		switch os.Args[1] {
-		case teleport.ExecSubCommand, teleport.ForwardSubCommand, teleport.CheckHomeDirSubCommand,
-			teleport.ParkSubCommand, teleport.SFTPSubCommand:
+		case teleport.ExecSubCommand, teleport.LocalForwardSubCommand, teleport.RemoteForwardSubCommand,
+			teleport.CheckHomeDirSubCommand, teleport.ParkSubCommand, teleport.SFTPSubCommand:
 			return true
 		}
 	}
@@ -791,7 +913,7 @@ func buildCommand(c *ExecCommand, localUser *user.User, tty *os.File, pty *os.Fi
 	}
 
 	// Create default environment for user.
-	cmd.Env = []string{
+	env := &envutils.SafeEnv{
 		"LANG=en_US.UTF-8",
 		getDefaultEnvPath(localUser.Uid, defaultLoginDefsPath),
 		"HOME=" + localUser.HomeDir,
@@ -800,21 +922,25 @@ func buildCommand(c *ExecCommand, localUser *user.User, tty *os.File, pty *os.Fi
 	}
 
 	// Add in Teleport specific environment variables.
-	cmd.Env = append(cmd.Env, c.Environment...)
+	env.AddFullTrusted(c.Environment...)
+
+	// If any additional environment variables come from PAM, apply them as well.
+	env.AddFullTrusted(pamEnvironment...)
 
 	// If the server allows reading in of ~/.tsh/environment read it in
 	// and pass environment variables along to new session.
+	// User controlled values are added last to ensure administrator controlled sources take priority (duplicates ignored)
 	if c.PermitUserEnvironment {
 		filename := filepath.Join(localUser.HomeDir, ".tsh", "environment")
-		userEnvs, err := utils.ReadEnvironmentFile(filename)
+		userEnvs, err := envutils.ReadEnvironmentFile(filename)
 		if err != nil {
 			return nil, trace.Wrap(err)
 		}
-		cmd.Env = append(cmd.Env, userEnvs...)
+		env.AddFullUnique(userEnvs...)
 	}
 
-	// If any additional environment variables come from PAM, apply them as well.
-	cmd.Env = append(cmd.Env, pamEnvironment...)
+	// after environment is fully built, set it to cmd
+	cmd.Env = *env
 
 	// If a terminal was requested, connect std{in,out,err} to the TTY and set
 	// the controlling TTY. Otherwise, connect std{in,out,err} to
@@ -941,22 +1067,32 @@ func ConfigureCommand(ctx *ServerContext, extraFiles ...*os.File) (*exec.Cmd, er
 	}
 	executableDir, _ := filepath.Split(executable)
 
-	// The channel type determines the subcommand to execute (execution or
+	// The channel/request type determines the subcommand to execute (execution or
 	// port forwarding).
-	subCommand := teleport.ExecSubCommand
-	if ctx.ChannelType == teleport.ChanDirectTCPIP {
-		subCommand = teleport.ForwardSubCommand
+	var subCommand string
+	switch ctx.ExecType {
+	case teleport.ChanDirectTCPIP:
+		subCommand = teleport.LocalForwardSubCommand
+	case teleport.TCPIPForwardRequest:
+		subCommand = teleport.RemoteForwardSubCommand
+	default:
+		subCommand = teleport.ExecSubCommand
 	}
 
 	// Build the list of arguments to have Teleport re-exec itself. The "-d" flag
 	// is appended if Teleport is running in debug mode.
 	args := []string{executable, subCommand}
 
+	// build env for `teleport exec`
+	env := &envutils.SafeEnv{}
+	env.AddExecEnvironment()
+
 	// Build the "teleport exec" command.
 	cmd := &exec.Cmd{
 		Path: executable,
 		Args: args,
 		Dir:  executableDir,
+		Env:  *env,
 		ExtraFiles: []*os.File{
 			ctx.cmdr,
 			ctx.contr,

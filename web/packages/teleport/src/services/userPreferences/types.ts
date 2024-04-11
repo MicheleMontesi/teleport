@@ -1,41 +1,24 @@
 /**
- * Copyright 2023 Gravitational, Inc.
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
  *
- *     http://www.apache.org/licenses/LICENSE-2.0
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 import { DeprecatedThemeOption } from 'design/theme';
 
-import type { AssistUserPreferences } from 'teleport/Assist/types';
-
-export enum ThemePreference {
-  Light = 1,
-  Dark = 2,
-}
-
-export enum UnifiedTabPreference {
-  All = 1,
-  Pinned = 2,
-}
-
-export enum ClusterResource {
-  RESOURCE_UNSPECIFIED = 0,
-  RESOURCE_WINDOWS_DESKTOPS = 1,
-  RESOURCE_SERVER_SSH = 2,
-  RESOURCE_DATABASES = 3,
-  RESOURCE_KUBERNETES = 4,
-  RESOURCE_WEB_APPLICATIONS = 5,
-}
+import { Theme } from 'gen-proto-ts/teleport/userpreferences/v1/theme_pb';
 
 export type MarketingParams = {
   campaign: string;
@@ -44,42 +27,13 @@ export type MarketingParams = {
   intent: string;
 };
 
-export type OnboardUserPreferences = {
-  preferredResources: ClusterResource[];
-  marketingParams: MarketingParams;
-};
-
-export interface UserPreferences {
-  theme: ThemePreference;
-  assist: AssistUserPreferences;
-  onboard: OnboardUserPreferences;
-  clusterPreferences: UserClusterPreferences;
-  unifiedResourcePreferences: UnifiedResourcePreferences;
-}
-
-// UserClusterPreferences are user preferences that are
-// different per cluster.
-export interface UserClusterPreferences {
-  // pinnedResources is an array of resource IDs.
-  pinnedResources: string[];
-}
-
-// UnifiedResourcePreferences are preferences related to the Unified Resource view
-export interface UnifiedResourcePreferences {
-  // defaultTab is the default tab selected in the unified resource view
-  defaultTab: UnifiedTabPreference;
-}
-
-export type GetUserClusterPreferencesResponse = UserClusterPreferences;
-export type GetUserPreferencesResponse = UserPreferences;
-
 export function deprecatedThemeToThemePreference(
   theme: DeprecatedThemeOption
-): ThemePreference {
+): Theme {
   switch (theme) {
     case 'light':
-      return ThemePreference.Light;
+      return Theme.LIGHT;
     case 'dark':
-      return ThemePreference.Dark;
+      return Theme.DARK;
   }
 }

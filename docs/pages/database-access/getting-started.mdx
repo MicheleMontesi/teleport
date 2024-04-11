@@ -83,7 +83,7 @@ GRANT rds_iam TO alice;
 For more information about connecting to the PostgreSQL instance directly,
 see the AWS [documentation](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_ConnectToPostgreSQLInstance.html).
 
-See the [Automatic User Provisioning](./rbac/configuring-access.mdx) guide for how to configure Teleport to create accounts for your PostgreSQL users on demand.
+See the [Automatic User Provisioning](./rbac.mdx) guide for how to configure Teleport to create accounts for your PostgreSQL users on demand.
 
 ## Step 2/5. Configure the Teleport Database Service
 
@@ -110,7 +110,8 @@ $ sudo teleport db configure create \
   --proxy=<Var name="teleport.example.com" />:443 \
   --protocol=postgres \
   --uri=<Var name="postgres-aurora-instance-1.abcdefghijklm.us-west-1.rds.amazonaws.com"/>:5432 \
-  --aws-region=<Var name="us-west-1" />
+  --aws-region=<Var name="us-west-1" /> \
+  --output file:///etc/teleport.yaml
 ```
 
 </TabItem>
@@ -124,11 +125,12 @@ address of your Teleport Cloud tenant.
 ```code
 $ sudo teleport db configure create \
   --token=/tmp/token \
-  --name=aurora \
+  --name=<Var name="aurora" /> \
   --proxy=<Var name="mytenant.teleport.sh" />:443 \
   --protocol=postgres \
   --uri=<Var name="postgres-aurora-instance-1.abcdefghijklm.us-west-1.rds.amazonaws.com"/>:5432 \
-  --aws-region=<Var name="us-west-1" />
+  --aws-region=<Var name="us-west-1" /> \
+  --output file:///etc/teleport.yaml
 ```
 
 </TabItem>

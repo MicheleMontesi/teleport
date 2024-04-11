@@ -1,16 +1,20 @@
-// Copyright 2023 Gravitational, Inc
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package usersv1
 
@@ -22,11 +26,13 @@ import (
 	"github.com/sirupsen/logrus"
 	"google.golang.org/protobuf/types/known/emptypb"
 
+	"github.com/gravitational/teleport"
 	"github.com/gravitational/teleport/api/constants"
 	apidefaults "github.com/gravitational/teleport/api/defaults"
 	userspb "github.com/gravitational/teleport/api/gen/proto/go/teleport/users/v1"
 	"github.com/gravitational/teleport/api/types"
 	apievents "github.com/gravitational/teleport/api/types/events"
+	"github.com/gravitational/teleport/lib/auth/okta"
 	"github.com/gravitational/teleport/lib/authz"
 	"github.com/gravitational/teleport/lib/events"
 	"github.com/gravitational/teleport/lib/services"
@@ -37,6 +43,8 @@ import (
 type Cache interface {
 	// GetUser returns a user by name.
 	GetUser(ctx context.Context, user string, withSecrets bool) (types.User, error)
+	// ListUsers returns a page of users.
+	ListUsers(ctx context.Context, req *userspb.ListUsersRequest) (*userspb.ListUsersResponse, error)
 	// GetRole returns a role by name.
 	GetRole(ctx context.Context, name string) (types.Role, error)
 }
@@ -96,7 +104,7 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 	}
 
 	if cfg.Logger == nil {
-		cfg.Logger = logrus.WithField(trace.Component, "users.service")
+		cfg.Logger = logrus.WithField(teleport.ComponentKey, "users.service")
 	}
 	if cfg.Clock == nil {
 		cfg.Clock = clockwork.NewRealClock()
@@ -121,7 +129,7 @@ func currentUserAction(authzContext authz.Context, username string) error {
 		return nil
 	}
 	return authzContext.Checker.CheckAccessToRule(&services.Context{User: authzContext.User},
-		apidefaults.Namespace, types.KindUser, types.VerbCreate, true)
+		apidefaults.Namespace, types.KindUser, types.VerbCreate)
 }
 
 func (s *Service) getCurrentUser(ctx context.Context, authCtx *authz.Context) (*types.UserV2, error) {
@@ -185,7 +193,7 @@ func (s *Service) GetUser(ctx context.Context, req *userspb.GetUserRequest) (*us
 		// their own info.
 		if err := currentUserAction(*authCtx, req.Name); err != nil {
 			// not current user, perform normal permission check.
-			if _, err := authz.AuthorizeWithVerbs(ctx, s.logger, s.authorizer, true, types.KindUser, types.VerbRead); err != nil {
+			if err := authCtx.CheckAccessToKind(types.KindUser, types.VerbRead); err != nil {
 				return nil, trace.Wrap(err)
 			}
 		}
@@ -198,7 +206,7 @@ func (s *Service) GetUser(ctx context.Context, req *userspb.GetUserRequest) (*us
 
 	v2, ok := user.(*types.UserV2)
 	if !ok {
-		s.logger.Warnf("expected type services.UserV2, got %T for user %q", user, user.GetName())
+		s.logger.Warnf("expected type UserV2, got %T for user %q", user, user.GetName())
 		return nil, trace.BadParameter("encountered unexpected user type")
 	}
 
@@ -206,13 +214,35 @@ func (s *Service) GetUser(ctx context.Context, req *userspb.GetUserRequest) (*us
 }
 
 func (s *Service) CreateUser(ctx context.Context, req *userspb.CreateUserRequest) (*userspb.CreateUserResponse, error) {
-	if _, err := authz.AuthorizeWithVerbs(ctx, s.logger, s.authorizer, true, types.KindUser, types.VerbCreate); err != nil {
+	authCtx, err := s.authorizer.Authorize(ctx)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	if err := authCtx.CheckAccessToKind(types.KindUser, types.VerbCreate); err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	// Support reused MFA for bulk tctl create requests and chained invite commands (CreateResetPasswordToken).
+	if err := authCtx.AuthorizeAdminActionAllowReusedMFA(); err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	if err = okta.CheckOrigin(authCtx, req.User); err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	if err := services.ValidateUser(req.User); err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	if err := services.ValidateUserRoles(ctx, req.User, s.cache); err != nil {
 		return nil, trace.Wrap(err)
 	}
 
 	if req.User.GetCreatedBy().IsEmpty() {
 		req.User.SetCreatedBy(types.CreatedBy{
-			User: types.UserRef{Name: authz.ClientUsername(ctx)},
+			User: types.UserRef{Name: authCtx.User.GetName()},
 			Time: s.clock.Now().UTC(),
 		})
 	}
@@ -232,13 +262,14 @@ func (s *Service) CreateUser(ctx context.Context, req *userspb.CreateUserRequest
 			Type: events.UserCreateEvent,
 			Code: events.UserCreateCode,
 		},
-		UserMetadata: authz.ClientUserMetadataWithUser(ctx, created.GetCreatedBy().User.Name),
+		UserMetadata: authCtx.GetUserMetadata(),
 		ResourceMetadata: apievents.ResourceMetadata{
 			Name:    created.GetName(),
 			Expires: created.Expiry(),
 		},
-		Connector: connectorName,
-		Roles:     created.GetRoles(),
+		Connector:          connectorName,
+		Roles:              created.GetRoles(),
+		ConnectionMetadata: authz.ConnectionMetadata(ctx),
 	}); err != nil {
 		s.logger.WithError(err).Warn("Failed to emit user create event.")
 	}
@@ -247,7 +278,7 @@ func (s *Service) CreateUser(ctx context.Context, req *userspb.CreateUserRequest
 
 	v2, ok := created.(*types.UserV2)
 	if !ok {
-		s.logger.Warnf("expected type services.UserV2, got %T for user %q", created, created.GetName())
+		s.logger.Warnf("expected type UserV2, got %T for user %q", created, created.GetName())
 		return nil, trace.BadParameter("encountered unexpected user type")
 	}
 
@@ -255,7 +286,32 @@ func (s *Service) CreateUser(ctx context.Context, req *userspb.CreateUserRequest
 }
 
 func (s *Service) UpdateUser(ctx context.Context, req *userspb.UpdateUserRequest) (*userspb.UpdateUserResponse, error) {
-	if _, err := authz.AuthorizeWithVerbs(ctx, s.logger, s.authorizer, true, types.KindUser, types.VerbUpdate); err != nil {
+	authCtx, err := s.authorizer.Authorize(ctx)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	if err := authCtx.CheckAccessToKind(types.KindUser, types.VerbUpdate); err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	// Allow reused MFA responses to allow Updating a user after get (WebUI).
+	if err := authCtx.AuthorizeAdminActionAllowReusedMFA(); err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	if err = okta.CheckOrigin(authCtx, req.User); err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	// ValidateUser is called a bit later by LegacyUpdateUser. However, it's clearer
+	// to do it here like the other verbs, plus it won't break again when we'll
+	// get rid of the legacy update function.
+	if err := services.ValidateUser(req.User); err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	if err := services.ValidateUserRoles(ctx, req.User, s.cache); err != nil {
 		return nil, trace.Wrap(err)
 	}
 
@@ -265,6 +321,15 @@ func (s *Service) UpdateUser(ctx context.Context, req *userspb.UpdateUserRequest
 		// don't return error here since this call is for event emitting purposes only
 		s.logger.WithError(err).Warn("Failed getting previous user during update")
 		omitEditorEvent = true
+	}
+
+	if prevUser != nil {
+		// Preserve the users' created by information.
+		req.User.SetCreatedBy(prevUser.GetCreatedBy())
+	}
+
+	if err = okta.CheckAccess(authCtx, prevUser, types.VerbUpdate); err != nil {
+		return nil, trace.Wrap(err)
 	}
 
 	updated, err := s.backend.UpdateUser(ctx, req.User)
@@ -282,13 +347,14 @@ func (s *Service) UpdateUser(ctx context.Context, req *userspb.UpdateUserRequest
 			Type: events.UserUpdatedEvent,
 			Code: events.UserUpdateCode,
 		},
-		UserMetadata: authz.ClientUserMetadata(ctx),
+		UserMetadata: authCtx.GetUserMetadata(),
 		ResourceMetadata: apievents.ResourceMetadata{
 			Name:    updated.GetName(),
 			Expires: updated.Expiry(),
 		},
-		Connector: connectorName,
-		Roles:     updated.GetRoles(),
+		Connector:          connectorName,
+		Roles:              updated.GetRoles(),
+		ConnectionMetadata: authz.ConnectionMetadata(ctx),
 	}); err != nil {
 		s.logger.WithError(err).Warn("Failed to emit user update event.")
 	}
@@ -299,7 +365,7 @@ func (s *Service) UpdateUser(ctx context.Context, req *userspb.UpdateUserRequest
 
 	v2, ok := updated.(*types.UserV2)
 	if !ok {
-		s.logger.Warnf("expected type services.UserV2, got %T for user %q", updated, updated.GetName())
+		s.logger.Warnf("expected type UserV2, got %T for user %q", updated, updated.GetName())
 		return nil, trace.BadParameter("encountered unexpected user type")
 	}
 
@@ -307,14 +373,31 @@ func (s *Service) UpdateUser(ctx context.Context, req *userspb.UpdateUserRequest
 }
 
 func (s *Service) UpsertUser(ctx context.Context, req *userspb.UpsertUserRequest) (*userspb.UpsertUserResponse, error) {
-	authzCtx, err := authz.AuthorizeWithVerbs(ctx, s.logger, s.authorizer, true, types.KindUser, types.VerbCreate, types.VerbUpdate)
+	authCtx, err := s.authorizer.Authorize(ctx)
 	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	if err := authCtx.CheckAccessToKind(types.KindUser, types.VerbCreate, types.VerbUpdate); err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	// Support reused MFA for bulk tctl create requests.
+	if err := authCtx.AuthorizeAdminActionAllowReusedMFA(); err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	if err := services.ValidateUser(req.User); err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	if err := services.ValidateUserRoles(ctx, req.User, s.cache); err != nil {
 		return nil, trace.Wrap(err)
 	}
 
 	if createdBy := req.User.GetCreatedBy(); createdBy.IsEmpty() {
 		req.User.SetCreatedBy(types.CreatedBy{
-			User: types.UserRef{Name: authzCtx.User.GetName()},
+			User: types.UserRef{Name: authCtx.User.GetName()},
 		})
 	}
 
@@ -324,6 +407,19 @@ func (s *Service) UpsertUser(ctx context.Context, req *userspb.UpsertUserRequest
 		// don't return error here since this call is for event emitting purposes only
 		s.logger.WithError(err).Warn("Failed getting previous user during update")
 		omitEditorEvent = true
+	}
+
+	verb := types.VerbUpdate
+	if prevUser == nil {
+		verb = types.VerbCreate
+	}
+
+	if err = okta.CheckOrigin(authCtx, req.User); err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	if err = okta.CheckAccess(authCtx, prevUser, verb); err != nil {
+		return nil, trace.Wrap(err)
 	}
 
 	upserted, err := s.backend.UpsertUser(ctx, req.User)
@@ -341,13 +437,14 @@ func (s *Service) UpsertUser(ctx context.Context, req *userspb.UpsertUserRequest
 			Type: events.UserCreateEvent,
 			Code: events.UserCreateCode,
 		},
-		UserMetadata: authz.ClientUserMetadata(ctx),
+		UserMetadata: authCtx.GetUserMetadata(),
 		ResourceMetadata: apievents.ResourceMetadata{
 			Name:    upserted.GetName(),
 			Expires: upserted.Expiry(),
 		},
-		Connector: connectorName,
-		Roles:     upserted.GetRoles(),
+		Connector:          connectorName,
+		Roles:              upserted.GetRoles(),
+		ConnectionMetadata: authz.ConnectionMetadata(ctx),
 	}); err != nil {
 		s.logger.WithError(err).Warn("Failed to emit user upsert event.")
 	}
@@ -358,7 +455,7 @@ func (s *Service) UpsertUser(ctx context.Context, req *userspb.UpsertUserRequest
 
 	v2, ok := upserted.(*types.UserV2)
 	if !ok {
-		s.logger.Warnf("expected type services.UserV2, got %T for user %q", upserted, upserted.GetName())
+		s.logger.Warnf("expected type UserV2, got %T for user %q", upserted, upserted.GetName())
 		return nil, trace.BadParameter("encountered unexpected user type")
 	}
 
@@ -366,7 +463,16 @@ func (s *Service) UpsertUser(ctx context.Context, req *userspb.UpsertUserRequest
 }
 
 func (s *Service) DeleteUser(ctx context.Context, req *userspb.DeleteUserRequest) (*emptypb.Empty, error) {
-	if _, err := authz.AuthorizeWithVerbs(ctx, s.logger, s.authorizer, true, types.KindUser, types.VerbDelete); err != nil {
+	authCtx, err := s.authorizer.Authorize(ctx)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	if err := authCtx.CheckAccessToKind(types.KindUser, types.VerbDelete); err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	if err := authCtx.AuthorizeAdminAction(); err != nil {
 		return nil, trace.Wrap(err)
 	}
 
@@ -377,6 +483,10 @@ func (s *Service) DeleteUser(ctx context.Context, req *userspb.DeleteUserRequest
 		s.logger.WithError(err).Warn("Failed getting previous user during delete operation")
 		prevUser = nil
 		omitEditorEvent = true
+	}
+
+	if err = okta.CheckAccess(authCtx, prevUser, types.VerbDelete); err != nil {
+		return nil, trace.Wrap(err)
 	}
 
 	role, err := s.cache.GetRole(ctx, services.RoleNameForUser(req.Name))
@@ -406,6 +516,7 @@ func (s *Service) DeleteUser(ctx context.Context, req *userspb.DeleteUserRequest
 		ResourceMetadata: apievents.ResourceMetadata{
 			Name: req.Name,
 		},
+		ConnectionMetadata: authz.ConnectionMetadata(ctx),
 	}); err != nil {
 		s.logger.WithError(err).Warn("Failed to emit user delete event.")
 	}
@@ -415,4 +526,42 @@ func (s *Service) DeleteUser(ctx context.Context, req *userspb.DeleteUserRequest
 	}
 
 	return &emptypb.Empty{}, nil
+}
+
+func (s *Service) ListUsers(ctx context.Context, req *userspb.ListUsersRequest) (*userspb.ListUsersResponse, error) {
+	authCtx, err := s.authorizer.Authorize(ctx)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	if req.WithSecrets {
+		// TODO(fspmarshall): replace admin requirement with VerbReadWithSecrets once we've
+		// migrated to that model.
+		if !authz.HasBuiltinRole(*authCtx, string(types.RoleAdmin)) {
+			err := trace.AccessDenied("user %q requested access to all users with secrets", authCtx.User.GetName())
+			s.logger.Warn(err)
+			if err := s.emitter.EmitAuditEvent(ctx, &apievents.UserLogin{
+				Metadata: apievents.Metadata{
+					Type: events.UserLoginEvent,
+					Code: events.UserLocalLoginFailureCode,
+				},
+				Method: events.LoginMethodClientCert,
+				Status: apievents.Status{
+					Success:     false,
+					Error:       trace.Unwrap(err).Error(),
+					UserMessage: err.Error(),
+				},
+			}); err != nil {
+				s.logger.WithError(err).Warn("Failed to emit local login failure event.")
+			}
+			return nil, trace.AccessDenied("this request can be only executed by an admin")
+		}
+	} else {
+		if err := authCtx.CheckAccessToKind(types.KindUser, types.VerbList, types.VerbRead); err != nil {
+			return nil, trace.Wrap(err)
+		}
+	}
+
+	rsp, err := s.cache.ListUsers(ctx, req)
+	return rsp, trace.Wrap(err)
 }

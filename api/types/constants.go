@@ -63,6 +63,9 @@ const (
 	// KindUser is a user resource
 	KindUser = "user"
 
+	// KindBot is a Machine ID bot resource
+	KindBot = "bot"
+
 	// KindHostCert is a host certificate
 	KindHostCert = "host_cert"
 
@@ -77,6 +80,9 @@ const (
 
 	// KindAccessRequest is an AccessRequest resource
 	KindAccessRequest = "access_request"
+
+	// KindAccessMonitoringRule is an access monitoring rule resource
+	KindAccessMonitoringRule = "access_monitoring_rule"
 
 	// KindPluginData is a PluginData resource
 	KindPluginData = "plugin_data"
@@ -166,6 +172,8 @@ const (
 	// KindAppOrSAMLIdPServiceProvider represent an App Server resource or a SAML IdP Service Provider (SAML Application) resource.
 	// This is not a real resource stored in the backend, it is a pseudo resource used only to provide a common interface to
 	// the ListResources RPC in order to be able to list both AppServers and SAMLIdPServiceProviders in the same request.
+	//
+	// DEPRECATED: Use KindAppServer and KindSAMLIdPServiceProvider individually.
 	KindAppOrSAMLIdPServiceProvider = "app_server_or_saml_idp_sp"
 
 	// KindDatabaseServer is a database proxy server resource.
@@ -176,6 +184,12 @@ const (
 
 	// KindDatabase is a database resource.
 	KindDatabase = "db"
+
+	// KindDatabaseObjectImportRule is a database object import rule resource.
+	KindDatabaseObjectImportRule = "db_object_import_rule"
+
+	// KindDatabaseObject is a database object resource.
+	KindDatabaseObject = "db_object"
 
 	// KindKubeServer is an kubernetes server resource.
 	KindKubeServer = "kube_server"
@@ -246,6 +260,11 @@ const (
 	// KindKubeIngress is a Kubernetes Ingress resource type.
 	KindKubeIngress = "ingress"
 
+	// KindKubeWaitingContainer is a Kubernetes ephemeral
+	// container that are waiting to be created until moderated
+	// session conditions are met.
+	KindKubeWaitingContainer = "kube_ephemeral_container"
+
 	// KindToken is a provisioning token resource
 	KindToken = "token"
 
@@ -280,14 +299,15 @@ const (
 	// session recording configuration.
 	MetaNameSessionRecordingConfig = "session-recording-config"
 
-	// KindExternalCloudAudit the resource for external cloud audit.
-	KindExternalCloudAudit = "external_cloud_audit"
-	// MetaNameExternalCloudAuditDraft is the exact name of the singleton resource
-	// holding external cloud audit draft configuration.
-	MetaNameExternalCloudAuditDraft = "draft"
-	// MetaNameExternalCloudAuditCluster is the exact name of the singleton resource
-	// holding external cloud audit cluster configuration.
-	MetaNameExternalCloudAuditCluster = "cluster"
+	// KindExternalAuditStorage the resource kind for External Audit Storage
+	// configuration.
+	KindExternalAuditStorage = "external_audit_storage"
+	// MetaNameExternalAuditStorageDraft is the exact name of the singleton resource
+	// holding External Audit Storage draft configuration.
+	MetaNameExternalAuditStorageDraft = "draft"
+	// MetaNameExternalAuditStorageCluster is the exact name of the singleton resource
+	// holding External Audit Storage cluster configuration.
+	MetaNameExternalAuditStorageCluster = "cluster"
 
 	// KindClusterConfig is the resource that holds cluster level configuration.
 	// Deprecated: This does not correspond to an actual resource anymore but is
@@ -390,7 +410,8 @@ const (
 	// KindConnectionDiagnostic is a resource that tracks the result of testing a connection
 	KindConnectionDiagnostic = "connection_diagnostic"
 
-	// KindDatabaseCertificate is a resource to control Database Certificates generation
+	// KindDatabaseCertificate is a resource to control db CA cert
+	// generation.
 	KindDatabaseCertificate = "database_certificate"
 
 	// KindInstaller is a resource that holds a node installer script
@@ -445,6 +466,9 @@ const (
 	// Teleport Assist resources.
 	KindAssistant = "assistant"
 
+	// KindAccessGraph is the RBAC kind for access graph.
+	KindAccessGraph = "access_graph"
+
 	// KindIntegration is a connection to a 3rd party system API.
 	KindIntegration = "integration"
 
@@ -488,6 +512,15 @@ const (
 	KindSecurityReportState = "security_report_state"
 	// KindSecurityReportCostLimiter const limiter
 	KindSecurityReportCostLimiter = "security_report_cost_limiter"
+
+	// KindNotification is a notification resource.
+	KindNotification = "notification"
+	// KindGlobalNotification is a global notification resource.
+	KindGlobalNotification = "global_notification"
+	// KindUserLastSeenNotification is a resource which stores the timestamp of a user's last seen notification.
+	KindUserLastSeenNotification = "user_last_seen_notification"
+	// KindUserNotificationState is a resource which tracks whether a user has clicked on or dismissed a notification.
+	KindUserNotificationState = "user_notification_state"
 
 	// V7 is the seventh version of resources.
 	V7 = "v7"
@@ -689,11 +722,15 @@ const (
 	DiscoveryAppRewriteLabel = TeleportNamespace + "/app-rewrite"
 	// DiscoveryAppNameLabel specifies explicitly name of an app created from Kubernetes service.
 	DiscoveryAppNameLabel = TeleportNamespace + "/name"
+	// DiscoveryAppInsecureSkipVerify specifies the TLS verification enforcement for a discovered app created from Kubernetes service.
+	DiscoveryAppInsecureSkipVerify = TeleportNamespace + "/insecure-skip-verify"
+	// DiscoveryAppIgnore specifies if a Kubernetes service should be ignored by discovery service.
+	DiscoveryAppIgnore = TeleportNamespace + "/ignore"
 
-	// ReqAnnotationSchedulesLabel is the request annotation key at which schedules are stored for access plugins.
-	ReqAnnotationSchedulesLabel = "/schedules"
-	// ReqAnnotationNotifyServicesLabel is the request annotation key at which notify services are stored for access plugins.
-	ReqAnnotationNotifyServicesLabel = "/notify-services"
+	// ReqAnnotationApproveSchedulesLabel is the request annotation key at which schedules are stored for access plugins.
+	ReqAnnotationApproveSchedulesLabel = "/schedules"
+	// ReqAnnotationNotifySchedulesLabel is the request annotation key at which notify schedules are stored for access plugins.
+	ReqAnnotationNotifySchedulesLabel = "/notify-services"
 
 	// CloudAWS identifies that a resource was discovered in AWS.
 	CloudAWS = "AWS"
@@ -710,6 +747,8 @@ const (
 	DiscoveredResourceKubernetes = "k8s"
 	// DiscoveredResourceAgentlessNode identifies a discovered agentless SSH node.
 	DiscoveredResourceAgentlessNode = "node.openssh"
+	// DiscoveredResourceEICENode identifies a discovered AWS EC2 Instance using the EICE access method.
+	DiscoveredResourceEICENode = "node.openssh-eice"
 	// DiscoveredResourceApp identifies a discovered Kubernetes App.
 	DiscoveredResourceApp = "app"
 
@@ -776,6 +815,8 @@ const (
 	DiscoveryLabelWorkgroup = "workgroup"
 	// DiscoveryLabelStatus is the label key containing the database status, e.g. "available"
 	DiscoveryLabelStatus = "status"
+	// DiscoveryLabelAWSArn is an internal label that contains AWS Arn of the resource.
+	DiscoveryLabelAWSArn = TeleportInternalLabelPrefix + "aws-arn"
 
 	// DiscoveryLabelAzureSubscriptionID is the label key for Azure subscription ID.
 	DiscoveryLabelAzureSubscriptionID = "subscription-id"
@@ -812,9 +853,11 @@ const (
 	DiscoveryLabelLDAPPrefix = "ldap/"
 )
 
-// CloudLabelPrefixes are prefixes used by cloud labels, generally added when
-// using automatic discovery
-var CloudLabelPrefixes = []string{CloudAWS, CloudAzure, CloudGCP, DiscoveryLabelLDAPPrefix}
+// BackSortedLabelPrefixes are label names that we want to always be at the end of
+// the sorted labels list to reduce visual clutter. This will generally be automatically
+// discovered cloud provider labels such as azure/aks-managed-createOperationID=123123123123
+// or internal labels
+var BackSortedLabelPrefixes = []string{CloudAWS, CloudAzure, CloudGCP, DiscoveryLabelLDAPPrefix, TeleportNamespace}
 
 const (
 	// TeleportInternalLabelPrefix is the prefix used by all Teleport internal labels. Those labels
@@ -828,6 +871,10 @@ const (
 	//
 	// See also TeleportNamespace and TeleportInternalLabelPrefix.
 	TeleportHiddenLabelPrefix = "teleport.hidden/"
+
+	// TeleportDynamicLabelPrefix is the prefix used by labels that can change
+	// over time and should not be used as part of a role's deny rules.
+	TeleportDynamicLabelPrefix = "dynamic/"
 
 	// DiscoveredNameLabel is a resource metadata label name used to identify
 	// the discovered name of a resource, i.e. the name of a resource before a
@@ -914,12 +961,33 @@ const (
 	// that's used by reverse tunnel agents to know which proxies in each proxy
 	// group they should attempt to be connected to.
 	ProxyGroupGenerationLabel = TeleportInternalLabelPrefix + "proxygroup-gen"
+
+	// OktaAppNameLabel is the individual app name label.
+	OktaAppNameLabel = TeleportInternalLabelPrefix + "okta-app-name"
+
+	// OktaAppDescriptionLabel is the individual app description label.
+	OktaAppDescriptionLabel = TeleportInternalLabelPrefix + "okta-app-description"
+
+	// OktaGroupNameLabel is the individual group name label.
+	OktaGroupNameLabel = TeleportInternalLabelPrefix + "okta-group-name"
+
+	// OktaGroupDescriptionLabel is the individual group description label.
+	OktaGroupDescriptionLabel = TeleportInternalLabelPrefix + "okta-group-description"
+
+	// OktaRoleNameLabel is the human readable name for a role sourced from Okta.
+	OktaRoleNameLabel = TeleportInternalLabelPrefix + "okta-role-name"
+
+	// PluginGenerationLabel is the label for the current generation of the plugin.
+	PluginGenerationLabel = TeleportInternalLabelPrefix + "plugin-generation"
 )
 
 const (
 	// InstallMethodAWSOIDCDeployServiceEnvVar is the env var used to detect if the agent was installed
 	// using the DeployService action of the AWS OIDC integration.
 	InstallMethodAWSOIDCDeployServiceEnvVar = "TELEPORT_INSTALL_METHOD_AWSOIDC_DEPLOYSERVICE"
+
+	// AWSOIDCAgentLabel is a label that indicates that the service was deployed into ECS/Fargate using the AWS OIDC Integration.
+	AWSOIDCAgentLabel = TeleportNamespace + "/awsoidc-agent"
 )
 
 // CloudHostnameTag is the name of the tag in a cloud instance used to override a node's hostname.
@@ -1151,4 +1219,11 @@ const (
 	// DefaultInstallerScriptNameAgentless is the name of the by default populated, EC2
 	// installer script when agentless mode is enabled for a matcher
 	DefaultInstallerScriptNameAgentless = "default-agentless-installer"
+)
+
+const (
+	// ApplicationProtocolHTTP is the HTTP (Web) apps protocol
+	ApplicationProtocolHTTP = "HTTP"
+	// ApplicationProtocolTCP is the TCP apps protocol.
+	ApplicationProtocolTCP = "TCP"
 )

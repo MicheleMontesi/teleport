@@ -1,26 +1,29 @@
 /*
-Copyright 2021 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package services
 
 import (
+	"slices"
+
 	"github.com/google/uuid"
 	"github.com/gravitational/trace"
 	log "github.com/sirupsen/logrus"
-	"golang.org/x/exp/slices"
 
 	"github.com/gravitational/teleport"
 	"github.com/gravitational/teleport/api/constants"
@@ -126,6 +129,8 @@ func NewPresetEditorRole() types.Role {
 				Rules: []types.Rule{
 					types.NewRule(types.KindUser, RW()),
 					types.NewRule(types.KindRole, RW()),
+					types.NewRule(types.KindBot, RW()),
+					types.NewRule(types.KindDatabaseObjectImportRule, RW()),
 					types.NewRule(types.KindOIDC, RW()),
 					types.NewRule(types.KindSAML, RW()),
 					types.NewRule(types.KindGithub, RW()),
@@ -138,7 +143,7 @@ func NewPresetEditorRole() types.Role {
 					types.NewRule(types.KindClusterName, RW()),
 					types.NewRule(types.KindClusterNetworkingConfig, RW()),
 					types.NewRule(types.KindSessionRecordingConfig, RW()),
-					types.NewRule(types.KindExternalCloudAudit, RW()),
+					types.NewRule(types.KindExternalAuditStorage, RW()),
 					types.NewRule(types.KindUIConfig, RW()),
 					types.NewRule(types.KindTrustedCluster, RW()),
 					types.NewRule(types.KindRemoteCluster, RW()),
@@ -166,6 +171,8 @@ func NewPresetEditorRole() types.Role {
 					types.NewRule(types.KindDiscoveryConfig, RW()),
 					types.NewRule(types.KindSecurityReport, append(RW(), types.VerbUse)),
 					types.NewRule(types.KindAuditQuery, append(RW(), types.VerbUse)),
+					types.NewRule(types.KindAccessGraph, RW()),
+					types.NewRule(types.KindServerInfo, RW()),
 				},
 			},
 		},
@@ -478,6 +485,71 @@ func NewPresetRequireTrustedDeviceRole() types.Role {
 	}
 }
 
+// SystemOktaAccessRoleName is the name of the system role that allows
+// access to Okta resources. This will be used by the Okta requester role to
+// search for Okta resources.
+func NewSystemOktaAccessRole() types.Role {
+	if modules.GetModules().BuildType() != modules.BuildEnterprise {
+		return nil
+	}
+
+	role := &types.RoleV6{
+		Kind:    types.KindRole,
+		Version: types.V7,
+		Metadata: types.Metadata{
+			Name:        teleport.SystemOktaAccessRoleName,
+			Namespace:   apidefaults.Namespace,
+			Description: "Request Okta resources",
+			Labels: map[string]string{
+				types.TeleportInternalResourceType: types.SystemResource,
+			},
+		},
+		Spec: types.RoleSpecV6{
+			Allow: types.RoleConditions{
+				AppLabels: types.Labels{
+					types.OriginLabel: []string{types.OriginOkta},
+				},
+				GroupLabels: types.Labels{
+					types.OriginLabel: []string{types.OriginOkta},
+				},
+				Rules: []types.Rule{
+					types.NewRule(types.KindUserGroup, RO()),
+				},
+			},
+		},
+	}
+	return role
+}
+
+// SystemOktaRequesterRoleName is a name of a system role that allows
+// for requesting access to Okta resources. This differs from the requester role
+// in that it allows for requesting longer lived access.
+func NewSystemOktaRequesterRole() types.Role {
+	if modules.GetModules().BuildType() != modules.BuildEnterprise {
+		return nil
+	}
+
+	role := &types.RoleV6{
+		Kind:    types.KindRole,
+		Version: types.V7,
+		Metadata: types.Metadata{
+			Name:        teleport.SystemOktaRequesterRoleName,
+			Namespace:   apidefaults.Namespace,
+			Description: "Request Okta resources",
+			Labels: map[string]string{
+				types.TeleportInternalResourceType: types.SystemResource,
+				types.OriginLabel:                  types.OriginOkta,
+			},
+		},
+		Spec: types.RoleSpecV6{
+			Allow: types.RoleConditions{
+				Request: defaultAllowAccessRequestConditions(true)[teleport.SystemOktaRequesterRoleName],
+			},
+		},
+	}
+	return role
+}
+
 // bootstrapRoleMetadataLabels are metadata labels that will be applied to each role.
 // These are intended to add labels for older roles that didn't previously have them.
 func bootstrapRoleMetadataLabels() map[string]map[string]string {
@@ -490,6 +562,10 @@ func bootstrapRoleMetadataLabels() map[string]map[string]string {
 		},
 		teleport.PresetAuditorRoleName: {
 			types.TeleportInternalResourceType: types.PresetResource,
+		},
+		teleport.SystemOktaRequesterRoleName: {
+			types.TeleportInternalResourceType: types.SystemResource,
+			types.OriginLabel:                  types.OriginOkta,
 		},
 		// Group access, reviewer and requester are intentionally not added here as there may be
 		// existing customer defined roles that have these labels.
@@ -514,14 +590,25 @@ func defaultAllowRules() map[string][]types.Rule {
 // defaultAllowLabels has the Allow labels that should be set as default when they were not explicitly defined.
 // This is used to update existing builtin preset roles with new permissions during cluster upgrades.
 // The following Labels are supported:
+// - AppLabels
 // - DatabaseServiceLabels (db_service_labels)
-func defaultAllowLabels() map[string]types.RoleConditions {
-	return map[string]types.RoleConditions{
+// - GroupLabels
+func defaultAllowLabels(enterprise bool) map[string]types.RoleConditions {
+	conditions := map[string]types.RoleConditions{
 		teleport.PresetAccessRoleName: {
 			DatabaseServiceLabels: types.Labels{types.Wildcard: []string{types.Wildcard}},
 			DatabaseRoles:         []string{teleport.TraitInternalDBRolesVariable},
 		},
 	}
+
+	if enterprise {
+		conditions[teleport.SystemOktaAccessRoleName] = types.RoleConditions{
+			AppLabels:   types.Labels{types.OriginLabel: []string{types.OriginOkta}},
+			GroupLabels: types.Labels{types.OriginLabel: []string{types.OriginOkta}},
+		}
+	}
+
+	return conditions
 }
 
 // defaultAllowAccessRequestConditions has the access request conditions that should be set as default when they were
@@ -534,6 +621,12 @@ func defaultAllowAccessRequestConditions(enterprise bool) map[string]*types.Acce
 					teleport.PresetAccessRoleName,
 					teleport.PresetGroupAccessRoleName,
 				},
+			},
+			teleport.SystemOktaRequesterRoleName: {
+				SearchAsRoles: []string{
+					teleport.SystemOktaAccessRoleName,
+				},
+				MaxDuration: types.NewDuration(MaxAccessDuration),
 			},
 		}
 	}
@@ -567,6 +660,8 @@ func defaultAllowAccessReviewConditions(enterprise bool) map[string]*types.Acces
 func AddRoleDefaults(role types.Role) (types.Role, error) {
 	changed := false
 
+	oldLabels := role.GetAllLabels()
+
 	// Role labels
 	defaultRoleLabels, ok := bootstrapRoleMetadataLabels()[role.GetName()]
 	if ok {
@@ -587,11 +682,22 @@ func AddRoleDefaults(role types.Role) (types.Role, error) {
 		}
 	}
 
+	labels := role.GetMetadata().Labels
+	// We're specifically checking the old labels version of the Okta requester role here
+	// because we're bootstrapping new labels onto the role above. By checking the old labels,
+	// we can be assured that we're looking at the role as it existed before bootstrapping. If
+	// the role was user-created, then this won't have the internal-resource type attached,
+	// and we'll skip the rest of adding in default values.
+	if role.GetName() == teleport.SystemOktaRequesterRoleName {
+		labels = oldLabels
+	}
+
 	// Check if the role has a TeleportInternalResourceType attached. We do this after setting the role metadata
 	// labels because we set the role metadata labels for roles that have been well established (access,
 	// editor, auditor) that may not already have this label set, but we don't set it for newer roles
 	// (group-access, reviewer, requester) that may have customer definitions.
-	if role.GetMetadata().Labels[types.TeleportInternalResourceType] != types.PresetResource {
+	resourceType := labels[types.TeleportInternalResourceType]
+	if resourceType != types.PresetResource && resourceType != types.SystemResource {
 		return nil, trace.AlreadyExists("not modifying user created role")
 	}
 
@@ -613,24 +719,36 @@ func AddRoleDefaults(role types.Role) (types.Role, error) {
 		}
 	}
 
+	enterprise := modules.GetModules().BuildType() == modules.BuildEnterprise
+
 	// Labels
-	defaultLabels, ok := defaultAllowLabels()[role.GetName()]
+	defaultLabels, ok := defaultAllowLabels(enterprise)[role.GetName()]
 	if ok {
-		if unset, err := labelMatchersUnset(role, types.KindDatabaseService); err != nil {
-			return nil, trace.Wrap(err)
-		} else if unset && len(defaultLabels.DatabaseServiceLabels) > 0 {
-			role.SetLabelMatchers(types.Allow, types.KindDatabaseService, types.LabelMatchers{
-				Labels: defaultLabels.DatabaseServiceLabels,
-			})
-			changed = true
+		for _, kind := range []string{
+			types.KindApp,
+			types.KindDatabaseService,
+			types.KindUserGroup,
+		} {
+			var labels types.Labels
+			switch kind {
+			case types.KindApp:
+				labels = defaultLabels.AppLabels
+			case types.KindDatabaseService:
+				labels = defaultLabels.DatabaseServiceLabels
+			case types.KindUserGroup:
+				labels = defaultLabels.GroupLabels
+			}
+			labelsUpdated, err := updateAllowLabels(role, kind, labels)
+			if err != nil {
+				return nil, trace.Wrap(err)
+			}
+			changed = changed || labelsUpdated
 		}
 		if len(defaultLabels.DatabaseRoles) > 0 && len(role.GetDatabaseRoles(types.Allow)) == 0 {
 			role.SetDatabaseRoles(types.Allow, defaultLabels.DatabaseRoles)
 			changed = true
 		}
 	}
-
-	enterprise := modules.GetModules().BuildType() == modules.BuildEnterprise
 
 	if role.GetAccessRequestConditions(types.Allow).IsEmpty() {
 		arc := defaultAllowAccessRequestConditions(enterprise)[role.GetName()]
@@ -678,4 +796,18 @@ func resourceBelongsToRules(rules []types.Rule, resources []string) bool {
 	}
 
 	return false
+}
+
+func updateAllowLabels(role types.Role, kind string, defaultLabels types.Labels) (bool, error) {
+	var changed bool
+	if unset, err := labelMatchersUnset(role, kind); err != nil {
+		return false, trace.Wrap(err)
+	} else if unset && len(defaultLabels) > 0 {
+		role.SetLabelMatchers(types.Allow, kind, types.LabelMatchers{
+			Labels: defaultLabels,
+		})
+		changed = true
+	}
+
+	return changed, nil
 }

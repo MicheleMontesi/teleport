@@ -1,18 +1,20 @@
 /*
-Copyright 2022 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package common
 
@@ -91,7 +93,7 @@ func (c *AlertCommand) Initialize(app *kingpin.Application, config *servicecfg.C
 }
 
 // TryRun takes the CLI command as an argument (like "alerts ls") and executes it.
-func (c *AlertCommand) TryRun(ctx context.Context, cmd string, client auth.ClientI) (match bool, err error) {
+func (c *AlertCommand) TryRun(ctx context.Context, cmd string, client *auth.Client) (match bool, err error) {
 	switch cmd {
 	case c.alertList.FullCommand():
 		err = c.List(ctx, client)
@@ -105,7 +107,7 @@ func (c *AlertCommand) TryRun(ctx context.Context, cmd string, client auth.Clien
 	return true, trace.Wrap(err)
 }
 
-func (c *AlertCommand) ListAck(ctx context.Context, client auth.ClientI) error {
+func (c *AlertCommand) ListAck(ctx context.Context, client *auth.Client) error {
 	acks, err := client.GetAlertAcks(ctx)
 	if err != nil {
 		return trace.Wrap(err)
@@ -123,7 +125,7 @@ func (c *AlertCommand) ListAck(ctx context.Context, client auth.ClientI) error {
 	return nil
 }
 
-func (c *AlertCommand) Ack(ctx context.Context, client auth.ClientI) error {
+func (c *AlertCommand) Ack(ctx context.Context, client *auth.Client) error {
 	if c.clear {
 		return c.ClearAck(ctx, client)
 	}
@@ -147,12 +149,12 @@ func (c *AlertCommand) Ack(ctx context.Context, client auth.ClientI) error {
 		return trace.Wrap(err)
 	}
 
-	fmt.Printf("Successfully acknowledged alert '%s'. Alerts with this ID won't be pushed for %s.\n", c.alertID, c.ttl)
+	fmt.Printf("Successfully acknowledged alert %q. Alerts with this ID won't be pushed for %s.\n", c.alertID, c.ttl)
 
 	return nil
 }
 
-func (c *AlertCommand) ClearAck(ctx context.Context, client auth.ClientI) error {
+func (c *AlertCommand) ClearAck(ctx context.Context, client *auth.Client) error {
 	req := proto.ClearAlertAcksRequest{
 		AlertID: c.alertID,
 	}
@@ -161,12 +163,12 @@ func (c *AlertCommand) ClearAck(ctx context.Context, client auth.ClientI) error 
 		return trace.Wrap(err)
 	}
 
-	fmt.Printf("Successfully cleared acknowledgement for alert '%s'. Alerts with this ID will resume being pushed.\n", c.alertID)
+	fmt.Printf("Successfully cleared acknowledgement for alert %q. Alerts with this ID will resume being pushed.\n", c.alertID)
 
 	return nil
 }
 
-func (c *AlertCommand) List(ctx context.Context, client auth.ClientI) error {
+func (c *AlertCommand) List(ctx context.Context, client *auth.Client) error {
 	labels, err := libclient.ParseLabelSpec(c.labels)
 	if err != nil {
 		return trace.Wrap(err)
@@ -238,7 +240,7 @@ func displayAlertsJSON(alerts []types.ClusterAlert) error {
 	return nil
 }
 
-func (c *AlertCommand) Create(ctx context.Context, client auth.ClientI) error {
+func (c *AlertCommand) Create(ctx context.Context, client *auth.Client) error {
 	labels, err := libclient.ParseLabelSpec(c.labels)
 	if err != nil {
 		return trace.Wrap(err)

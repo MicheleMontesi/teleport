@@ -1,37 +1,44 @@
 /**
- * Copyright 2023 Gravitational, Inc
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
  *
- *      http://www.apache.org/licenses/LICENSE-2.0
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 import React from 'react';
 
-import { Flex, Text } from 'design';
+import { Flex } from 'design';
 import { CircleArrowLeft, CircleArrowRight } from 'design/Icon';
+import { PageIndicatorText } from 'design/DataTable/Pager/PageIndicatorText';
 
 import { StyledArrowBtn, StyledFetchMoreBtn } from '../StyledPager';
 
-import { useClientSidePager, Props } from './useClientSidePager';
+import { Props, useClientSidePager } from './useClientSidePager';
 
 export function ClientSidePager(props: Props) {
   const { nextPage, prevPage, onFetchMore, fetchStatus } = props;
   const { from, to, count, isNextDisabled, isPrevDisabled } =
     useClientSidePager(props);
 
+  if (count == 0) {
+    return;
+  }
+
   const isFetchingEnabled = onFetchMore && fetchStatus !== 'disabled';
   return (
-    <Flex justifyContent="flex-end" width="100%">
-      <Flex alignItems="center" mr={2}>
+    <Flex justifyContent="flex-end" width="100%" alignItems="center" mb={1}>
+      <Flex mr={2}>
         <PageIndicatorText from={from + 1} to={to + 1} count={count} />
         {isFetchingEnabled && (
           <StyledFetchMoreBtn
@@ -61,27 +68,5 @@ export function ClientSidePager(props: Props) {
         </StyledArrowBtn>
       </Flex>
     </Flex>
-  );
-}
-
-export function PageIndicatorText({
-  from,
-  to,
-  count,
-}: {
-  from: number;
-  to: number;
-  count: number;
-}) {
-  return (
-    <Text
-      typography="body2"
-      color="text.main"
-      mr={1}
-      style={{ whiteSpace: 'nowrap', textTransform: 'uppercase' }}
-    >
-      Showing <strong>{from}</strong> - <strong>{to}</strong> of{' '}
-      <strong>{count}</strong>
-    </Text>
   );
 }

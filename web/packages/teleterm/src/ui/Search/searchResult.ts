@@ -1,31 +1,36 @@
 /**
- * Copyright 2023 Gravitational, Inc
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
  *
- *      http://www.apache.org/licenses/LICENSE-2.0
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-import type { ClusterUri } from 'teleterm/ui/uri';
+import type { ClusterUri, DocumentUri } from 'teleterm/ui/uri';
 import type { Cluster } from 'teleterm/services/tshd/types';
 
 import type * as resourcesServiceTypes from 'teleterm/ui/services/resources';
+import type { DocumentClusterResourceKind } from 'teleterm/ui/services/workspacesService';
 
 type ResourceSearchResultBase<
-  Result extends resourcesServiceTypes.SearchResult
+  Result extends resourcesServiceTypes.SearchResult,
 > = Result & {
   labelMatches: LabelMatch[];
   resourceMatches: ResourceMatch<Result['kind']>[];
   score: number;
 };
+
+export type ResourceTypeFilter = DocumentClusterResourceKind;
 
 export type SearchResultServer =
   ResourceSearchResultBase<resourcesServiceTypes.SearchResultServer>;
@@ -33,6 +38,8 @@ export type SearchResultDatabase =
   ResourceSearchResultBase<resourcesServiceTypes.SearchResultDatabase>;
 export type SearchResultKube =
   ResourceSearchResultBase<resourcesServiceTypes.SearchResultKube>;
+export type SearchResultApp =
+  ResourceSearchResultBase<resourcesServiceTypes.SearchResultApp>;
 export type SearchResultCluster = {
   kind: 'cluster-filter';
   resource: Cluster;
@@ -41,9 +48,16 @@ export type SearchResultCluster = {
 };
 export type SearchResultResourceType = {
   kind: 'resource-type-filter';
-  resource: 'kubes' | 'servers' | 'databases';
+  resource: ResourceTypeFilter;
   nameMatch: string;
   score: number;
+};
+export type DisplayResults = {
+  kind: 'display-results';
+  value: string;
+  resourceKinds: DocumentClusterResourceKind[];
+  clusterUri: ClusterUri;
+  documentUri: DocumentUri | undefined;
 };
 
 // TODO(gzdunek): find a better name.
@@ -52,11 +66,15 @@ export type SearchResultResourceType = {
 export type ResourceSearchResult =
   | SearchResultServer
   | SearchResultDatabase
-  | SearchResultKube;
+  | SearchResultKube
+  | SearchResultApp;
 
 export type FilterSearchResult = SearchResultResourceType | SearchResultCluster;
 
-export type SearchResult = ResourceSearchResult | FilterSearchResult;
+export type SearchResult =
+  | ResourceSearchResult
+  | FilterSearchResult
+  | DisplayResults;
 
 export type LabelMatch = {
   kind: 'label-name' | 'label-value';
@@ -67,7 +85,7 @@ export type LabelMatch = {
 };
 
 export type ResourceMatch<Kind extends ResourceSearchResult['kind']> = {
-  field: typeof searchableFields[Kind][number];
+  field: (typeof searchableFields)[Kind][number];
   searchTerm: string;
 };
 
@@ -84,26 +102,28 @@ export const mainResourceField: {
   server: 'hostname',
   database: 'name',
   kube: 'name',
+  app: 'name',
 } as const;
 
 // The usage of Exclude here is a workaround to make sure that the fields in the array point only to
 // fields of string type.
 export const searchableFields: {
   [Kind in ResourceSearchResult['kind']]: ReadonlyArray<
-    Exclude<
-      keyof resourcesServiceTypes.SearchResultResource<Kind>,
-      'labelsList'
-    >
+    Exclude<keyof resourcesServiceTypes.SearchResultResource<Kind>, 'labels'>
   >;
 } = {
   server: ['name', 'hostname', 'addr'],
   database: ['name', 'desc', 'protocol', 'type'],
   kube: ['name'],
+  // Right now, friendlyName is set only for Okta apps (api/types/resource.go).
+  // The friendly name is constructed *after* fetching apps, but since it is
+  // made from the value of a label, the server-side search can find it.
+  app: ['name', 'friendlyName', 'desc', 'addrWithProtocol'],
 } as const;
 
 export interface ResourceTypeSearchFilter {
   filter: 'resource-type';
-  resourceType: 'kubes' | 'servers' | 'databases';
+  resourceType: ResourceTypeFilter;
 }
 
 export interface ClusterSearchFilter {
@@ -112,3 +132,15 @@ export interface ClusterSearchFilter {
 }
 
 export type SearchFilter = ResourceTypeSearchFilter | ClusterSearchFilter;
+
+export function isResourceTypeSearchFilter(
+  searchFilter: SearchFilter
+): searchFilter is ResourceTypeSearchFilter {
+  return searchFilter.filter === 'resource-type';
+}
+
+export function isClusterSearchFilter(
+  searchFilter: SearchFilter
+): searchFilter is ClusterSearchFilter {
+  return searchFilter.filter === 'cluster';
+}

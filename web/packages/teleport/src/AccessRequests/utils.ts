@@ -1,17 +1,19 @@
 /**
- * Copyright 2023 Gravitational, Inc.
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
  *
- *     http://www.apache.org/licenses/LICENSE-2.0
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 import {
@@ -43,6 +45,17 @@ export function roundToNearestTenMinutes(date: Duration): Duration {
   if (roundedMinutes === 0 && !date.days && !date.hours) {
     // Do not round down to 0. This
     roundedMinutes = 10;
+  }
+
+  // 60 minutes == 1 hour
+  // Prevent displaying time as eg: `5 hrs and 60 mins`
+  // to `6 hrs`.
+  if (roundedMinutes === 60) {
+    if (!date.hours) {
+      date.hours = 0;
+    }
+    date.hours += 1;
+    roundedMinutes = 0;
   }
   date.minutes = roundedMinutes;
   date.seconds = 0;
@@ -106,10 +119,10 @@ export function middleValues(
   }));
 }
 
-// Generate a list of middle values between now and the session TTL.
+// Generate a list of middle values between now and the request TTL.
 export function requestTtlMiddleValues(
   created: Date,
-  sessionTTL: Date
+  requestTtl: Date
 ): TimeDuration[] {
   const getInterval = (d: Date) =>
     roundToNearestTenMinutes(
@@ -119,22 +132,22 @@ export function requestTtlMiddleValues(
       })
     );
 
-  if (isAfter(addHours(created, 1), sessionTTL)) {
+  if (isAfter(addHours(created, 1), requestTtl)) {
     return [
       {
-        timestamp: sessionTTL.getTime(),
-        duration: getInterval(sessionTTL),
+        timestamp: requestTtl.getTime(),
+        duration: getInterval(requestTtl),
       },
     ];
   }
 
   const points: Date[] = [];
-  // Staggered hour options, up to the maximum possible session TTL.
-  const hourOptions = [1, 2, 3, 4, 6, 8, 12, 18, 24, 30];
+  // Staggered hour options, up to 1 week.
+  const hourOptions = [1, 2, 3, 4, 6, 8, 12, 18, 24, 30, 168];
 
   for (const h of hourOptions) {
     const t = addHours(created, h);
-    if (isAfter(t, sessionTTL)) {
+    if (isAfter(t, requestTtl)) {
       break;
     }
     points.push(t);

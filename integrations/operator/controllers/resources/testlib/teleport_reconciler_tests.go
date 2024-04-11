@@ -1,16 +1,20 @@
-// Copyright 2023 Gravitational, Inc
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package testlib
 
@@ -19,15 +23,19 @@ import (
 	"testing"
 
 	"github.com/gravitational/trace"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/client-go/util/retry"
 
 	"github.com/gravitational/teleport/api/types"
-	"github.com/gravitational/teleport/integrations/operator/controllers/resources"
+	"github.com/gravitational/teleport/integrations/operator/controllers/reconcilers"
 )
 
-type ResourceTestingPrimitives[T resources.TeleportResource, K resources.TeleportKubernetesResource[T]] interface {
+type ResourceTestingPrimitives[T reconcilers.Resource, K reconcilers.KubernetesCR[T]] interface {
+	// Adapter allows to recover the name revision and labels of a resource
+	reconcilers.Adapter[T]
+	// Setup the testing suite
 	Init(setup *TestSetup)
 	SetupTeleportFixtures(context.Context) error
 	// Interacting with the Teleport Resource
@@ -43,7 +51,7 @@ type ResourceTestingPrimitives[T resources.TeleportResource, K resources.Telepor
 	CompareTeleportAndKubernetesResource(T, K) (bool, string)
 }
 
-func ResourceCreationTest[T resources.TeleportResource, K resources.TeleportKubernetesResource[T]](t *testing.T, test ResourceTestingPrimitives[T, K], opts ...TestOption) {
+func ResourceCreationTest[T reconcilers.Resource, K reconcilers.KubernetesCR[T]](t *testing.T, test ResourceTestingPrimitives[T, K], opts ...TestOption) {
 	ctx := context.Background()
 	setup := SetupTestEnv(t, opts...)
 	test.Init(setup)
@@ -55,36 +63,25 @@ func ResourceCreationTest[T resources.TeleportResource, K resources.TeleportKube
 	err = test.CreateKubernetesResource(ctx, resourceName)
 	require.NoError(t, err)
 
+	var tResource T
 	FastEventually(t, func() bool {
-		tResource, err := test.GetTeleportResource(ctx, resourceName)
-		if trace.IsNotFound(err) {
-			return false
-		}
-		require.NoError(t, err)
-
-		require.Equal(t, tResource.GetName(), resourceName)
-
-		require.Contains(t, tResource.GetMetadata().Labels, types.OriginLabel)
-		require.Equal(t, tResource.GetMetadata().Labels[types.OriginLabel], types.OriginKubernetes)
-
-		return true
+		tResource, err = test.GetTeleportResource(ctx, resourceName)
+		return !trace.IsNotFound(err)
 	})
+	require.NoError(t, err)
+	require.Equal(t, resourceName, test.GetResourceName(tResource))
+	require.Equal(t, types.OriginKubernetes, test.GetResourceOrigin(tResource))
 
 	err = test.DeleteKubernetesResource(ctx, resourceName)
 	require.NoError(t, err)
 
 	FastEventually(t, func() bool {
 		_, err = test.GetTeleportResource(ctx, resourceName)
-		if trace.IsNotFound(err) {
-			return true
-		}
-		require.NoError(t, err)
-
-		return false
+		return trace.IsNotFound(err)
 	})
 }
 
-func ResourceDeletionDriftTest[T resources.TeleportResource, K resources.TeleportKubernetesResource[T]](t *testing.T, test ResourceTestingPrimitives[T, K], opts ...TestOption) {
+func ResourceDeletionDriftTest[T reconcilers.Resource, K reconcilers.KubernetesCR[T]](t *testing.T, test ResourceTestingPrimitives[T, K], opts ...TestOption) {
 	ctx := context.Background()
 	setup := SetupTestEnv(t, opts...)
 	test.Init(setup)
@@ -96,20 +93,17 @@ func ResourceDeletionDriftTest[T resources.TeleportResource, K resources.Telepor
 	err = test.CreateKubernetesResource(ctx, resourceName)
 	require.NoError(t, err)
 
+	var tResource T
 	FastEventually(t, func() bool {
-		tResource, err := test.GetTeleportResource(ctx, resourceName)
-		if trace.IsNotFound(err) {
-			return false
-		}
-		require.NoError(t, err)
-
-		require.Equal(t, tResource.GetName(), resourceName)
-
-		require.Contains(t, tResource.GetMetadata().Labels, types.OriginLabel)
-		require.Equal(t, tResource.GetMetadata().Labels[types.OriginLabel], types.OriginKubernetes)
-
-		return true
+		tResource, err = test.GetTeleportResource(ctx, resourceName)
+		return !trace.IsNotFound(err)
 	})
+	require.NoError(t, err)
+
+	require.Equal(t, resourceName, test.GetResourceName(tResource))
+
+	require.Equal(t, types.OriginKubernetes, test.GetResourceOrigin(tResource))
+
 	// We cause a drift by altering the Teleport resource.
 	// To make sure the operator does not reconcile while we're finished we suspend the operator
 	setup.StopKubernetesOperator()
@@ -135,7 +129,7 @@ func ResourceDeletionDriftTest[T resources.TeleportResource, K resources.Telepor
 	})
 }
 
-func ResourceUpdateTest[T resources.TeleportResource, K resources.TeleportKubernetesResource[T]](t *testing.T, test ResourceTestingPrimitives[T, K], opts ...TestOption) {
+func ResourceUpdateTest[T reconcilers.Resource, K reconcilers.KubernetesCR[T]](t *testing.T, test ResourceTestingPrimitives[T, K], opts ...TestOption) {
 	ctx := context.Background()
 	setup := SetupTestEnv(t, opts...)
 	test.Init(setup)
@@ -153,19 +147,19 @@ func ResourceUpdateTest[T resources.TeleportResource, K resources.TeleportKubern
 	require.NoError(t, err)
 
 	// Check the resource was updated in Teleport
-	FastEventually(t, func() bool {
+	FastEventuallyWithT(t, func(c *assert.CollectT) {
 		tResource, err := test.GetTeleportResource(ctx, resourceName)
-		require.NoError(t, err)
+		require.NoError(c, err)
 
 		kubeResource, err := test.GetKubernetesResource(ctx, resourceName)
-		require.NoError(t, err)
+		require.NoError(c, err)
 
 		// Kubernetes and Teleport resources are in-sync
 		equal, diff := test.CompareTeleportAndKubernetesResource(tResource, kubeResource)
 		if !equal {
 			t.Logf("Kubernetes and Teleport resources not sync-ed yet: %s", diff)
 		}
-		return equal
+		assert.True(c, equal)
 	})
 
 	// Updating the resource in Kubernetes
@@ -176,19 +170,19 @@ func ResourceUpdateTest[T resources.TeleportResource, K resources.TeleportKubern
 	require.NoError(t, err)
 
 	// Check the resource was updated in Teleport
-	FastEventually(t, func() bool {
+	FastEventuallyWithT(t, func(c *assert.CollectT) {
 		kubeResource, err := test.GetKubernetesResource(ctx, resourceName)
-		require.NoError(t, err)
+		require.NoError(c, err)
 
 		tResource, err := test.GetTeleportResource(ctx, resourceName)
-		require.NoError(t, err)
+		require.NoError(c, err)
 
 		// Kubernetes and Teleport resources are in-sync
 		equal, diff := test.CompareTeleportAndKubernetesResource(tResource, kubeResource)
 		if !equal {
 			t.Logf("Kubernetes and Teleport resources not sync-ed yet: %s", diff)
 		}
-		return equal
+		assert.True(c, equal)
 	})
 
 	// Delete the resource to avoid leftover state.

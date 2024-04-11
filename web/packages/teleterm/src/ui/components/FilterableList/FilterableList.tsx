@@ -1,17 +1,19 @@
 /**
- * Copyright 2023 Gravitational, Inc
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
  *
- *      http://www.apache.org/licenses/LICENSE-2.0
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 import React, { Fragment, ReactNode, useMemo, useState } from 'react';
@@ -28,15 +30,12 @@ interface FilterableListProps<T> {
   onFilterChange?(filter: string): void;
 }
 
-const maxItemsToShow = 10;
-
 export function FilterableList<T>(props: FilterableListProps<T>) {
   const { items } = props;
   const [searchValue, setSearchValue] = useState<string>();
 
   const filteredItems = useMemo(
-    () =>
-      filterItems(searchValue, items, props.filterBy).slice(0, maxItemsToShow),
+    () => filterItems(searchValue, items, props.filterBy),
     [items, searchValue]
   );
 
@@ -66,11 +65,13 @@ function filterItems<T>(
   items: T[],
   filterBy: keyof T
 ): T[] {
-  const trimmed = searchValue?.trim();
+  const trimmed = searchValue?.trim().toLocaleLowerCase();
   if (!trimmed) {
     return items;
   }
-  return items.filter(item => item[filterBy].toString().includes(trimmed));
+  return items.filter(item =>
+    item[filterBy].toString().toLocaleLowerCase().includes(trimmed)
+  );
 }
 
 const UnorderedList = styled.ul`
@@ -79,7 +80,7 @@ const UnorderedList = styled.ul`
 `;
 
 const StyledInput = styled(Input)`
-  background: inherit;
+  background-color: inherit;
   border-radius: 51px;
   margin-bottom: 8px;
   font-size: 14px;

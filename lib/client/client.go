@@ -1,18 +1,20 @@
 /*
-Copyright 2015-2020 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package client
 
@@ -21,6 +23,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -45,13 +48,14 @@ import (
 	"github.com/gravitational/teleport/api/client/proto"
 	"github.com/gravitational/teleport/api/client/webclient"
 	apidefaults "github.com/gravitational/teleport/api/defaults"
+	mfav1 "github.com/gravitational/teleport/api/gen/proto/go/teleport/mfa/v1"
+	"github.com/gravitational/teleport/api/mfa"
 	"github.com/gravitational/teleport/api/observability/tracing"
 	tracessh "github.com/gravitational/teleport/api/observability/tracing/ssh"
 	"github.com/gravitational/teleport/api/types"
 	apievents "github.com/gravitational/teleport/api/types/events"
 	"github.com/gravitational/teleport/api/utils/retryutils"
 	"github.com/gravitational/teleport/lib/auth"
-	"github.com/gravitational/teleport/lib/client/mfa"
 	"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/teleport/lib/events"
 	"github.com/gravitational/teleport/lib/sshutils"
@@ -208,7 +212,7 @@ func (proxy *ProxyClient) GetLeafClusters(ctx context.Context) ([]types.RemoteCl
 	}
 	defer clt.Close()
 
-	remoteClusters, err := clt.GetRemoteClusters()
+	remoteClusters, err := clt.GetRemoteClusters(ctx)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
@@ -286,6 +290,8 @@ func (p ReissueParams) isMFARequiredRequest(sshLogin string) *proto.IsMFARequire
 		req.Target = &proto.IsMFARequiredRequest_Database{Database: &p.RouteToDatabase}
 	case p.RouteToWindowsDesktop.WindowsDesktop != "":
 		req.Target = &proto.IsMFARequiredRequest_WindowsDesktop{WindowsDesktop: &p.RouteToWindowsDesktop}
+	case p.RouteToApp.Name != "":
+		req.Target = &proto.IsMFARequiredRequest_App{App: &p.RouteToApp}
 	}
 	return req
 }
@@ -426,24 +432,8 @@ func makeDatabaseClientPEM(proto string, cert []byte, pk *Key) ([]byte, error) {
 // or an error if anything goes wrong.
 type PromptMFAChallengeHandler func(ctx context.Context, proxyAddr string, c *proto.MFAAuthenticateChallenge) (*proto.MFAAuthenticateResponse, error)
 
-// issueUserCertsOpts contains extra options for issuing user certs.
-type issueUserCertsOpts struct {
-	mfaRequired *bool
-}
-
-// IssueUserCertsOpt is an option func for issuing user certs.
-type IssueUserCertsOpt func(*issueUserCertsOpts)
-
-// WithMFARequired is an IssueUserCertsOpt that sets the MFA required check
-// result in provided bool ptr.
-func WithMFARequired(mfaRequired *bool) IssueUserCertsOpt {
-	return func(opt *issueUserCertsOpts) {
-		opt.mfaRequired = mfaRequired
-	}
-}
-
 // IssueUserCertsWithMFA generates a single-use certificate for the user.
-func (proxy *ProxyClient) IssueUserCertsWithMFA(ctx context.Context, params ReissueParams, promptMFA PromptMFAFunc, applyOpts ...IssueUserCertsOpt) (*Key, error) {
+func (proxy *ProxyClient) IssueUserCertsWithMFA(ctx context.Context, params ReissueParams, mfaPrompt mfa.Prompt) (*Key, error) {
 	ctx, span := proxy.Tracer.Start(
 		ctx,
 		"proxyClient/IssueUserCertsWithMFA",
@@ -453,11 +443,6 @@ func (proxy *ProxyClient) IssueUserCertsWithMFA(ctx context.Context, params Reis
 		),
 	)
 	defer span.End()
-
-	issueOpts := issueUserCertsOpts{}
-	for _, applyOpt := range applyOpts {
-		applyOpt(&issueOpts)
-	}
 
 	if params.RouteToCluster == "" {
 		params.RouteToCluster = proxy.siteName
@@ -507,10 +492,6 @@ func (proxy *ProxyClient) IssueUserCertsWithMFA(ctx context.Context, params Reis
 		requiredCheck = check
 	}
 
-	if issueOpts.mfaRequired != nil {
-		*issueOpts.mfaRequired = requiredCheck.Required
-	}
-
 	if !requiredCheck.Required {
 		log.Debug("MFA not required for access.")
 		// MFA is not required.
@@ -536,6 +517,7 @@ func (proxy *ProxyClient) IssueUserCertsWithMFA(ctx context.Context, params Reis
 			// In case of MFA connect to root teleport proxy instead of JumpHost to request
 			// MFA certificates.
 			proxy.teleportClient.JumpHosts = nil
+			//nolint:staticcheck // SA1019. TODO(tross) remove once ProxyClient is no longer used.
 			rootClusterProxy, err = proxy.teleportClient.ConnectToProxy(ctx)
 			proxy.teleportClient.JumpHosts = jumpHost
 			if err != nil {
@@ -558,11 +540,14 @@ func (proxy *ProxyClient) IssueUserCertsWithMFA(ctx context.Context, params Reis
 	key, _, err = PerformMFACeremony(ctx, PerformMFACeremonyParams{
 		CurrentAuthClient: proxy.currentCluster,
 		RootAuthClient:    clt,
-		PromptMFA:         promptMFA,
+		MFAPrompt:         mfaPrompt,
 		MFAAgainstRoot:    params.RouteToCluster == rootClusterName,
 		MFARequiredReq:    nil, // No need to check if we got this far.
-		CertsReq:          certsReq,
-		Key:               key,
+		ChallengeExtensions: mfav1.ChallengeExtensions{
+			Scope: mfav1.ChallengeScope_CHALLENGE_SCOPE_USER_SESSION,
+		},
+		CertsReq: certsReq,
+		Key:      key,
 	})
 	if err != nil {
 		return nil, trace.Wrap(err)
@@ -785,7 +770,7 @@ func (proxy *ProxyClient) FindAppServersByFiltersForCluster(ctx context.Context,
 }
 
 // CreateAppSession creates a new application access session.
-func (proxy *ProxyClient) CreateAppSession(ctx context.Context, req types.CreateAppSessionRequest) (types.WebSession, error) {
+func (proxy *ProxyClient) CreateAppSession(ctx context.Context, req *proto.CreateAppSessionRequest) (types.WebSession, error) {
 	ctx, span := proxy.Tracer.Start(
 		ctx,
 		"proxyClient/CreateAppSession",
@@ -819,30 +804,6 @@ func (proxy *ProxyClient) CreateAppSession(ctx context.Context, req types.Create
 	defer accessPoint.Close()
 
 	err = auth.WaitForAppSession(ctx, ws.GetName(), ws.GetUser(), accessPoint)
-	if err != nil {
-		return nil, trace.Wrap(err)
-	}
-	return ws, nil
-}
-
-// GetAppSession creates a new application access session.
-func (proxy *ProxyClient) GetAppSession(ctx context.Context, req types.GetAppSessionRequest) (types.WebSession, error) {
-	ctx, span := proxy.Tracer.Start(
-		ctx,
-		"proxyClient/GetAppSession",
-		oteltrace.WithSpanKind(oteltrace.SpanKindClient),
-	)
-	defer span.End()
-
-	clusterName, err := proxy.RootClusterName(ctx)
-	if err != nil {
-		return nil, trace.Wrap(err)
-	}
-	authClient, err := proxy.ConnectToCluster(ctx, clusterName)
-	if err != nil {
-		return nil, trace.Wrap(err)
-	}
-	ws, err := authClient.GetAppSession(ctx, req)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
@@ -1076,7 +1037,8 @@ func (proxy *ProxyClient) ConnectToAuthServiceThroughALPNSNIProxy(ctx context.Co
 		ALPNConnUpgradeRequired:    proxy.teleportClient.IsALPNConnUpgradeRequiredForWebProxy(ctx, proxyAddr),
 		PROXYHeaderGetter:          CreatePROXYHeaderGetter(ctx, proxy.teleportClient.PROXYSigner),
 		InsecureAddressDiscovery:   proxy.teleportClient.InsecureSkipVerify,
-		PromptAdminRequestMFA:      proxy.teleportClient.NewMFAPrompt(mfa.WithHintBeforePrompt(mfa.AdminMFAHintBeforePrompt)),
+		MFAPromptConstructor:       proxy.teleportClient.NewMFAPrompt,
+		DialOpts:                   proxy.teleportClient.DialOpts,
 	})
 	if err != nil {
 		return nil, trace.Wrap(err)
@@ -1154,8 +1116,9 @@ func (proxy *ProxyClient) ConnectToCluster(ctx context.Context, clusterName stri
 		Credentials: []client.Credentials{
 			client.LoadTLS(tlsConfig),
 		},
-		CircuitBreakerConfig:  breaker.NoopBreakerConfig(),
-		PromptAdminRequestMFA: proxy.teleportClient.NewMFAPrompt(mfa.WithHintBeforePrompt(mfa.AdminMFAHintBeforePrompt)),
+		CircuitBreakerConfig: breaker.NoopBreakerConfig(),
+		MFAPromptConstructor: proxy.teleportClient.NewMFAPrompt,
+		DialOpts:             proxy.teleportClient.DialOpts,
 	})
 	if err != nil {
 		return nil, trace.Wrap(err)
@@ -1397,7 +1360,7 @@ func (proxy *ProxyClient) ConnectToNode(ctx context.Context, nodeAddress NodeDet
 	if err != nil {
 		// If the user pressed Ctrl-C, no need to try and read the error from
 		// the proxy, return an error right away.
-		if trace.Unwrap(err) == context.Canceled {
+		if errors.Is(trace.Unwrap(err), context.Canceled) {
 			return nil, trace.Wrap(err)
 		}
 
@@ -1582,10 +1545,12 @@ func (c *NodeClient) RunInteractiveShell(ctx context.Context, mode types.Session
 	}
 
 	if err = nodeSession.runShell(ctx, mode, beforeStart, c.TC.OnShellCreated); err != nil {
-		switch e := trace.Unwrap(err).(type) {
-		case *ssh.ExitError:
-			c.TC.ExitStatus = e.ExitStatus()
-		case *ssh.ExitMissingError:
+		var exitErr *ssh.ExitError
+		var exitMissingErr *ssh.ExitMissingError
+		switch err := trace.Unwrap(err); {
+		case errors.As(err, &exitErr):
+			c.TC.ExitStatus = exitErr.ExitStatus()
+		case errors.As(err, &exitMissingErr):
 			c.TC.ExitStatus = 1
 		}
 
@@ -1725,8 +1690,8 @@ func (c *NodeClient) RunCommand(ctx context.Context, command []string, opts ...R
 	defer nodeSession.Close()
 	if err := nodeSession.runCommand(ctx, types.SessionPeerMode, command, c.TC.OnShellCreated, c.TC.Config.InteractiveCommand); err != nil {
 		originErr := trace.Unwrap(err)
-		exitErr, ok := originErr.(*ssh.ExitError)
-		if ok {
+		var exitErr *ssh.ExitError
+		if errors.As(originErr, &exitErr) {
 			c.TC.ExitStatus = exitErr.ExitStatus()
 		} else {
 			// if an error occurs, but no exit status is passed back, GoSSH returns
@@ -2006,6 +1971,31 @@ func (c *NodeClient) dynamicListenAndForward(ctx context.Context, ln net.Listene
 	}
 
 	log.WithError(ctx.Err()).Infof("Shutting down dynamic port forwarding.")
+}
+
+// remoteListenAndForward requests a listening socket and forwards all incoming
+// commands to the local address through the SSH tunnel.
+func (c *NodeClient) remoteListenAndForward(ctx context.Context, ln net.Listener, localAddr, remoteAddr string) {
+	defer ln.Close()
+	log := log.WithField("localAddr", localAddr).WithField("remoteAddr", remoteAddr)
+	log.Infof("Starting remote port forwarding")
+
+	for ctx.Err() == nil {
+		conn, err := acceptWithContext(ctx, ln)
+		if err != nil {
+			if ctx.Err() == nil {
+				log.WithError(err).Errorf("Remote port forwarding failed.")
+			}
+			continue
+		}
+
+		go func() {
+			if err := proxyConnection(ctx, conn, localAddr, &net.Dialer{}); err != nil {
+				log.WithError(err).Warnf("Failed to proxy connection")
+			}
+		}()
+	}
+	log.WithError(ctx.Err()).Infof("Shutting down remote port forwarding.")
 }
 
 // GetRemoteTerminalSize fetches the terminal size of a given SSH session.

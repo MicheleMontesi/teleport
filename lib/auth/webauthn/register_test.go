@@ -1,16 +1,20 @@
-// Copyright 2021 Gravitational, Inc
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package webauthn_test
 
@@ -139,32 +143,32 @@ func TestRegistrationFlow_Begin_excludeList(t *testing.T) {
 	const user = "llama"
 	const rpID = "localhost"
 
-	dev1ID := []byte{1, 1, 1} // U2F
-	web1ID := []byte{1, 1, 2} // WebAuthn / MFA
-	rk1ID := []byte{1, 1, 3}  // WebAuthn / passwordless
-	dev1 := &types.MFADevice{
+	u2fID := []byte{1, 1, 1}     // U2F
+	mfaID := []byte{1, 1, 2}     // WebAuthn / MFA
+	passkeyID := []byte{1, 1, 3} // WebAuthn / passwordless
+	u2fDev := &types.MFADevice{
 		Device: &types.MFADevice_U2F{
 			U2F: &types.U2FDevice{
-				KeyHandle: dev1ID,
+				KeyHandle: u2fID,
 			},
 		},
 	}
-	web1 := &types.MFADevice{
+	mfaDev := &types.MFADevice{
 		Device: &types.MFADevice_Webauthn{
 			Webauthn: &types.WebauthnDevice{
-				CredentialId: web1ID,
+				CredentialId: mfaID,
 			},
 		},
 	}
-	rk1 := &types.MFADevice{
+	passkeyDev := &types.MFADevice{
 		Device: &types.MFADevice_Webauthn{
 			Webauthn: &types.WebauthnDevice{
-				CredentialId: rk1ID,
+				CredentialId: passkeyID,
 				ResidentKey:  true,
 			},
 		},
 	}
-	identity := newFakeIdentity(user, dev1, web1, rk1)
+	identity := newFakeIdentity(user, u2fDev, mfaDev, passkeyDev)
 
 	rf := wanlib.RegistrationFlow{
 		Webauthn: &types.Webauthn{
@@ -180,13 +184,18 @@ func TestRegistrationFlow_Begin_excludeList(t *testing.T) {
 		wantExcludeList [][]byte
 	}{
 		{
-			name:            "MFA",
-			wantExcludeList: [][]byte{web1ID}, // U2F and resident excluded
+			name: "MFA",
+			wantExcludeList: [][]byte{
+				mfaID,
+				passkeyID, // Prevents "downgrades"
+			},
 		},
 		{
-			name:            "passwordless",
-			passwordless:    true,
-			wantExcludeList: [][]byte{rk1ID}, // U2F and MFA excluded
+			name:         "passwordless",
+			passwordless: true,
+			wantExcludeList: [][]byte{
+				passkeyID,
+			},
 		},
 	}
 	for _, test := range tests {

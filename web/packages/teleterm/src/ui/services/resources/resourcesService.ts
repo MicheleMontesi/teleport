@@ -1,30 +1,54 @@
 /**
- * Copyright 2023 Gravitational, Inc
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
  *
- *      http://www.apache.org/licenses/LICENSE-2.0
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 import { pluralize } from 'shared/utils/text';
 
-import type { ResourceTypeSearchFilter } from 'teleterm/ui/Search/searchResult';
+import { makeApp, App } from 'teleterm/ui/services/clusters';
+
+import {
+  cloneAbortSignal,
+  TshdRpcError,
+} from 'teleterm/services/tshd/cloneableClient';
+
+import {
+  resourceOneOfIsServer,
+  resourceOneOfIsDatabase,
+  resourceOneOfIsApp,
+  resourceOneOfIsKube,
+} from 'teleterm/helpers';
+
+import Logger from 'teleterm/logger';
+
+import type { TshdClient } from 'teleterm/services/tshd';
 import type * as types from 'teleterm/services/tshd/types';
 import type * as uri from 'teleterm/ui/uri';
+import type { ResourceTypeFilter } from 'teleterm/ui/Search/searchResult';
 
 export class ResourcesService {
-  constructor(private tshClient: types.TshClient) {}
+  private logger = new Logger('ResourcesService');
 
-  fetchServers(params: types.GetResourcesParams) {
-    return this.tshClient.getServers(params);
+  constructor(private tshClient: TshdClient) {}
+
+  async fetchServers(params: types.GetResourcesParams) {
+    const { response } = await this.tshClient.getServers(
+      makeGetResourcesParamsRequest(params)
+    );
+    return response;
   }
 
   // TODO(ravicious): Refactor it to use logic similar to that in the Web UI.
@@ -34,7 +58,7 @@ export class ResourcesService {
     hostname: string
   ): Promise<types.Server | undefined> {
     const query = `name == "${hostname}"`;
-    const { agentsList: servers } = await this.fetchServers({
+    const { agents: servers } = await this.fetchServers({
       clusterUri,
       query,
       limit: 2,
@@ -48,16 +72,30 @@ export class ResourcesService {
     return servers[0];
   }
 
-  fetchDatabases(params: types.GetResourcesParams) {
-    return this.tshClient.getDatabases(params);
+  async fetchDatabases(params: types.GetResourcesParams) {
+    const { response } = await this.tshClient.getDatabases(
+      makeGetResourcesParamsRequest(params)
+    );
+    return response;
   }
 
-  fetchKubes(params: types.GetResourcesParams) {
-    return this.tshClient.getKubes(params);
+  async fetchKubes(params: types.GetResourcesParams) {
+    const { response } = await this.tshClient.getKubes(
+      makeGetResourcesParamsRequest(params)
+    );
+    return response;
+  }
+
+  async fetchApps(params: types.GetResourcesParams) {
+    const { response } = await this.tshClient.getApps(
+      makeGetResourcesParamsRequest(params)
+    );
+    return response;
   }
 
   async getDbUsers(dbUri: uri.DatabaseUri): Promise<string[]> {
-    return await this.tshClient.listDatabaseUsers(dbUri);
+    const { response } = await this.tshClient.listDatabaseUsers({ dbUri });
+    return response.users;
   }
 
   /**
@@ -73,32 +111,39 @@ export class ResourcesService {
   async searchResources({
     clusterUri,
     search,
-    filter,
+    filters,
     limit,
   }: {
     clusterUri: uri.ClusterUri;
     search: string;
-    // TODO(ravicious): Accept just `server | database | kube` as searchFilter here, wrap it in a
-    // variant of a discriminated union in searchResult.ts.
-    filter: ResourceTypeSearchFilter | undefined;
+    filters: ResourceTypeFilter[];
     limit: number;
   }): Promise<PromiseSettledResult<SearchResult[]>[]> {
-    const params = { search, clusterUri, sort: null, limit };
+    const params = { search, clusterUri, sort: null, limit, startKey: '' };
 
     const getServers = () =>
       this.fetchServers(params).then(
         res =>
-          res.agentsList.map(resource => ({
+          res.agents.map(resource => ({
             kind: 'server' as const,
             resource,
           })),
         err =>
           Promise.reject(new ResourceSearchError(clusterUri, 'server', err))
       );
+    const getApps = () =>
+      this.fetchApps(params).then(
+        res =>
+          res.agents.map(resource => ({
+            kind: 'app' as const,
+            resource: makeApp(resource),
+          })),
+        err => Promise.reject(new ResourceSearchError(clusterUri, 'app', err))
+      );
     const getDatabases = () =>
       this.fetchDatabases(params).then(
         res =>
-          res.agentsList.map(resource => ({
+          res.agents.map(resource => ({
             kind: 'database' as const,
             resource,
           })),
@@ -108,45 +153,70 @@ export class ResourcesService {
     const getKubes = () =>
       this.fetchKubes(params).then(
         res =>
-          res.agentsList.map(resource => ({
+          res.agents.map(resource => ({
             kind: 'kube' as const,
             resource,
           })),
         err => Promise.reject(new ResourceSearchError(clusterUri, 'kube', err))
       );
 
-    const promises = filter
+    const promises = filters?.length
       ? [
-          filter.resourceType === 'servers' && getServers(),
-          filter.resourceType === 'databases' && getDatabases(),
-          filter.resourceType === 'kubes' && getKubes(),
+          filters.includes('node') && getServers(),
+          filters.includes('app') && getApps(),
+          filters.includes('db') && getDatabases(),
+          filters.includes('kube_cluster') && getKubes(),
         ].filter(Boolean)
-      : [getServers(), getDatabases(), getKubes()];
+      : [getServers(), getApps(), getDatabases(), getKubes()];
 
     return Promise.allSettled(promises);
   }
 
-  listUnifiedResources(
+  async listUnifiedResources(
     params: types.ListUnifiedResourcesRequest,
     abortSignal: AbortSignal
-  ) {
-    const tshAbortSignal = {
-      aborted: false,
-      addEventListener: (cb: (...args: any[]) => void) => {
-        abortSignal.addEventListener('abort', cb);
-      },
-      removeEventListener: (cb: (...args: any[]) => void) => {
-        abortSignal.removeEventListener('abort', cb);
-      },
+  ): Promise<{ nextKey: string; resources: UnifiedResourceResponse[] }> {
+    const { response } = await this.tshClient.listUnifiedResources(params, {
+      abort: cloneAbortSignal(abortSignal),
+    });
+    return {
+      nextKey: response.nextKey,
+      resources: response.resources
+        .map(p => {
+          if (resourceOneOfIsServer(p.resource)) {
+            return {
+              kind: 'server' as const,
+              resource: p.resource.server,
+            };
+          }
+
+          if (resourceOneOfIsDatabase(p.resource)) {
+            return {
+              kind: 'database' as const,
+              resource: p.resource.database,
+            };
+          }
+
+          if (resourceOneOfIsApp(p.resource)) {
+            return {
+              kind: 'app' as const,
+              resource: p.resource.app,
+            };
+          }
+
+          if (resourceOneOfIsKube(p.resource)) {
+            return {
+              kind: 'kube' as const,
+              resource: p.resource.kube,
+            };
+          }
+
+          this.logger.info(
+            `Ignoring unsupported resource ${JSON.stringify(p)}.`
+          );
+        })
+        .filter(Boolean),
     };
-    abortSignal.addEventListener(
-      'abort',
-      () => {
-        tshAbortSignal.aborted = true;
-      },
-      { once: true }
-    );
-    return this.tshClient.listUnifiedResources(params, tshAbortSignal);
   }
 }
 
@@ -161,7 +231,7 @@ export class ResourceSearchError extends Error {
   constructor(
     public clusterUri: uri.ClusterUri,
     public resourceKind: SearchResult['kind'],
-    cause: Error
+    cause: Error | TshdRpcError
   ) {
     super(
       `Error while fetching resources of type ${resourceKind} from cluster ${clusterUri}`,
@@ -199,17 +269,46 @@ export type SearchResultDatabase = {
   resource: types.Database;
 };
 export type SearchResultKube = { kind: 'kube'; resource: types.Kube };
+export type SearchResultApp = {
+  kind: 'app';
+  resource: App;
+};
 
 export type SearchResult =
   | SearchResultServer
   | SearchResultDatabase
-  | SearchResultKube;
+  | SearchResultKube
+  | SearchResultApp;
 
 export type SearchResultResource<Kind extends SearchResult['kind']> =
   Kind extends 'server'
     ? SearchResultServer['resource']
-    : Kind extends 'database'
-    ? SearchResultDatabase['resource']
-    : Kind extends 'kube'
-    ? SearchResultKube['resource']
-    : never;
+    : Kind extends 'app'
+      ? SearchResultApp['resource']
+      : Kind extends 'database'
+        ? SearchResultDatabase['resource']
+        : Kind extends 'kube'
+          ? SearchResultKube['resource']
+          : never;
+
+function makeGetResourcesParamsRequest(params: types.GetResourcesParams) {
+  return {
+    ...params,
+    search: params.search || '',
+    query: params.query || '',
+    searchAsRoles: params.searchAsRoles || '',
+    startKey: params.startKey || '',
+    sortBy: params.sort
+      ? `${params.sort.fieldName}:${params.sort.dir.toLowerCase()}`
+      : '',
+  };
+}
+
+export type UnifiedResourceResponse =
+  | { kind: 'server'; resource: types.Server }
+  | {
+      kind: 'database';
+      resource: types.Database;
+    }
+  | { kind: 'kube'; resource: types.Kube }
+  | { kind: 'app'; resource: types.App };

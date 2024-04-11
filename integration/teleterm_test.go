@@ -1,21 +1,26 @@
-// Copyright 2023 Gravitational, Inc
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package integration
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os/user"
@@ -29,9 +34,12 @@ import (
 	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
+	"github.com/gravitational/teleport/api/client/proto"
+	"github.com/gravitational/teleport/api/constants"
 	"github.com/gravitational/teleport/api/defaults"
 	"github.com/gravitational/teleport/api/types"
 	"github.com/gravitational/teleport/api/utils"
@@ -39,6 +47,9 @@ import (
 	dbhelpers "github.com/gravitational/teleport/integration/db"
 	"github.com/gravitational/teleport/integration/helpers"
 	"github.com/gravitational/teleport/lib/auth"
+	"github.com/gravitational/teleport/lib/auth/mocku2f"
+	wancli "github.com/gravitational/teleport/lib/auth/webauthncli"
+	wantypes "github.com/gravitational/teleport/lib/auth/webauthntypes"
 	"github.com/gravitational/teleport/lib/client"
 	"github.com/gravitational/teleport/lib/service"
 	"github.com/gravitational/teleport/lib/service/servicecfg"
@@ -97,9 +108,9 @@ func TestTeleterm(t *testing.T) {
 		testCreateConnectMyComputerRole(t, pack)
 	})
 
-	t.Run("CreateAndDeleteConnectMyComputerToken", func(t *testing.T) {
+	t.Run("CreateConnectMyComputerToken", func(t *testing.T) {
 		t.Parallel()
-		testCreatingAndDeletingConnectMyComputerToken(t, pack)
+		testCreateConnectMyComputerToken(t, pack, nil /* setupUserMFA */)
 	})
 
 	t.Run("WaitForConnectMyComputerNodeJoin", func(t *testing.T) {
@@ -110,6 +121,120 @@ func TestTeleterm(t *testing.T) {
 	t.Run("DeleteConnectMyComputerNode", func(t *testing.T) {
 		t.Parallel()
 		testDeleteConnectMyComputerNode(t, pack)
+	})
+
+	t.Run("TestClientCache", func(t *testing.T) {
+		t.Parallel()
+
+		testClientCache(t, pack, creds)
+	})
+
+	t.Run("with MFA", func(t *testing.T) {
+		authServer := pack.Root.Cluster.Process.GetAuthServer()
+		rpID, _, err := net.SplitHostPort(pack.Root.Cluster.Web)
+		require.NoError(t, err)
+
+		// Enforce MFA
+		helpers.UpsertAuthPrefAndWaitForCache(t, context.Background(), authServer, &types.AuthPreferenceV2{
+			Spec: types.AuthPreferenceSpecV2{
+				Type:         constants.Local,
+				SecondFactor: constants.SecondFactorWebauthn,
+				Webauthn: &types.Webauthn{
+					RPID: rpID,
+				},
+			},
+		})
+
+		// Remove MFA enforcement on cleanup.
+		t.Cleanup(func() {
+			helpers.UpsertAuthPrefAndWaitForCache(t, context.Background(), authServer, &types.AuthPreferenceV2{
+				Spec: types.AuthPreferenceSpecV2{
+					Type:         constants.Local,
+					SecondFactor: constants.SecondFactorOff,
+				},
+			})
+			require.NoError(t, err)
+		})
+
+		setupUserMFA := func(t *testing.T, userName string, tshdEventsService *mockTSHDEventsService) client.WebauthnLoginFunc {
+			// Configure user account with an MFA device.
+			origin := fmt.Sprintf("https://%s", rpID)
+			device, err := mocku2f.Create()
+			require.NoError(t, err)
+			device.SetPasswordless()
+
+			token, err := authServer.CreateResetPasswordToken(context.Background(), auth.CreateUserTokenRequest{
+				Name: userName,
+			})
+			require.NoError(t, err)
+
+			tokenID := token.GetName()
+			res, err := authServer.CreateRegisterChallenge(context.Background(), &proto.CreateRegisterChallengeRequest{
+				TokenID:     tokenID,
+				DeviceType:  proto.DeviceType_DEVICE_TYPE_WEBAUTHN,
+				DeviceUsage: proto.DeviceUsage_DEVICE_USAGE_PASSWORDLESS,
+			})
+			require.NoError(t, err)
+			cc := wantypes.CredentialCreationFromProto(res.GetWebauthn())
+
+			ccr, err := device.SignCredentialCreation(origin, cc)
+			require.NoError(t, err)
+			_, err = authServer.ChangeUserAuthentication(context.Background(), &proto.ChangeUserAuthenticationRequest{
+				TokenID: tokenID,
+				NewMFARegisterResponse: &proto.MFARegisterResponse{
+					Response: &proto.MFARegisterResponse_Webauthn{
+						Webauthn: wantypes.CredentialCreationResponseToProto(ccr),
+					},
+				},
+			})
+			require.NoError(t, err)
+
+			// Prepare a function which simulates key tap.
+			var webauthLoginCallCount atomic.Uint32
+			webauthnLogin := func(ctx context.Context, origin string, assertion *wantypes.CredentialAssertion, prompt wancli.LoginPrompt, opts *wancli.LoginOpts) (*proto.MFAAuthenticateResponse, string, error) {
+				t.Helper()
+				updatedWebauthnLoginCallCount := webauthLoginCallCount.Add(1)
+
+				// When daemon.mfaPrompt prompts for MFA, it spawns two goroutines. One calls PromptMFA on
+				// tshdEventService and expects OTP in response (if available). Another calls this function.
+				// Whichever returns a non-error response first wins.
+				//
+				// Since in this test we use Webauthn, this function can return ASAP without giving a chance
+				// to the other to call PromptMFA. This would cause race conditions, as we might want to
+				// verify later in the test that PromptMFA has indeed been called.
+				//
+				// To ensure that, this function waits until PromptMFA has been called before proceeding.
+				// This also simulates a flow where the user was notified about the need to tap the key
+				// through the UI and then taps the key.
+				assert.EventuallyWithT(t, func(t *assert.CollectT) {
+					// Each call to webauthnLogin should have an equivalent call to PromptMFA and there should
+					// be no multiple concurrent calls.
+					assert.Equal(t, updatedWebauthnLoginCallCount, tshdEventsService.promptMFACallCount.Load(),
+						"Expected each call to webauthnLogin to have an equivalent call to PromptMFA")
+				}, 5*time.Second, 50*time.Millisecond)
+
+				car, err := device.SignAssertion(origin, assertion)
+				if err != nil {
+					return nil, "", err
+				}
+
+				carProto := wantypes.CredentialAssertionResponseToProto(car)
+
+				return &proto.MFAAuthenticateResponse{
+					Response: &proto.MFAAuthenticateResponse_Webauthn{
+						Webauthn: carProto,
+					},
+				}, "", nil
+			}
+
+			return webauthnLogin
+		}
+
+		t.Run("CreateConnectMyComputerToken", func(t *testing.T) {
+			t.Parallel()
+
+			testCreateConnectMyComputerToken(t, pack, setupUserMFA)
+		})
 	})
 }
 
@@ -174,7 +299,7 @@ func testListRootClustersReturnsLoggedInUser(t *testing.T, pack *dbhelpers.Datab
 	response, err := handler.ListRootClusters(context.Background(), &api.ListClustersRequest{})
 	require.NoError(t, err)
 
-	require.Equal(t, 1, len(response.Clusters))
+	require.Len(t, response.Clusters, 1)
 	require.Equal(t, pack.Root.User.GetName(), response.Clusters[0].LoggedInUser.Name)
 }
 
@@ -300,7 +425,6 @@ func testHeadlessWatcher(t *testing.T, pack *dbhelpers.DatabasePack, creds *help
 	ha.State = types.HeadlessAuthenticationState_HEADLESS_AUTHENTICATION_STATE_PENDING
 
 	// Start the tshd event service and connect the daemon to it.
-
 	tshdEventsService, addr := newMockTSHDEventsServiceServer(t)
 	err = daemonService.UpdateAndDialTshdEventsServerAddress(addr)
 	require.NoError(t, err)
@@ -330,20 +454,102 @@ func testHeadlessWatcher(t *testing.T, pack *dbhelpers.DatabasePack, creds *help
 	)
 }
 
+func testClientCache(t *testing.T, pack *dbhelpers.DatabasePack, creds *helpers.UserCreds) {
+	ctx := context.Background()
+
+	tc := mustLogin(t, pack.Root.User.GetName(), pack, creds)
+
+	storageFakeClock := clockwork.NewFakeClockAt(time.Now())
+
+	storage, err := clusters.NewStorage(clusters.Config{
+		Dir:                tc.KeysDir,
+		Clock:              storageFakeClock,
+		InsecureSkipVerify: tc.InsecureSkipVerify,
+	})
+	require.NoError(t, err)
+
+	cluster, _, err := storage.Add(ctx, tc.WebProxyAddr)
+	require.NoError(t, err)
+
+	daemonService, err := daemon.New(daemon.Config{
+		Storage: storage,
+		CreateTshdEventsClientCredsFunc: func() (grpc.DialOption, error) {
+			return grpc.WithTransportCredentials(insecure.NewCredentials()), nil
+		},
+		KubeconfigsDir: t.TempDir(),
+		AgentsDir:      t.TempDir(),
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		daemonService.Stop()
+	})
+
+	// Check if parallel calls trying to get a client will return the same one.
+	eg, egCtx := errgroup.WithContext(ctx)
+	blocker := make(chan struct{})
+	const concurrentCalls = 5
+	concurrentCallsForClient := make([]*client.ProxyClient, concurrentCalls)
+	for i := range concurrentCallsForClient {
+		client := &concurrentCallsForClient[i]
+		eg.Go(func() error {
+			<-blocker
+			c, err := daemonService.GetCachedClient(egCtx, cluster.URI)
+			*client = c
+			return err
+		})
+	}
+	// unblock the operation which is still in progress
+	close(blocker)
+	require.NoError(t, eg.Wait())
+	require.Subset(t, concurrentCallsForClient[:1], concurrentCallsForClient[1:])
+
+	// Since we have a client in the cache, it should be returned.
+	secondCallForClient, err := daemonService.GetCachedClient(ctx, cluster.URI)
+	require.NoError(t, err)
+	require.Equal(t, concurrentCallsForClient[0], secondCallForClient)
+
+	// Let's remove the client from the cache.
+	// The call to GetCachedClient will
+	// connect to proxy and return a new client.
+	err = daemonService.ClearCachedClientsForRoot(cluster.URI)
+	require.NoError(t, err)
+	thirdCallForClient, err := daemonService.GetCachedClient(ctx, cluster.URI)
+	require.NoError(t, err)
+	require.NotEqual(t, secondCallForClient, thirdCallForClient)
+
+	// After closing the client (from our or a remote side)
+	// it will be removed from the cache.
+	// The call to GetCachedClient will connect to proxy and return a new client.
+	err = thirdCallForClient.Close()
+	require.NoError(t, err)
+
+	// TODO(gzdunek): Re-enable this test.
+	// This part is flaky, there is no guarantee that the goroutine waiting
+	// for the client to close will be able to remove it from the cache
+	// before we try to get a new client.
+
+	//fourthCallForClient, err := daemonService.GetCachedClient(ctx, cluster.URI)
+	//require.NoError(t, err)
+	//require.NotEqual(t, thirdCallForClient, fourthCallForClient)
+}
+
 func testCreateConnectMyComputerRole(t *testing.T, pack *dbhelpers.DatabasePack) {
 	systemUser, err := user.Current()
 	require.NoError(t, err)
 
 	tests := []struct {
-		name               string
-		userAlreadyHasRole bool
-		existingRole       func(userName string) types.RoleV6
+		name                     string
+		assertCertsReloaded      require.BoolAssertionFunc
+		existingRole             func(userName string) types.RoleV6
+		assignExistingRoleToUser bool
 	}{
 		{
-			name: "role does not exist",
+			name:                "role does not exist",
+			assertCertsReloaded: require.True,
 		},
 		{
-			name: "role exists and includes current system username",
+			name:                "role exists and includes current system username",
+			assertCertsReloaded: require.True,
 			existingRole: func(userName string) types.RoleV6 {
 				return types.RoleV6{
 					Spec: types.RoleSpecV6{
@@ -358,7 +564,8 @@ func testCreateConnectMyComputerRole(t *testing.T, pack *dbhelpers.DatabasePack)
 			},
 		},
 		{
-			name: "role exists and does not include current system username",
+			name:                "role exists and does not include current system username",
+			assertCertsReloaded: require.True,
 			existingRole: func(userName string) types.RoleV6 {
 				return types.RoleV6{
 					Spec: types.RoleSpecV6{
@@ -373,7 +580,8 @@ func testCreateConnectMyComputerRole(t *testing.T, pack *dbhelpers.DatabasePack)
 			},
 		},
 		{
-			name: "role exists and has no logins",
+			name:                "role exists and has no logins",
+			assertCertsReloaded: require.True,
 			existingRole: func(userName string) types.RoleV6 {
 				return types.RoleV6{
 					Spec: types.RoleSpecV6{
@@ -388,7 +596,8 @@ func testCreateConnectMyComputerRole(t *testing.T, pack *dbhelpers.DatabasePack)
 			},
 		},
 		{
-			name: "role exists and owner node label was changed",
+			name:                "role exists and owner node label was changed",
+			assertCertsReloaded: require.True,
 			existingRole: func(userName string) types.RoleV6 {
 				return types.RoleV6{
 					Spec: types.RoleSpecV6{
@@ -403,8 +612,9 @@ func testCreateConnectMyComputerRole(t *testing.T, pack *dbhelpers.DatabasePack)
 			},
 		},
 		{
-			name:               "user already has existing role that includes current system username",
-			userAlreadyHasRole: true,
+			name:                     "user already has existing role that includes current system username",
+			assignExistingRoleToUser: true,
+			assertCertsReloaded:      require.False,
 			existingRole: func(userName string) types.RoleV6 {
 				return types.RoleV6{
 					Spec: types.RoleSpecV6{
@@ -419,8 +629,9 @@ func testCreateConnectMyComputerRole(t *testing.T, pack *dbhelpers.DatabasePack)
 			},
 		},
 		{
-			name:               "user already has existing role that does not include current system username",
-			userAlreadyHasRole: true,
+			name:                     "user already has existing role that does not include current system username",
+			assignExistingRoleToUser: true,
+			assertCertsReloaded:      require.True,
 			existingRole: func(userName string) types.RoleV6 {
 				return types.RoleV6{
 					Spec: types.RoleSpecV6{
@@ -435,8 +646,26 @@ func testCreateConnectMyComputerRole(t *testing.T, pack *dbhelpers.DatabasePack)
 			},
 		},
 		{
-			name:               "user already has existing role with modified owner node label",
-			userAlreadyHasRole: true,
+			name:                     "user already has existing role with modified owner node label",
+			assignExistingRoleToUser: true,
+			assertCertsReloaded:      require.False,
+			existingRole: func(userName string) types.RoleV6 {
+				return types.RoleV6{
+					Spec: types.RoleSpecV6{
+						Allow: types.RoleConditions{
+							NodeLabels: types.Labels{
+								types.ConnectMyComputerNodeOwnerLabel: []string{"bogus-username"},
+							},
+							Logins: []string{systemUser.Username},
+						},
+					},
+				}
+			},
+		},
+		{
+			name:                     "user already has existing role that does not include current system username and has modified owner node label",
+			assignExistingRoleToUser: true,
+			assertCertsReloaded:      require.True,
 			existingRole: func(userName string) types.RoleV6 {
 				return types.RoleV6{
 					Spec: types.RoleSpecV6{
@@ -492,9 +721,9 @@ func testCreateConnectMyComputerRole(t *testing.T, pack *dbhelpers.DatabasePack)
 
 			// Create a new user to avoid colliding with other tests.
 			// Assign to the user the role with allow rules and the existing role if present.
-			if test.userAlreadyHasRole {
+			if test.assignExistingRoleToUser {
 				if existingRole == nil {
-					t.Log("userAlreadyHasRole must be used together with existingRole")
+					t.Log("assignExistingRoleToUser must be used together with existingRole")
 					t.Fail()
 					return
 				}
@@ -554,13 +783,7 @@ func testCreateConnectMyComputerRole(t *testing.T, pack *dbhelpers.DatabasePack)
 			})
 			require.NoError(t, err)
 
-			if test.userAlreadyHasRole {
-				require.False(t, response.CertsReloaded,
-					"expected the handler to signal that the certs were not reloaded since the user was already assigned the role")
-			} else {
-				require.True(t, response.CertsReloaded,
-					"expected the handler to signal that the certs were reloaded since the user was just assigned a new role")
-			}
+			test.assertCertsReloaded(t, response.CertsReloaded, "CertsReloaded is the opposite of the expected value")
 
 			// Verify that the role exists.
 			role, err := authServer.GetRole(ctx, roleName)
@@ -587,7 +810,7 @@ func testCreateConnectMyComputerRole(t *testing.T, pack *dbhelpers.DatabasePack)
 	}
 }
 
-func testCreatingAndDeletingConnectMyComputerToken(t *testing.T, pack *dbhelpers.DatabasePack) {
+func testCreateConnectMyComputerToken(t *testing.T, pack *dbhelpers.DatabasePack, setupUserMFA setupUserMFAFunc) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
@@ -610,6 +833,12 @@ func testCreatingAndDeletingConnectMyComputerToken(t *testing.T, pack *dbhelpers
 	_, err = auth.CreateUser(ctx, authServer, userName, userRoles...)
 	require.NoError(t, err)
 
+	tshdEventsService, addr := newMockTSHDEventsServiceServer(t)
+	var webauthnLogin client.WebauthnLoginFunc
+	if setupUserMFA != nil {
+		webauthnLogin = setupUserMFA(t, userName, tshdEventsService)
+	}
+
 	// Log in as the new user.
 	creds, err := helpers.GenerateUserCreds(helpers.UserCredsRequest{
 		Process:  pack.Root.Cluster.Process,
@@ -625,6 +854,7 @@ func testCreatingAndDeletingConnectMyComputerToken(t *testing.T, pack *dbhelpers
 		Dir:                tc.KeysDir,
 		InsecureSkipVerify: tc.InsecureSkipVerify,
 		Clock:              fakeClock,
+		WebauthnLogin:      webauthnLogin,
 	})
 	require.NoError(t, err)
 
@@ -633,6 +863,9 @@ func testCreatingAndDeletingConnectMyComputerToken(t *testing.T, pack *dbhelpers
 		Storage:        storage,
 		KubeconfigsDir: t.TempDir(),
 		AgentsDir:      t.TempDir(),
+		CreateTshdEventsClientCredsFunc: func() (grpc.DialOption, error) {
+			return grpc.WithTransportCredentials(insecure.NewCredentials()), nil
+		},
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() {
@@ -645,6 +878,9 @@ func testCreatingAndDeletingConnectMyComputerToken(t *testing.T, pack *dbhelpers
 	)
 	require.NoError(t, err)
 
+	err = daemonService.UpdateAndDialTshdEventsServerAddress(addr)
+	require.NoError(t, err)
+
 	// Call CreateConnectMyComputerNodeToken.
 	rootClusterName, _, err := net.SplitHostPort(pack.Root.Cluster.Web)
 	require.NoError(t, err)
@@ -654,10 +890,6 @@ func testCreatingAndDeletingConnectMyComputerToken(t *testing.T, pack *dbhelpers
 		RootClusterUri: rootClusterURI,
 	})
 	require.NoError(t, err)
-	require.Equal(t, &api.Label{
-		Name:  types.ConnectMyComputerNodeOwnerLabel,
-		Value: userName,
-	}, createdTokenResponse.GetLabels()[0])
 
 	// Verify that token exists
 	tokenFromAuthServer, err := authServer.GetToken(ctx, createdTokenResponse.GetToken())
@@ -668,40 +900,10 @@ func testCreatingAndDeletingConnectMyComputerToken(t *testing.T, pack *dbhelpers
 	// ...and is valid for no longer than 5 minutes.
 	require.LessOrEqual(t, tokenFromAuthServer.Expiry(), requestCreatedAt.Add(5*time.Minute))
 
-	// watcher waits for the token deletion
-	watcher, err := authServer.NewWatcher(ctx, types.Watch{
-		Kinds: []types.WatchKind{
-			{Kind: types.KindToken},
-		},
-	})
-	require.NoError(t, err)
-	defer watcher.Close()
-
-	select {
-	case <-time.After(time.Second * 10):
-		t.Fatalf("Timeout waiting for event.")
-	case event := <-watcher.Events():
-		if event.Type != types.OpInit {
-			t.Fatalf("Unexpected event type.")
-		}
-		require.Equal(t, event.Type, types.OpInit)
-	case <-watcher.Done():
-		t.Fatal(watcher.Error())
+	if setupUserMFA != nil {
+		require.Equal(t, uint32(1), tshdEventsService.promptMFACallCount.Load(),
+			"Unexpected number of calls to TSHDEventsClient.PromptMFA")
 	}
-
-	// Call DeleteConnectMyComputerToken.
-	_, err = handler.DeleteConnectMyComputerToken(ctx, &api.DeleteConnectMyComputerTokenRequest{
-		RootClusterUri: rootClusterURI,
-		Token:          createdTokenResponse.GetToken(),
-	})
-	require.NoError(t, err)
-
-	waitForResourceToBeDeleted(t, watcher, types.KindToken, createdTokenResponse.GetToken())
-
-	_, err = authServer.GetToken(ctx, createdTokenResponse.GetToken())
-
-	// The token should no longer exist.
-	require.True(t, trace.IsNotFound(err))
 }
 
 func testWaitForConnectMyComputerNodeJoin(t *testing.T, pack *dbhelpers.DatabasePack, creds *helpers.UserCreds) {
@@ -871,12 +1073,16 @@ func mustLogin(t *testing.T, userName string, pack *dbhelpers.DatabasePack, cred
 	return tc
 }
 
+type setupUserMFAFunc func(t *testing.T, userName string, tshdEventsService *mockTSHDEventsService) client.WebauthnLoginFunc
+
 type mockTSHDEventsService struct {
-	*api.UnimplementedTshdEventsServiceServer
+	api.UnimplementedTshdEventsServiceServer
 	sendPendingHeadlessAuthenticationCount atomic.Uint32
+	promptMFACallCount                     atomic.Uint32
 }
 
 func newMockTSHDEventsServiceServer(t *testing.T) (service *mockTSHDEventsService, addr string) {
+	t.Helper()
 	tshdEventsService := &mockTSHDEventsService{}
 
 	ls, err := net.Listen("tcp", "localhost:0")
@@ -897,7 +1103,7 @@ func newMockTSHDEventsServiceServer(t *testing.T) (service *mockTSHDEventsServic
 		// before grpcServer.Serve is called and grpcServer.Serve will return
 		// grpc.ErrServerStopped.
 		err := <-serveErr
-		if err != grpc.ErrServerStopped {
+		if !errors.Is(err, grpc.ErrServerStopped) {
 			assert.NoError(t, err)
 		}
 	})
@@ -910,21 +1116,10 @@ func (c *mockTSHDEventsService) SendPendingHeadlessAuthentication(context.Contex
 	return &api.SendPendingHeadlessAuthenticationResponse{}, nil
 }
 
-func waitForResourceToBeDeleted(t *testing.T, watcher types.Watcher, kind, name string) {
-	timeout := time.After(time.Second * 15)
-	for {
-		select {
-		case <-timeout:
-			t.Fatalf("Timeout waiting for event.")
-		case event := <-watcher.Events():
-			if event.Type != types.OpDelete {
-				continue
-			}
-			if event.Resource.GetKind() == kind && event.Resource.GetMetadata().Name == name {
-				return
-			}
-		case <-watcher.Done():
-			t.Fatalf("Watcher error %s.", watcher.Error())
-		}
-	}
+func (c *mockTSHDEventsService) PromptMFA(context.Context, *api.PromptMFARequest) (*api.PromptMFAResponse, error) {
+	c.promptMFACallCount.Add(1)
+
+	// PromptMFAResponse returns the TOTP code, so PromptMFA itself
+	// needs to be implemented only once we need to test TOTP MFA.
+	return nil, trace.NotImplemented("mockTSHDEventsService does not implement PromptMFA")
 }

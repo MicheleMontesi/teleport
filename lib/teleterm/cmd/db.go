@@ -1,16 +1,20 @@
-// Copyright 2022 Gravitational, Inc
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package cmd
 
@@ -20,18 +24,31 @@ import (
 	"github.com/gravitational/trace"
 
 	"github.com/gravitational/teleport/lib/client/db/dbcmd"
+	"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/teleport/lib/teleterm/clusters"
 	"github.com/gravitational/teleport/lib/teleterm/gateway"
 	"github.com/gravitational/teleport/lib/tlsca"
 )
 
-// NewDBCLICommand creates CLI commands for database gateway.
-func NewDBCLICommand(cluster *clusters.Cluster, gateway gateway.Gateway) (*exec.Cmd, error) {
-	cmd, err := newDBCLICommandWithExecer(cluster, gateway, dbcmd.SystemExecer{})
-	return cmd, trace.Wrap(err)
+// Cmds represents a single command in two variants – one that can be used to spawn a process and
+// one that can be copied and pasted into a terminal.
+type Cmds struct {
+	// Exec is the command that should be used when directly executing a command for the given
+	// gateway.
+	Exec *exec.Cmd
+	// Preview is the command that should be used to display the command in the UI. Typically this
+	// means that Preview includes quotes around special characters, so that the command gets executed
+	// properly when the user copies and then pastes it into a terminal.
+	Preview *exec.Cmd
 }
 
-func newDBCLICommandWithExecer(cluster *clusters.Cluster, gateway gateway.Gateway, execer dbcmd.Execer) (*exec.Cmd, error) {
+// NewDBCLICommand creates CLI commands for database gateway.
+func NewDBCLICommand(cluster *clusters.Cluster, gateway gateway.Gateway) (Cmds, error) {
+	cmds, err := newDBCLICommandWithExecer(cluster, gateway, dbcmd.SystemExecer{})
+	return cmds, trace.Wrap(err)
+}
+
+func newDBCLICommandWithExecer(cluster *clusters.Cluster, gateway gateway.Gateway, execer dbcmd.Execer) (Cmds, error) {
 	routeToDb := tlsca.RouteToDatabase{
 		ServiceName: gateway.TargetName(),
 		Protocol:    gateway.Protocol(),
@@ -39,17 +56,35 @@ func newDBCLICommandWithExecer(cluster *clusters.Cluster, gateway gateway.Gatewa
 		Database:    gateway.TargetSubresourceName(),
 	}
 
-	cmd, err := clusters.NewDBCLICmdBuilder(cluster, routeToDb,
+	opts := []dbcmd.ConnectCommandFunc{
 		dbcmd.WithLogger(gateway.Log()),
 		dbcmd.WithLocalProxy(gateway.LocalAddress(), gateway.LocalPortInt(), ""),
 		dbcmd.WithNoTLS(),
-		dbcmd.WithPrintFormat(),
 		dbcmd.WithTolerateMissingCLIClient(),
 		dbcmd.WithExecer(execer),
-	).GetConnectCommand()
-	if err != nil {
-		return nil, trace.Wrap(err)
 	}
 
-	return cmd, nil
+	// DynamoDB doesn't support non-print-format use.
+	if gateway.Protocol() == defaults.ProtocolDynamoDB {
+		opts = append(opts, dbcmd.WithPrintFormat())
+	}
+
+	previewOpts := append(opts, dbcmd.WithPrintFormat())
+
+	execCmd, err := clusters.NewDBCLICmdBuilder(cluster, routeToDb, opts...).GetConnectCommand()
+	if err != nil {
+		return Cmds{}, trace.Wrap(err)
+	}
+
+	previewCmd, err := clusters.NewDBCLICmdBuilder(cluster, routeToDb, previewOpts...).GetConnectCommand()
+	if err != nil {
+		return Cmds{}, trace.Wrap(err)
+	}
+
+	cmds := Cmds{
+		Exec:    execCmd,
+		Preview: previewCmd,
+	}
+
+	return cmds, nil
 }

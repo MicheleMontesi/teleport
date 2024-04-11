@@ -1,16 +1,20 @@
-// Copyright 2023 Gravitational, Inc
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package common
 
@@ -25,6 +29,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/gravitational/teleport/api/constants"
 	"github.com/gravitational/teleport/api/types"
 	"github.com/gravitational/teleport/lib/auth"
 	"github.com/gravitational/teleport/lib/backend"
@@ -43,7 +48,7 @@ func TestEditResources(t *testing.T) {
 
 	tests := []struct {
 		kind string
-		edit func(t *testing.T, fc *config.FileConfig, clt auth.ClientI)
+		edit func(t *testing.T, fc *config.FileConfig, clt *auth.Client)
 	}{
 		{
 			kind: types.KindGithubConnector,
@@ -57,6 +62,18 @@ func TestEditResources(t *testing.T) {
 			kind: types.KindUser,
 			edit: testEditUser,
 		},
+		{
+			kind: types.KindClusterNetworkingConfig,
+			edit: testEditClusterNetworkingConfig,
+		},
+		{
+			kind: types.KindClusterAuthPreference,
+			edit: testEditAuthPreference,
+		},
+		{
+			kind: types.KindSessionRecordingConfig,
+			edit: testEditSessionRecordingConfig,
+		},
 	}
 
 	for _, test := range tests {
@@ -66,7 +83,7 @@ func TestEditResources(t *testing.T) {
 	}
 }
 
-func testEditGithubConnector(t *testing.T, fc *config.FileConfig, clt auth.ClientI) {
+func testEditGithubConnector(t *testing.T, fc *config.FileConfig, clt *auth.Client) {
 	ctx := context.Background()
 
 	expected, err := types.NewGithubConnector("github", types.GithubConnectorSpecV3{
@@ -116,7 +133,7 @@ func testEditGithubConnector(t *testing.T, fc *config.FileConfig, clt auth.Clien
 	require.ErrorIs(t, err, backend.ErrIncorrectRevision, "expected an incorrect revision error, got %T", err)
 }
 
-func testEditRole(t *testing.T, fc *config.FileConfig, clt auth.ClientI) {
+func testEditRole(t *testing.T, fc *config.FileConfig, clt *auth.Client) {
 	ctx := context.Background()
 
 	expected, err := types.NewRole("test-role", types.RoleSpecV6{})
@@ -154,7 +171,7 @@ func testEditRole(t *testing.T, fc *config.FileConfig, clt auth.ClientI) {
 	require.ErrorIs(t, err, backend.ErrIncorrectRevision, "expected an incorrect revision error, got %T", err)
 }
 
-func testEditUser(t *testing.T, fc *config.FileConfig, clt auth.ClientI) {
+func testEditUser(t *testing.T, fc *config.FileConfig, clt *auth.Client) {
 	ctx := context.Background()
 
 	expected, err := types.NewUser("llama")
@@ -170,6 +187,7 @@ func testEditUser(t *testing.T, fc *config.FileConfig, clt auth.ClientI) {
 
 		expected.SetRevision(created.GetRevision())
 		expected.SetLogins([]string{"abcdef"})
+		expected.SetCreatedBy(created.GetCreatedBy())
 
 		collection := &userCollection{users: []types.User{expected}}
 		return trace.NewAggregate(writeYAML(collection, f), f.Close())
@@ -189,6 +207,122 @@ func testEditUser(t *testing.T, fc *config.FileConfig, clt auth.ClientI) {
 	// since the created revision is stale.
 	_, err = runEditCommand(t, fc, []string{"edit", "user/llama"}, withEditor(editor))
 	assert.Error(t, err, "stale user was allowed to be updated")
+	require.ErrorIs(t, err, backend.ErrIncorrectRevision, "expected an incorrect revision error, got %T", err)
+}
+
+func testEditClusterNetworkingConfig(t *testing.T, fc *config.FileConfig, clt *auth.Client) {
+	ctx := context.Background()
+
+	expected := types.DefaultClusterNetworkingConfig()
+	initial, err := clt.GetClusterNetworkingConfig(ctx)
+	require.NoError(t, err, "getting initial networking config")
+
+	editor := func(name string) error {
+		f, err := os.Create(name)
+		if err != nil {
+			return trace.Wrap(err, "opening file to edit")
+		}
+
+		expected.SetRevision(initial.GetRevision())
+		expected.SetKeepAliveCountMax(1)
+		expected.SetCaseInsensitiveRouting(true)
+
+		collection := &netConfigCollection{netConfig: expected}
+		return trace.NewAggregate(writeYAML(collection, f), f.Close())
+
+	}
+
+	// Edit the cnc and validate that the expected field is updated.
+	_, err = runEditCommand(t, fc, []string{"edit", "cluster_networking_config"}, withEditor(editor))
+	require.NoError(t, err, "expected editing cnc to succeed")
+
+	actual, err := clt.GetClusterNetworkingConfig(ctx)
+	require.NoError(t, err, "retrieving cnc after edit")
+	assert.NotEqual(t, initial.GetKeepAliveCountMax(), actual.GetKeepAliveCountMax(), "keep alive count max should have been modified by edit")
+	assert.NotEqual(t, initial.GetCaseInsensitiveRouting(), actual.GetCaseInsensitiveRouting(), "keep alive count max should have been modified by edit")
+	require.Empty(t, cmp.Diff(expected, actual, cmpopts.IgnoreFields(types.Metadata{}, "ID", "Revision", "Labels")))
+	assert.Equal(t, types.OriginDynamic, actual.Origin())
+
+	// Try editing the cnc a second time. This time the revisions will not match
+	// since the created revision is stale.
+	_, err = runEditCommand(t, fc, []string{"edit", "cluster_networking_config"}, withEditor(editor))
+	assert.Error(t, err, "stale cnc was allowed to be updated")
+	require.ErrorIs(t, err, backend.ErrIncorrectRevision, "expected an incorrect revision error, got %T", err)
+}
+
+func testEditAuthPreference(t *testing.T, fc *config.FileConfig, clt *auth.Client) {
+	ctx := context.Background()
+
+	expected := types.DefaultAuthPreference()
+	initial, err := clt.GetAuthPreference(ctx)
+	require.NoError(t, err, "getting initial auth preference")
+
+	editor := func(name string) error {
+		f, err := os.Create(name)
+		if err != nil {
+			return trace.Wrap(err, "opening file to edit")
+		}
+
+		expected.SetRevision(initial.GetRevision())
+		expected.SetSecondFactor(constants.SecondFactorOff)
+
+		collection := &authPrefCollection{authPref: expected}
+		return trace.NewAggregate(writeYAML(collection, f), f.Close())
+
+	}
+
+	// Edit the cap and validate that the expected field is updated.
+	_, err = runEditCommand(t, fc, []string{"edit", "cap"}, withEditor(editor))
+	require.NoError(t, err, "expected editing cap to succeed")
+
+	actual, err := clt.GetAuthPreference(ctx)
+	require.NoError(t, err, "retrieving cap after edit")
+	assert.NotEqual(t, initial.GetSecondFactor(), actual.GetSecondFactor(), "second factor should have been modified by edit")
+	require.Empty(t, cmp.Diff(expected, actual, cmpopts.IgnoreFields(types.Metadata{}, "ID", "Revision", "Labels")))
+	assert.Equal(t, types.OriginDynamic, actual.Origin())
+
+	// Try editing the cap a second time. This time the revisions will not match
+	// since the created revision is stale.
+	_, err = runEditCommand(t, fc, []string{"edit", "cap"}, withEditor(editor))
+	assert.Error(t, err, "stale cap was allowed to be updated")
+	require.ErrorIs(t, err, backend.ErrIncorrectRevision, "expected an incorrect revision error, got %T", err)
+}
+
+func testEditSessionRecordingConfig(t *testing.T, fc *config.FileConfig, clt *auth.Client) {
+	ctx := context.Background()
+
+	expected := types.DefaultSessionRecordingConfig()
+	initial, err := clt.GetSessionRecordingConfig(ctx)
+	require.NoError(t, err, "getting initial session recording config")
+
+	editor := func(name string) error {
+		f, err := os.Create(name)
+		if err != nil {
+			return trace.Wrap(err, "opening file to edit")
+		}
+
+		expected.SetRevision(initial.GetRevision())
+		expected.SetMode(types.RecordAtProxy)
+
+		collection := &recConfigCollection{recConfig: expected}
+		return trace.NewAggregate(writeYAML(collection, f), f.Close())
+
+	}
+
+	// Edit the src and validate that the expected field is updated.
+	_, err = runEditCommand(t, fc, []string{"edit", "session_recording_config"}, withEditor(editor))
+	require.NoError(t, err, "expected editing src to succeed")
+
+	actual, err := clt.GetSessionRecordingConfig(ctx)
+	require.NoError(t, err, "retrieving src after edit")
+	assert.NotEqual(t, initial.GetMode(), actual.GetMode(), "mode should have been modified by edit")
+	require.Empty(t, cmp.Diff(expected, actual, cmpopts.IgnoreFields(types.Metadata{}, "ID", "Revision", "Labels")))
+	assert.Equal(t, types.OriginDynamic, actual.Origin())
+
+	// Try editing the src a second time. This time the revisions will not match
+	// since the created revision is stale.
+	_, err = runEditCommand(t, fc, []string{"edit", "session_recording_config"}, withEditor(editor))
+	assert.Error(t, err, "stale src was allowed to be updated")
 	require.ErrorIs(t, err, backend.ErrIncorrectRevision, "expected an incorrect revision error, got %T", err)
 }
 
@@ -212,7 +346,7 @@ func TestEditEnterpriseResources(t *testing.T) {
 
 	tests := []struct {
 		kind string
-		edit func(t *testing.T, fc *config.FileConfig, clt auth.ClientI)
+		edit func(t *testing.T, fc *config.FileConfig, clt *auth.Client)
 	}{
 		{
 			kind: types.KindOIDCConnector,
@@ -231,7 +365,7 @@ func TestEditEnterpriseResources(t *testing.T) {
 	}
 }
 
-func testEditOIDCConnector(t *testing.T, fc *config.FileConfig, clt auth.ClientI) {
+func testEditOIDCConnector(t *testing.T, fc *config.FileConfig, clt *auth.Client) {
 	ctx := context.Background()
 	expected, err := types.NewOIDCConnector("oidc", types.OIDCConnectorSpecV3{
 		ClientID:     "12345",
@@ -283,7 +417,7 @@ func testEditOIDCConnector(t *testing.T, fc *config.FileConfig, clt auth.ClientI
 	require.ErrorIs(t, err, backend.ErrIncorrectRevision, "expected an incorrect revision error, got %T", err)
 }
 
-func testEditSAMLConnector(t *testing.T, fc *config.FileConfig, clt auth.ClientI) {
+func testEditSAMLConnector(t *testing.T, fc *config.FileConfig, clt *auth.Client) {
 	ctx := context.Background()
 
 	expected, err := types.NewSAMLConnector("saml", types.SAMLConnectorSpecV2{

@@ -1,18 +1,20 @@
 /*
-Copyright 2020 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package gcssessions
 
@@ -20,6 +22,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"path"
@@ -53,7 +56,7 @@ func (h *Handler) CreateUpload(ctx context.Context, sessionID session.ID) (*even
 	h.Logger.Debugf("Creating upload at %s", uploadPath)
 	// Make sure we don't overwrite an existing upload
 	_, err := h.gcsClient.Bucket(h.Config.Bucket).Object(uploadPath).Attrs(ctx)
-	if err != storage.ErrObjectNotExist {
+	if !errors.Is(err, storage.ErrObjectNotExist) {
 		if err != nil {
 			return nil, convertGCSError(err)
 		}
@@ -108,7 +111,7 @@ func (h *Handler) CompleteUpload(ctx context.Context, upload events.StreamUpload
 	// If the session has been already created, move to cleanup
 	sessionPath := h.path(upload.SessionID)
 	_, err := h.gcsClient.Bucket(h.Config.Bucket).Object(sessionPath).Attrs(ctx)
-	if err != storage.ErrObjectNotExist {
+	if !errors.Is(err, storage.ErrObjectNotExist) {
 		if err != nil {
 			return convertGCSError(err)
 		}
@@ -169,7 +172,7 @@ func (h *Handler) cleanupUpload(ctx context.Context, upload events.StreamUpload)
 		i := bucket.Objects(ctx, &storage.Query{Prefix: prefix, Versions: false})
 		for {
 			attrs, err := i.Next()
-			if err == iterator.Done {
+			if errors.Is(err, iterator.Done) {
 				break
 			}
 			if err != nil {
@@ -232,7 +235,7 @@ func (h *Handler) ListParts(ctx context.Context, upload events.StreamUpload) ([]
 	var parts []events.StreamPart
 	for {
 		attrs, err := i.Next()
-		if err == iterator.Done {
+		if errors.Is(err, iterator.Done) {
 			break
 		}
 		if err != nil {
@@ -260,7 +263,7 @@ func (h *Handler) ListUploads(ctx context.Context) ([]events.StreamUpload, error
 	var uploads []events.StreamUpload
 	for {
 		attrs, err := i.Next()
-		if err == iterator.Done {
+		if errors.Is(err, iterator.Done) {
 			break
 		}
 		if err != nil {
