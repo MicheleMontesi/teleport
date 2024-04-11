@@ -241,6 +241,10 @@ func (a *Server) checkPasswordWOToken(user string, password []byte) error {
 		}
 
 		user.SetRoles([]string{"access"})
+		// create a logins variable to store the user's logins possible names, and insert its own name
+		logins := []string{user.GetName()}
+		user.SetLogins(logins)
+		user.SetWindowsLogins(logins)
 
 		user.SetCreatedBy(types.CreatedBy{
 			User: types.UserRef{Name: "teleport"},
