@@ -217,11 +217,13 @@ func (a *Server) checkPasswordWOToken(user string, password []byte) error {
 
 	err := services.VerifyPassword(password)
 	if err != nil {
+		println("1.1) password verification failed")
 		return trace.BadParameter(errMsg)
 	}
 
 	hash, err := a.GetPasswordHash(user)
 	if err != nil && !trace.IsNotFound(err) {
+		println("1.2) password hash not found")
 		return trace.Wrap(err)
 	}
 	userFound := true
