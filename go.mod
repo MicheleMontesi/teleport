@@ -514,6 +514,7 @@ require (
 	k8s.io/kube-openapi v0.0.0-20240224005224-582cce78233b // indirect
 	k8s.io/metrics v0.29.3 // indirect
 	k8s.io/utils v0.0.0-20240102154912-e7106e64919e // indirect
+	layeh.com/radius v0.0.0-20231213012653-1006025d24f8 // indirect
 	mvdan.cc/sh/v3 v3.7.0 // indirect
 	oras.land/oras-go v1.2.5 // indirect
 	sigs.k8s.io/json v0.0.0-20221116044647-bc3834ca7abd // indirect
