@@ -1,18 +1,20 @@
 /*
-Copyright 2022 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 // Package sftp handles file transfers client-side via SFTP.
 package sftp
@@ -218,8 +220,8 @@ func (c *Config) setDefaults() {
 		logger = log.StandardLogger()
 	}
 	c.Log = logger.WithFields(log.Fields{
-		trace.Component: "SFTP",
-		trace.ComponentFields: log.Fields{
+		teleport.ComponentKey: "SFTP",
+		teleport.ComponentFields: log.Fields{
 			"SrcPaths":      c.srcPaths,
 			"DstPath":       c.dstPath,
 			"Recursive":     c.opts.Recursive,
@@ -237,17 +239,11 @@ func (c *Config) TransferFiles(ctx context.Context, sshClient *ssh.Client) error
 	}
 	defer s.Close()
 
-	// File transfers in a moderated session require these two variables
-	// to check for approval on the ssh server. If they exist in the
-	// context, set them in our env vars
+	// File transfers in a moderated session require this variable
+	// to check for approval on the ssh server
 	if moderatedSessionID, ok := ctx.Value(ModeratedSessionID).(string); ok {
 		s.Setenv(string(ModeratedSessionID), moderatedSessionID)
 	}
-	if fileTransferRequestID, ok := ctx.Value(FileTransferRequestID).(string); ok {
-		s.Setenv(string(FileTransferRequestID), fileTransferRequestID)
-	}
-	// set dstPath in env var to check against file transfer request location
-	s.Setenv(FileTransferDstPath, c.dstPath)
 
 	pe, err := s.StderrPipe()
 	if err != nil {

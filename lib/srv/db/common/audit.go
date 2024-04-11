@@ -1,18 +1,20 @@
 /*
-Copyright 2021 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package common
 
@@ -22,6 +24,7 @@ import (
 	"github.com/gravitational/trace"
 	"github.com/sirupsen/logrus"
 
+	"github.com/gravitational/teleport"
 	apidefaults "github.com/gravitational/teleport/api/defaults"
 	"github.com/gravitational/teleport/api/types"
 	"github.com/gravitational/teleport/api/types/events"
@@ -38,6 +41,13 @@ type Audit interface {
 	OnQuery(ctx context.Context, session *Session, query Query)
 	// EmitEvent emits the provided audit event.
 	EmitEvent(ctx context.Context, event events.AuditEvent)
+	// OnPermissionsUpdate is called when granular database-level user permissions are updated.
+	OnPermissionsUpdate(ctx context.Context, session *Session, entries []events.DatabasePermissionEntry)
+	// OnDatabaseUserCreate is called when a database user is provisioned.
+	OnDatabaseUserCreate(ctx context.Context, session *Session, err error)
+	// OnDatabaseUserDeactivate is called when a database user is disabled or deleted.
+	// Shouldn't be called if deactivation failed due to the user being active.
+	OnDatabaseUserDeactivate(ctx context.Context, session *Session, delete bool, err error)
 }
 
 // Query combines database query parameters.
@@ -96,7 +106,7 @@ func NewAudit(config AuditConfig) (Audit, error) {
 	}
 	return &audit{
 		cfg: config,
-		log: logrus.WithField(trace.Component, config.Component),
+		log: logrus.WithField(teleport.ComponentKey, config.Component),
 	}, nil
 }
 
@@ -165,6 +175,70 @@ func (a *audit) OnQuery(ctx context.Context, session *Session, query Query) {
 			Success:     false,
 			Error:       trace.Unwrap(query.Error).Error(),
 			UserMessage: query.Error.Error(),
+		}
+	}
+	a.EmitEvent(ctx, event)
+}
+
+func (a *audit) OnPermissionsUpdate(ctx context.Context, session *Session, entries []events.DatabasePermissionEntry) {
+	event := &events.DatabasePermissionUpdate{
+		Metadata: MakeEventMetadata(session,
+			libevents.DatabaseSessionPermissionsUpdateEvent,
+			libevents.DatabaseSessionPermissionUpdateCode),
+		UserMetadata:      MakeUserMetadata(session),
+		SessionMetadata:   MakeSessionMetadata(session),
+		DatabaseMetadata:  MakeDatabaseMetadata(session),
+		PermissionSummary: entries,
+	}
+	a.EmitEvent(ctx, event)
+}
+
+func (a *audit) OnDatabaseUserCreate(ctx context.Context, session *Session, err error) {
+	event := &events.DatabaseUserCreate{
+		Metadata: MakeEventMetadata(session,
+			libevents.DatabaseSessionUserCreateEvent,
+			libevents.DatabaseSessionUserCreateCode,
+		),
+		UserMetadata:     MakeUserMetadata(session),
+		SessionMetadata:  MakeSessionMetadata(session),
+		DatabaseMetadata: MakeDatabaseMetadata(session),
+
+		Status:   events.Status{Success: true},
+		Username: session.DatabaseUser,
+		Roles:    session.DatabaseRoles,
+	}
+
+	if err != nil {
+		event.Metadata.Code = libevents.DatabaseSessionUserCreateFailureCode
+		event.Status = events.Status{
+			Success:     false,
+			Error:       trace.Unwrap(err).Error(),
+			UserMessage: err.Error(),
+		}
+	}
+	a.EmitEvent(ctx, event)
+}
+
+func (a *audit) OnDatabaseUserDeactivate(ctx context.Context, session *Session, delete bool, err error) {
+	event := &events.DatabaseUserDeactivate{
+		Metadata: MakeEventMetadata(session,
+			libevents.DatabaseSessionUserDeactivateEvent,
+			libevents.DatabaseSessionUserDeactivateCode,
+		),
+		UserMetadata:     MakeUserMetadata(session),
+		SessionMetadata:  MakeSessionMetadata(session),
+		DatabaseMetadata: MakeDatabaseMetadata(session),
+		Status:           events.Status{Success: true},
+		Username:         session.DatabaseUser,
+		Delete:           delete,
+	}
+
+	if err != nil {
+		event.Metadata.Code = libevents.DatabaseSessionUserDeactivateFailureCode
+		event.Status = events.Status{
+			Success:     false,
+			Error:       trace.Unwrap(err).Error(),
+			UserMessage: err.Error(),
 		}
 	}
 	a.EmitEvent(ctx, event)

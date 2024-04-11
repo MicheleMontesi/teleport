@@ -247,24 +247,17 @@ tests:
       - ../.lint/backwards-compatibility.yaml
     asserts:
       - equal:
-          path: spec.template.spec.containers[0].securityContext.allowPrivilegeEscalation
-          value: false
-      - equal:
-          path: spec.template.spec.containers[0].securityContext.capabilities
+          path: spec.template.spec.containers[0].securityContext
           value:
-            drop:
-              - all
-      - equal:
-          path: spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem
-          value: true
-      - equal:
-          path: spec.template.spec.containers[0].securityContext.runAsNonRoot
-          value: true
-      - equal:
-          path: spec.template.spec.containers[0].securityContext.runAsUser
-          value: 9807
-      - matchSnapshot:
-          path: spec.template.spec
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 9807
+            seccompProfile:
+              type: RuntimeDefault
 
   - it: should set image and tag correctly if action is Upgrade
     template: deployment.yaml
@@ -719,3 +712,24 @@ tests:
       - equal:
           path: spec.template.spec.containers[0].securityContext
           value: null
+
+  - it: should enable maintenance schedule export when updater is enabled if action is Upgrade
+    template: deployment.yaml
+    values:
+      - ../.lint/updater.yaml
+    set:
+      # unit test does not support lookup functions, so to test the behavior we use this undoc value
+      # https://github.com/helm/helm/issues/8137
+      unitTestUpgrade: true
+      teleportVersionOverride: 13.4.5
+    asserts:
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: TELEPORT_EXT_UPGRADER
+            value: kube
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: TELEPORT_EXT_UPGRADER_VERSION
+            value: 13.4.5

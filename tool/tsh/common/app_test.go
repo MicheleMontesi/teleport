@@ -1,18 +1,20 @@
 /*
-Copyright 2022 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package common
 
@@ -80,17 +82,22 @@ func TestAppLoginLeaf(t *testing.T) {
 
 	// TODO(tener): consider making this default for tests.
 	configStorage := func(cfg *servicecfg.Config) {
+		cfg.Auth.SessionRecordingConfig.SetMode(types.RecordOff)
 		cfg.Auth.StorageConfig.Params["poll_stream_period"] = 50 * time.Millisecond
 	}
 
-	rootAuth, rootProxy := makeTestServers(t, withClusterName(t, "root"), withBootstrap(connector, alice), withConfig(configStorage))
+	rootAuth, rootProxy := makeTestServers(t,
+		withClusterName(t, "root"),
+		withBootstrap(connector, alice),
+		withConfig(configStorage),
+	)
 	event, err := rootAuth.WaitForEventTimeout(time.Second, service.ProxyReverseTunnelReady)
 	require.NoError(t, err)
 	tunnel, ok := event.Payload.(reversetunnelclient.Server)
 	require.True(t, ok)
 
 	rootAppURL := startDummyHTTPServer(t, "rootapp")
-	rootAppServer := makeTestApplicationServer(t, rootAuth, rootProxy, servicecfg.App{Name: "rootapp", URI: rootAppURL})
+	rootAppServer := makeTestApplicationServer(t, rootProxy, servicecfg.App{Name: "rootapp", URI: rootAppURL})
 	_, err = rootAppServer.WaitForEventTimeout(time.Second*10, service.TeleportReadyEvent)
 	require.NoError(t, err)
 
@@ -117,7 +124,7 @@ func TestAppLoginLeaf(t *testing.T) {
 	leafAuth, leafProxy := makeTestServers(t, withClusterName(t, "leaf"), withConfig(configStorage))
 
 	leafAppURL := startDummyHTTPServer(t, "leafapp")
-	leafAppServer := makeTestApplicationServer(t, leafAuth, leafProxy, servicecfg.App{Name: "leafapp", URI: leafAppURL})
+	leafAppServer := makeTestApplicationServer(t, leafProxy, servicecfg.App{Name: "leafapp", URI: leafAppURL})
 	_, err = leafAppServer.WaitForEventTimeout(time.Second*10, service.TeleportReadyEvent)
 	require.NoError(t, err)
 
@@ -140,7 +147,6 @@ func TestAppLoginLeaf(t *testing.T) {
 			return false
 		}
 		return len(servers) == 1 && servers[0].GetName() == "leafapp"
-
 	}, 10*time.Second, 100*time.Millisecond, "leaf cluster did not come online")
 
 	// helpers
@@ -164,14 +170,11 @@ func TestAppLoginLeaf(t *testing.T) {
 				"login",
 				"--insecure",
 				"--debug",
-				"--auth", connector.GetName(),
 				"--proxy", rootProxyAddr.String(),
-				cluster}
-
-			opt := func(cf *CLIConf) error {
-				cf.MockSSOLogin = mockSSOLogin(t, rootAuth.GetAuthServer(), alice)
-				return nil
+				cluster,
 			}
+
+			opt := setMockSSOLogin(rootAuth.GetAuthServer(), alice, connector.GetName())
 
 			return run(args, opt)
 		}

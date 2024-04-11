@@ -17,14 +17,15 @@ limitations under the License.
 package types
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/gravitational/trace"
-	"github.com/sirupsen/logrus"
 
 	"github.com/gravitational/teleport/api/utils"
 	atlasutils "github.com/gravitational/teleport/api/utils/atlas"
@@ -327,6 +328,12 @@ func (d *DatabaseV3) SupportsAutoUsers() bool {
 	case DatabaseProtocolMySQL:
 		switch d.GetType() {
 		case DatabaseTypeSelfHosted, DatabaseTypeRDS:
+			return true
+		}
+
+	case DatabaseProtocolMongoDB:
+		switch d.GetType() {
+		case DatabaseTypeSelfHosted:
 			return true
 		}
 	}
@@ -686,7 +693,7 @@ func (d *DatabaseV3) CheckAndSetDefaults() error {
 	case awsutils.IsRDSEndpoint(d.Spec.URI):
 		details, err := awsutils.ParseRDSEndpoint(d.Spec.URI)
 		if err != nil {
-			logrus.WithError(err).Warnf("Failed to parse RDS endpoint %v.", d.Spec.URI)
+			slog.WarnContext(context.Background(), "Failed to parse RDS endpoint.", "uri", d.Spec.URI, "error", err)
 			break
 		}
 		if d.Spec.AWS.RDS.InstanceID == "" {
@@ -722,7 +729,7 @@ func (d *DatabaseV3) CheckAndSetDefaults() error {
 	case awsutils.IsRedshiftServerlessEndpoint(d.Spec.URI):
 		details, err := awsutils.ParseRedshiftServerlessEndpoint(d.Spec.URI)
 		if err != nil {
-			logrus.WithError(err).Warnf("Failed to parse Redshift Serverless endpoint %v.", d.Spec.URI)
+			slog.WarnContext(context.Background(), "Failed to parse Redshift Serverless endpoint.", "uri", d.Spec.URI, "error", err)
 			break
 		}
 		if d.Spec.AWS.RedshiftServerless.WorkgroupName == "" {
@@ -740,7 +747,7 @@ func (d *DatabaseV3) CheckAndSetDefaults() error {
 	case awsutils.IsElastiCacheEndpoint(d.Spec.URI):
 		endpointInfo, err := awsutils.ParseElastiCacheEndpoint(d.Spec.URI)
 		if err != nil {
-			logrus.WithError(err).Warnf("Failed to parse %v as ElastiCache endpoint", d.Spec.URI)
+			slog.WarnContext(context.Background(), "Failed to parse ElastiCache endpoint", "uri", d.Spec.URI, "error", err)
 			break
 		}
 		if d.Spec.AWS.ElastiCache.ReplicationGroupID == "" {
@@ -754,7 +761,7 @@ func (d *DatabaseV3) CheckAndSetDefaults() error {
 	case awsutils.IsMemoryDBEndpoint(d.Spec.URI):
 		endpointInfo, err := awsutils.ParseMemoryDBEndpoint(d.Spec.URI)
 		if err != nil {
-			logrus.WithError(err).Warnf("Failed to parse %v as MemoryDB endpoint", d.Spec.URI)
+			slog.WarnContext(context.Background(), "Failed to parse MemoryDB endpoint", "uri", d.Spec.URI, "error", err)
 			break
 		}
 		if d.Spec.AWS.MemoryDB.ClusterName == "" {
@@ -880,6 +887,14 @@ func (d *DatabaseV3) CheckAndSetDefaults() error {
 	return nil
 }
 
+// IsEqual determines if two database resources are equivalent to one another.
+func (d *DatabaseV3) IsEqual(i Database) bool {
+	if other, ok := i.(*DatabaseV3); ok {
+		return deriveTeleportEqualDatabaseV3(d, other)
+	}
+	return false
+}
+
 // handleDynamoDBConfig handles DynamoDB configuration checking.
 func (d *DatabaseV3) handleDynamoDBConfig() error {
 	if d.Spec.AWS.AccountID == "" {
@@ -975,7 +990,7 @@ func (d *DatabaseV3) GetMongoAtlas() MongoAtlas {
 // IAM roles as database users.
 // IMPORTANT: if you add a database that requires AWS IAM Roles as users,
 // and that database supports discovery, be sure to update RequireAWSIAMRolesAsUsersMatchers
-// in lib/services as well.
+// in matchers_aws.go as well.
 func (d *DatabaseV3) RequireAWSIAMRolesAsUsers() bool {
 	awsType, ok := d.getAWSType()
 	if !ok {
@@ -996,7 +1011,23 @@ func (d *DatabaseV3) RequireAWSIAMRolesAsUsers() bool {
 // SupportAWSIAMRoleARNAsUsers returns true for database types that support AWS
 // IAM roles as database users.
 func (d *DatabaseV3) SupportAWSIAMRoleARNAsUsers() bool {
-	return d.GetType() == DatabaseTypeMongoAtlas
+	switch d.GetType() {
+	// Note that databases in this list use IAM auth when:
+	// - the database user is a full AWS role ARN role
+	// - or the database user starts with "role/"
+	//
+	// Other database users will fallback to default auth methods (e.g X.509 for
+	// MongoAtlas, regular auth token for Redshift).
+	//
+	// Therefore it is important to make sure "/" is an invalid character for
+	// regular in-database usernames so that "role/" can be differentiated from
+	// regular usernames.
+	case DatabaseTypeMongoAtlas,
+		DatabaseTypeRedshift:
+		return true
+	default:
+		return false
+	}
 }
 
 // GetEndpointType returns the endpoint type of the database, if available.
@@ -1011,6 +1042,12 @@ func (d *DatabaseV3) GetEndpointType() string {
 		return d.GetAWS().MemoryDB.EndpointType
 	case DatabaseTypeOpenSearch:
 		return d.GetAWS().OpenSearch.EndpointType
+	case DatabaseTypeRDS:
+		// If not available from discovery tags, get the endpoint type from the
+		// URL.
+		if details, err := awsutils.ParseRDSEndpoint(d.GetURI()); err == nil {
+			return details.EndpointType
+		}
 	}
 	return ""
 }
@@ -1024,6 +1061,8 @@ const (
 	DatabaseProtocolClickHouse = "clickhouse"
 	// DatabaseProtocolMySQL is the MySQL database protocol.
 	DatabaseProtocolMySQL = "mysql"
+	// DatabaseProtocolMongoDB is the MongoDB database protocol.
+	DatabaseProtocolMongoDB = "mongodb"
 
 	// DatabaseTypeSelfHosted is the self-hosted type of database.
 	DatabaseTypeSelfHosted = "self-hosted"

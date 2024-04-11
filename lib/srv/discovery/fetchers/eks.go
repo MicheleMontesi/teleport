@@ -1,18 +1,20 @@
 /*
-Copyright 2022 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package fetchers
 
@@ -28,7 +30,9 @@ import (
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/gravitational/teleport"
 	"github.com/gravitational/teleport/api/types"
+	"github.com/gravitational/teleport/lib/cloud"
 	"github.com/gravitational/teleport/lib/services"
 	"github.com/gravitational/teleport/lib/srv/discovery/common"
 )
@@ -39,12 +43,31 @@ const (
 
 type eksFetcher struct {
 	EKSFetcherConfig
+
+	mu     sync.Mutex
+	client eksiface.EKSAPI
+}
+
+// EKSClientGetter is an interface for getting an EKS client.
+type EKSClientGetter interface {
+	// GetAWSEKSClient returns AWS EKS client for the specified region.
+	GetAWSEKSClient(ctx context.Context, region string, opts ...cloud.AWSAssumeRoleOptionFn) (eksiface.EKSAPI, error)
 }
 
 // EKSFetcherConfig configures the EKS fetcher.
 type EKSFetcherConfig struct {
-	// Client is the AWS eKS client.
-	Client eksiface.EKSAPI
+	// EKSClientGetter retrieves an EKS client.
+	EKSClientGetter EKSClientGetter
+	// AssumeRole provides a role ARN and ExternalID to assume an AWS role
+	// when fetching clusters.
+	AssumeRole types.AssumeRole
+	// Integration is the integration name to be used to fetch credentials.
+	// When present, it will use this integration and discard any local credentials.
+	Integration string
+	// KubeAppDiscovery specifies if Kubernetes App Discovery should be enabled for the
+	// discovered cluster. We don't use this information for fetching itself, but we need it for
+	// correct enrollment of the clusters returned from this fetcher.
+	KubeAppDiscovery bool
 	// Region is the region where the clusters should be located.
 	Region string
 	// FilterLabels are the filter criteria.
@@ -55,8 +78,8 @@ type EKSFetcherConfig struct {
 
 // CheckAndSetDefaults validates and sets the defaults values.
 func (c *EKSFetcherConfig) CheckAndSetDefaults() error {
-	if c.Client == nil {
-		return trace.BadParameter("missing Client field")
+	if c.EKSClientGetter == nil {
+		return trace.BadParameter("missing EKSClientGetter field")
 	}
 	if len(c.Region) == 0 {
 		return trace.BadParameter("missing Region field")
@@ -67,9 +90,45 @@ func (c *EKSFetcherConfig) CheckAndSetDefaults() error {
 	}
 
 	if c.Log == nil {
-		c.Log = logrus.WithField(trace.Component, "fetcher:eks")
+		c.Log = logrus.WithField(teleport.ComponentKey, "fetcher:eks")
 	}
 	return nil
+}
+
+// MakeEKSFetchersFromAWSMatchers creates fetchers from the provided matchers. Returned fetchers are separated
+// by their reliance on the integration.
+func MakeEKSFetchersFromAWSMatchers(log logrus.FieldLogger, clients cloud.AWSClients, matchers []types.AWSMatcher) (kubeFetchers []common.Fetcher, _ error) {
+	for _, matcher := range matchers {
+		var matcherAssumeRole types.AssumeRole
+		if matcher.AssumeRole != nil {
+			matcherAssumeRole = *matcher.AssumeRole
+		}
+
+		for _, t := range matcher.Types {
+			for _, region := range matcher.Regions {
+				switch t {
+				case types.AWSMatcherEKS:
+					fetcher, err := NewEKSFetcher(
+						EKSFetcherConfig{
+							EKSClientGetter:  clients,
+							AssumeRole:       matcherAssumeRole,
+							Region:           region,
+							Integration:      matcher.Integration,
+							KubeAppDiscovery: matcher.KubeAppDiscovery,
+							FilterLabels:     matcher.Tags,
+							Log:              log,
+						},
+					)
+					if err != nil {
+						log.WithError(err).Warnf("Could not initialize EKS fetcher(Region=%q, Labels=%q, AssumeRole=%q), skipping.", region, matcher.Tags, matcherAssumeRole.RoleARN)
+						continue
+					}
+					kubeFetchers = append(kubeFetchers, fetcher)
+				}
+			}
+		}
+	}
+	return kubeFetchers, nil
 }
 
 // NewEKSFetcher creates a new EKS fetcher configuration.
@@ -78,7 +137,56 @@ func NewEKSFetcher(cfg EKSFetcherConfig) (common.Fetcher, error) {
 		return nil, trace.Wrap(err)
 	}
 
-	return &eksFetcher{cfg}, nil
+	return &eksFetcher{EKSFetcherConfig: cfg}, nil
+}
+
+func (a *eksFetcher) getClient(ctx context.Context) (eksiface.EKSAPI, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if a.client != nil {
+		return a.client, nil
+	}
+
+	client, err := a.EKSClientGetter.GetAWSEKSClient(
+		ctx,
+		a.Region,
+		cloud.WithAssumeRole(
+			a.AssumeRole.RoleARN,
+			a.AssumeRole.ExternalID,
+		),
+		cloud.WithCredentialsMaybeIntegration(a.Integration),
+	)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	a.client = client
+
+	return a.client, nil
+}
+
+// GetIntegration returns the integration name that is used for getting credentials of the fetcher.
+func (a *eksFetcher) GetIntegration() string {
+	return a.Integration
+}
+
+type DiscoveredEKSCluster struct {
+	types.KubeCluster
+
+	Integration            string
+	EnableKubeAppDiscovery bool
+}
+
+func (d *DiscoveredEKSCluster) GetIntegration() string {
+	return d.Integration
+}
+
+func (d *DiscoveredEKSCluster) GetKubeAppDiscovery() bool {
+	return d.EnableKubeAppDiscovery
+}
+
+func (d *DiscoveredEKSCluster) GetKubeCluster() types.KubeCluster {
+	return d.KubeCluster
 }
 
 func (a *eksFetcher) Get(ctx context.Context) (types.ResourcesWithLabels, error) {
@@ -86,9 +194,17 @@ func (a *eksFetcher) Get(ctx context.Context) (types.ResourcesWithLabels, error)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
-
 	a.rewriteKubeClusters(clusters)
-	return clusters.AsResources(), nil
+
+	resources := make(types.ResourcesWithLabels, 0, len(clusters))
+	for _, cluster := range clusters {
+		resources = append(resources, &DiscoveredEKSCluster{
+			KubeCluster:            cluster,
+			Integration:            a.Integration,
+			EnableKubeAppDiscovery: a.KubeAppDiscovery,
+		})
+	}
+	return resources, nil
 }
 
 // rewriteKubeClusters rewrites the discovered kube clusters.
@@ -106,7 +222,12 @@ func (a *eksFetcher) getEKSClusters(ctx context.Context) (types.KubeClusters, er
 	)
 	group.SetLimit(concurrencyLimit)
 
-	err := a.Client.ListClustersPagesWithContext(ctx,
+	client, err := a.getClient(ctx)
+	if err != nil {
+		return nil, trace.Wrap(err, "failed getting AWS EKS client")
+	}
+
+	err = client.ListClustersPagesWithContext(ctx,
 		&eks.ListClustersInput{
 			Include: nil, // For now we should only list EKS clusters
 		},
@@ -147,6 +268,10 @@ func (a *eksFetcher) ResourceType() string {
 	return types.KindKubernetesCluster
 }
 
+func (a *eksFetcher) FetcherType() string {
+	return types.AWSMatcherEKS
+}
+
 func (a *eksFetcher) Cloud() string {
 	return types.CloudAWS
 }
@@ -161,7 +286,12 @@ func (a *eksFetcher) String() string {
 // If any cluster does not match the filtering criteria, this function returns a “trace.CompareFailed“ error
 // to distinguish filtering and operational errors.
 func (a *eksFetcher) getMatchingKubeCluster(ctx context.Context, clusterName string) (types.KubeCluster, error) {
-	rsp, err := a.Client.DescribeClusterWithContext(
+	client, err := a.getClient(ctx)
+	if err != nil {
+		return nil, trace.Wrap(err, "failed getting AWS EKS client")
+	}
+
+	rsp, err := client.DescribeClusterWithContext(
 		ctx,
 		&eks.DescribeClusterInput{
 			Name: aws.String(clusterName),
@@ -178,7 +308,7 @@ func (a *eksFetcher) getMatchingKubeCluster(ctx context.Context, clusterName str
 		return nil, trace.CompareFailed("EKS cluster %q not enrolled due to its current status: %s", clusterName, st)
 	}
 
-	cluster, err := services.NewKubeClusterFromAWSEKS(rsp.Cluster)
+	cluster, err := services.NewKubeClusterFromAWSEKS(aws.StringValue(rsp.Cluster.Name), aws.StringValue(rsp.Cluster.Arn), rsp.Cluster.Tags)
 	if err != nil {
 		return nil, trace.WrapWithMessage(err, "Unable to convert eks.Cluster cluster into types.KubernetesClusterV3.")
 	}

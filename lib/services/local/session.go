@@ -1,18 +1,20 @@
 /*
-Copyright 2020 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package local
 
@@ -67,9 +69,9 @@ func (s *IdentityService) getSession(ctx context.Context, keyParts ...string) (t
 	return session, nil
 }
 
-// maxPageSize is the maximum number of app sessions allowed in a page
+// maxSessionPageSize is the maximum number of app sessions allowed in a page
 // returned by ListAppSessions
-const maxPageSize = 200
+const maxSessionPageSize = 200
 
 // ListAppSessions gets a paginated list of application web sessions.
 func (s *IdentityService) ListAppSessions(ctx context.Context, pageSize int, pageToken, user string) ([]types.WebSession, string, error) {
@@ -106,8 +108,8 @@ func (s *IdentityService) listSessions(ctx context.Context, pageSize int, pageTo
 	rangeEnd := backend.RangeEnd(backend.ExactKey(keyPrefix...))
 
 	// Adjust page size, so it can't be too large.
-	if pageSize <= 0 || pageSize > maxPageSize {
-		pageSize = maxPageSize
+	if pageSize <= 0 || pageSize > maxSessionPageSize {
+		pageSize = maxSessionPageSize
 	}
 
 	// Increment pageSize to allow for the extra item represented by nextKey.
@@ -228,7 +230,7 @@ func (s *IdentityService) DeleteUserAppSessions(ctx context.Context, req *proto.
 	var token string
 
 	for {
-		sessions, nextToken, err := s.ListAppSessions(ctx, maxPageSize, token, req.Username)
+		sessions, nextToken, err := s.ListAppSessions(ctx, maxSessionPageSize, token, req.Username)
 		if err != nil {
 			return trace.Wrap(err)
 		}
@@ -255,7 +257,7 @@ func (s *IdentityService) DeleteUserSAMLIdPSessions(ctx context.Context, user st
 	var token string
 
 	for {
-		sessions, nextToken, err := s.ListSAMLIdPSessions(ctx, maxPageSize, token, user)
+		sessions, nextToken, err := s.ListSAMLIdPSessions(ctx, maxSessionPageSize, token, user)
 		if err != nil {
 			return trace.Wrap(err)
 		}
@@ -321,6 +323,11 @@ func (r *webSessions) Get(ctx context.Context, req types.GetWebSessionRequest) (
 	session, err := services.UnmarshalWebSession(item.Value, services.WithRevision(item.Revision))
 	if err != nil && !trace.IsNotFound(err) {
 		return nil, trace.Wrap(err)
+	}
+
+	// Make sure the requested user matches the session user.
+	if req.User != session.GetUser() {
+		return nil, trace.NotFound("session not found")
 	}
 
 	return session, trace.Wrap(err)

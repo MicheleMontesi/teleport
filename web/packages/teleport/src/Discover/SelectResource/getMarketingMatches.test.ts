@@ -1,23 +1,24 @@
 /**
- * Copyright 2023 Gravitational, Inc
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
  *
- *      http://www.apache.org/licenses/LICENSE-2.0
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-import {
-  ClusterResource,
-  MarketingParams,
-} from 'teleport/services/userPreferences/types';
+import { Resource } from 'gen-proto-ts/teleport/userpreferences/v1/onboard_pb';
+
+import { MarketingParams } from 'teleport/services/userPreferences/types';
 
 import { getMarketingTermMatches } from './getMarketingTermMatches';
 
@@ -25,116 +26,107 @@ describe('getMarketingMatches', () => {
   const testCases: {
     name: string;
     param: MarketingParams;
-    expected: ClusterResource[];
+    expected: Resource[];
   }[] = [
     {
-      name: 'database matches RESOURCE_DATABASES & k8s matches RESOURCE_KUBERNETES',
+      name: 'database matches DATABASES & k8s matches KUBERNETES',
       param: {
         campaign: 'foodatabasebar',
         source: 'k8ski',
         medium: '',
         intent: '',
       },
-      expected: [
-        ClusterResource.RESOURCE_DATABASES,
-        ClusterResource.RESOURCE_KUBERNETES,
-      ],
+      expected: [Resource.DATABASES, Resource.KUBERNETES],
     },
     {
-      name: 'app matches RESOURCE_WEB_APPLICATIONS',
+      name: 'app matches WEB_APPLICATIONS',
       param: {
         campaign: '',
         source: 'baz',
         medium: '',
         intent: 'fooappbar',
       },
-      expected: [ClusterResource.RESOURCE_WEB_APPLICATIONS],
+      expected: [Resource.WEB_APPLICATIONS],
     },
     {
-      name: 'windows matches RESOURCE_WINDOWS_DESKTOPS',
+      name: 'windows matches WINDOWS_DESKTOPS',
       param: {
         campaign: 'foowindowsbar',
         source: '',
         medium: '',
         intent: 'aws',
       },
-      expected: [ClusterResource.RESOURCE_WINDOWS_DESKTOPS],
+      expected: [Resource.WINDOWS_DESKTOPS],
     },
     {
-      name: 'desktop matches RESOURCE_WINDOWS_DESKTOPS',
+      name: 'desktop matches WINDOWS_DESKTOPS',
       param: {
         campaign: '',
         source: '',
         medium: 'foodesktopbar',
         intent: 'shoo',
       },
-      expected: [ClusterResource.RESOURCE_WINDOWS_DESKTOPS],
+      expected: [Resource.WINDOWS_DESKTOPS],
     },
     {
-      name: 'ssh matches RESOURCE_SERVER_SSH',
+      name: 'ssh matches SERVER_SSH',
       param: {
         campaign: '',
         source: 'foosshbar',
         medium: 'bar',
         intent: '',
       },
-      expected: [ClusterResource.RESOURCE_SERVER_SSH],
+      expected: [Resource.SERVER_SSH],
     },
     {
-      name: 'server matches RESOURCE_SERVER_SSH',
+      name: 'server matches SERVER_SSH',
       param: {
         campaign: 'fooserverbar',
         source: '',
         medium: '',
         intent: 'ser',
       },
-      expected: [ClusterResource.RESOURCE_SERVER_SSH],
+      expected: [Resource.SERVER_SSH],
     },
     {
-      name: 'kube matches RESOURCE_KUBERNETES and windows matches RESOURCE_WINDOWS_DESKTOPS',
+      name: 'kube matches KUBERNETES and windows matches WINDOWS_DESKTOPS',
       param: {
         campaign: 'fookubebar',
         source: '',
         medium: 'windows',
         intent: '',
       },
-      expected: [
-        ClusterResource.RESOURCE_KUBERNETES,
-        ClusterResource.RESOURCE_WINDOWS_DESKTOPS,
-      ],
+      expected: [Resource.KUBERNETES, Resource.WINDOWS_DESKTOPS],
     },
     {
-      name: 'kubernetes matches RESOURCE_KUBERNETES',
+      name: 'kubernetes matches KUBERNETES',
       param: {
         campaign: 'kubernetes',
         source: '',
         medium: '',
         intent: '',
       },
-      expected: [ClusterResource.RESOURCE_KUBERNETES],
+      expected: [Resource.KUBERNETES],
     },
     {
-      name: 'kube matches RESOURCE_KUBERNETES',
+      name: 'kube matches KUBERNETES',
       param: {
         campaign: '',
         source: 'kube',
         medium: '',
         intent: '',
       },
-      expected: [ClusterResource.RESOURCE_KUBERNETES],
+      expected: [Resource.KUBERNETES],
     },
     {
-      name: 'k8s matches RESOURCE_KUBERNETES and ssh matches RESOURCE_SERVER_SSH',
+      name: 'k8s matches KUBERNETES and ssh matches SERVER_SSH',
       param: {
         campaign: '',
         source: '',
         medium: 'fook8sbar',
         intent: 'ssh',
       },
-      expected: [
-        ClusterResource.RESOURCE_KUBERNETES,
-        ClusterResource.RESOURCE_SERVER_SSH,
-      ],
+      expected: [Resource.KUBERNETES, Resource.SERVER_SSH],
     },
     {
       name: 'aws does not match',

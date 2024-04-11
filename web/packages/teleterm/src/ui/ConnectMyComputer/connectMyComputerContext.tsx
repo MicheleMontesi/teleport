@@ -1,22 +1,25 @@
 /**
- * Copyright 2023 Gravitational, Inc.
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
  *
- *     http://www.apache.org/licenses/LICENSE-2.0
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-import React, {
+import {
   createContext,
   FC,
+  PropsWithChildren,
   useCallback,
   useContext,
   useEffect,
@@ -29,15 +32,17 @@ import {
   useAsync,
   makeEmptyAttempt,
 } from 'shared/hooks/useAsync';
+import { wait } from 'shared/utils/wait';
 
 import { RootClusterUri, routing } from 'teleterm/ui/uri';
 import { useAppContext } from 'teleterm/ui/appContextProvider';
-import { Server, TshAbortSignal } from 'teleterm/services/tshd/types';
-import createAbortController from 'teleterm/services/tshd/createAbortController';
+import { Server } from 'teleterm/services/tshd/types';
 import {
-  isAccessDeniedError,
-  isNotFoundError,
-} from 'teleterm/services/tshd/errors';
+  cloneAbortSignal,
+  isTshdRpcError,
+} from 'teleterm/services/tshd/cloneableClient';
+import { useResourcesContext } from 'teleterm/ui/DocumentCluster/resourcesContext';
+import { useLogger } from 'teleterm/ui/hooks/useLogger';
 
 import { assertUnreachable, retryWithRelogin } from '../utils';
 
@@ -112,9 +117,12 @@ export interface ConnectMyComputerContext {
 
 const ConnectMyComputerContext = createContext<ConnectMyComputerContext>(null);
 
-export const ConnectMyComputerContextProvider: FC<{
-  rootClusterUri: RootClusterUri;
-}> = ({ rootClusterUri, children }) => {
+export const ConnectMyComputerContextProvider: FC<
+  PropsWithChildren<{
+    rootClusterUri: RootClusterUri;
+  }>
+> = ({ rootClusterUri, children }) => {
+  const logger = useLogger('connectMyComputerContext');
   const ctx = useAppContext();
   const {
     mainProcessClient,
@@ -123,6 +131,7 @@ export const ConnectMyComputerContextProvider: FC<{
     workspacesService,
     usageService,
   } = ctx;
+  const { requestResourcesRefresh } = useResourcesContext();
   clustersService.useState();
 
   const [
@@ -196,12 +205,12 @@ export const ConnectMyComputerContextProvider: FC<{
 
       await connectMyComputerService.runAgent(rootClusterUri);
 
-      const abortController = createAbortController();
+      const abortController = new AbortController();
       try {
         const server = await Promise.race([
           connectMyComputerService.waitForNodeToJoin(
             rootClusterUri,
-            abortController.signal
+            cloneAbortSignal(abortController.signal)
           ),
           throwOnAgentProcessErrors(
             mainProcessClient,
@@ -269,11 +278,12 @@ export const ConnectMyComputerContextProvider: FC<{
     const { rootClusterId } = routing.parseClusterUri(rootClusterUri).params;
     let nodeName: string;
     try {
-      nodeName = await connectMyComputerService.getConnectMyComputerNodeName(
-        rootClusterUri
-      );
+      nodeName =
+        await connectMyComputerService.getConnectMyComputerNodeName(
+          rootClusterUri
+        );
     } catch (error) {
-      if (isNotFoundError(error)) {
+      if (isTshdRpcError(error, 'NOT_FOUND')) {
         return;
       }
       throw error;
@@ -294,28 +304,35 @@ export const ConnectMyComputerContextProvider: FC<{
 
       setCurrentActionKind('remove');
 
-      let hasAccessDeniedError = false;
+      let hasNodeRemovalSucceeded = true;
       try {
         await retryWithRelogin(ctx, rootClusterUri, () =>
           ctx.connectMyComputerService.removeConnectMyComputerNode(
             rootClusterUri
           )
         );
-      } catch (e) {
-        if (isAccessDeniedError(e)) {
-          hasAccessDeniedError = true;
-        } else {
-          throw e;
-        }
+      } catch (error) {
+        // Swallow all errors. Even if the cluster does not respond or responds with an error, it
+        // should be possible to remove the agent.
+        logger.warn(
+          'Could not remove the Connect My Computer node in the cluster',
+          error
+        );
+        hasNodeRemovalSucceeded = false;
       }
+
+      if (hasNodeRemovalSucceeded) {
+        requestResourcesRefresh();
+      }
+
       ctx.notificationsService.notifyInfo(
-        hasAccessDeniedError
-          ? {
+        hasNodeRemovalSucceeded
+          ? 'The agent has been removed.'
+          : {
               title: 'The agent has been removed.',
               description:
                 'The corresponding server may still be visible in the cluster for a few more minutes until it gets purged from the cache.',
             }
-          : 'The agent has been removed.'
       );
 
       // We have to remove connections before removing the agent directory, because
@@ -343,6 +360,8 @@ export const ConnectMyComputerContextProvider: FC<{
       markAgentAsNotConfigured,
       removeConnections,
       rootClusterUri,
+      requestResourcesRefresh,
+      logger,
     ])
   );
 
@@ -479,7 +498,7 @@ export const useConnectMyComputerContext = () => {
 function throwOnAgentProcessErrors(
   mainProcessClient: MainProcessClient,
   rootClusterUri: RootClusterUri,
-  abortSignal: TshAbortSignal
+  abortSignal: AbortSignal
 ): Promise<never> {
   return new Promise((_, reject) => {
     const rejectOnError = (agentProcessState: AgentProcessState) => {
@@ -498,7 +517,7 @@ function throwOnAgentProcessErrors(
       rootClusterUri,
       rejectOnError
     );
-    abortSignal.addEventListener(() => {
+    abortSignal.addEventListener('abort', () => {
       cleanup();
       reject(
         new DOMException('throwOnAgentProcessErrors was aborted', 'AbortError')
@@ -553,29 +572,4 @@ export class AgentCompatibilityError extends Error {
     super(message);
     this.name = 'AgentCompatibilityError';
   }
-}
-
-/**
- * wait is like wait from the shared package, but it works with TshAbortSignal.
- * TODO(ravicious): Refactor TshAbortSignal so that its interface is the same as AbortSignal.
- * See the comment in createAbortController for more details.
- */
-function wait(ms: number, abortSignal: TshAbortSignal): Promise<void> {
-  if (abortSignal.aborted) {
-    return Promise.reject(new DOMException('Wait was aborted.', 'AbortError'));
-  }
-
-  return new Promise((resolve, reject) => {
-    const abort = () => {
-      clearTimeout(timeout);
-      reject(new DOMException('Wait was aborted.', 'AbortError'));
-    };
-    const done = () => {
-      abortSignal.removeEventListener(abort);
-      resolve();
-    };
-
-    const timeout = setTimeout(done, ms);
-    abortSignal.addEventListener(abort);
-  });
 }

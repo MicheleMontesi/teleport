@@ -1,16 +1,20 @@
-// Copyright 2022 Gravitational, Inc
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package tester
 
@@ -45,7 +49,7 @@ type SSOTestCommand struct {
 	connectorFileName string
 
 	// Handlers is a mapping between auth kind and appropriate handling function
-	Handlers map[string]func(c auth.ClientI, connBytes []byte) (*AuthRequestInfo, error)
+	Handlers map[string]func(c *auth.Client, connBytes []byte) (*AuthRequestInfo, error)
 	// GetDiagInfoFields provides auth kind-specific diagnostic info fields.
 	GetDiagInfoFields map[string]func(diag *types.SSODiagnosticInfo, debug bool) []string
 	// Browser to use in login flow.
@@ -76,12 +80,16 @@ Examples:
 
   > tctl sso configure github ... | tee connector.yaml | tctl sso test`)
 
-	cmd.Handlers = map[string]func(c auth.ClientI, connBytes []byte) (*AuthRequestInfo, error){
+	cmd.Handlers = map[string]func(c *auth.Client, connBytes []byte) (*AuthRequestInfo, error){
 		types.KindGithubConnector: handleGithubConnector,
+		types.KindSAMLConnector:   handleSAMLConnector,
+		types.KindOIDCConnector:   handleOIDCConnector,
 	}
 
 	cmd.GetDiagInfoFields = map[string]func(diag *types.SSODiagnosticInfo, debug bool) []string{
 		types.KindGithubConnector: getGithubDiagInfoFields,
+		types.KindSAMLConnector:   getInfoFieldsSAML,
+		types.KindOIDCConnector:   getInfoFieldsOIDC,
 	}
 }
 
@@ -95,7 +103,7 @@ func (cmd *SSOTestCommand) getSupportedKinds() []string {
 	return kinds
 }
 
-func (cmd *SSOTestCommand) ssoTestCommand(ctx context.Context, c auth.ClientI) error {
+func (cmd *SSOTestCommand) ssoTestCommand(ctx context.Context, c *auth.Client) error {
 	reader := os.Stdin
 	if cmd.connectorFileName != "" {
 		f, err := utils.OpenFileAllowingUnsafeLinks(cmd.connectorFileName)
@@ -145,7 +153,7 @@ func (cmd *SSOTestCommand) ssoTestCommand(ctx context.Context, c auth.ClientI) e
 
 // TryRun is executed after the CLI parsing is done. The command must
 // determine if selectedCommand belongs to it and return match=true
-func (cmd *SSOTestCommand) TryRun(ctx context.Context, selectedCommand string, c auth.ClientI) (match bool, err error) {
+func (cmd *SSOTestCommand) TryRun(ctx context.Context, selectedCommand string, c *auth.Client) (match bool, err error) {
 	if selectedCommand == cmd.ssoTestCmd.FullCommand() {
 		return true, cmd.ssoTestCommand(ctx, c)
 	}
@@ -162,7 +170,7 @@ type AuthRequestInfo struct {
 	RequestCreateErr error
 }
 
-func (cmd *SSOTestCommand) runSSOLoginFlow(ctx context.Context, protocol string, c auth.ClientI, config *client.RedirectorConfig) (*auth.SSHLoginResponse, error) {
+func (cmd *SSOTestCommand) runSSOLoginFlow(ctx context.Context, protocol string, c *auth.Client, config *client.RedirectorConfig) (*auth.SSHLoginResponse, error) {
 	key, err := client.GenerateRSAKey()
 	if err != nil {
 		return nil, trace.Wrap(err)

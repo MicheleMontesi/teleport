@@ -15,29 +15,16 @@ limitations under the License.
 
 package types
 
-import "github.com/gravitational/trace"
-
 const (
 	// IntegrationAWSOIDCAudience is the client id used to generate the JWT.
 	// This value must match the Audience defined in the IAM Identity Provider of the Integration.
 	IntegrationAWSOIDCAudience = "discover.teleport"
 
-	// IntegrationAWSOIDCSubject identifies the system that is going to use the token.
+	// IntegrationAWSOIDCSubject identifies the system that is going to use the
+	// token as the Teleport Proxy.
 	IntegrationAWSOIDCSubject = "system:proxy"
+
+	// IntegrationAWSOIDCSubject identifies the system that is going to use the
+	// token as the Teleport Auth service.
+	IntegrationAWSOIDCSubjectAuth = "system:auth"
 )
-
-// GenerateAWSOIDCTokenRequest are the parameters used to request an AWS OIDC Integration token.
-type GenerateAWSOIDCTokenRequest struct {
-	// Issuer is the entity that is signing the JWT.
-	// This value must contain the AWS OIDC Integration configured provider (Proxy's Public URL).
-	Issuer string `json:"issuer"`
-}
-
-// CheckAndSetDefaults checks if the required fields are present.
-func (req *GenerateAWSOIDCTokenRequest) CheckAndSetDefaults() error {
-	if req.Issuer == "" {
-		return trace.BadParameter("issuer is required")
-	}
-
-	return nil
-}

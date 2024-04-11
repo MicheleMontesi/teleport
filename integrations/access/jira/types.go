@@ -1,26 +1,103 @@
 /*
-Copyright 2020-2021 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package jira
 
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+
+	"github.com/gravitational/trace"
+)
+
 // Jira REST API resources
 
+// ErrorResult is used to parse the errors from Jira.
+// The JSON Schema is specified here:
+// https://docs.atlassian.com/software/jira/docs/api/REST/1000.1223.0/#error-responses
+// However JIRA does not consistently respect the schema (especially for old instances).
+// We need to support legacy errors as well (array of strings).
 type ErrorResult struct {
-	ErrorMessages []string `url:"errorMessages"`
-	Errors        []string `url:"errors"`
+	ErrorMessages []string     `url:"errorMessages" json:"errorMessages"`
+	Details       ErrorDetails `url:"errors" json:"errors"`
+}
+
+// Error implements the error interface and returns a string describing the
+// error returned by Jira.
+func (e ErrorResult) Error() string {
+	sb := strings.Builder{}
+	if len(e.ErrorMessages) > 0 {
+		sb.WriteString(fmt.Sprintf("error messages: %s ", strings.Join(e.ErrorMessages, ";")))
+	}
+	if details := e.Details.String(); details != "" {
+		sb.WriteString(fmt.Sprintf("error details: %s", details))
+	}
+	result := sb.String()
+	if result == "" {
+		return "Unknown Jira error"
+	}
+	return result
+}
+
+// ErrorDetails are used to unmarshall inconsistently formatted Jira errors
+// details.
+type ErrorDetails struct {
+	// Errors contain object-formatted Jira Errors. Usually Jira returns
+	// errors in an object where keys are single word representing what is
+	// broken, and values containing text description of the issue.
+	// This is the official return format, according to Jira's docs.
+	Errors map[string]string
+	// LegacyErrors ensures backward compatibility with Jira errors returned as
+	// a list. It's unclear which Jira version and which part of Jira can return
+	// such errors, but they existed at some point, and we might still get them.
+	LegacyErrors []string
+}
+
+func (e *ErrorDetails) UnmarshalJSON(data []byte) error {
+	// Try to parse as a new error
+	var errors map[string]string
+	if err := json.Unmarshal(data, &errors); err == nil {
+		e.Errors = errors
+		return nil
+	}
+
+	// Try to parse as a legacy error
+	var legacyErrors []string
+	if err := json.Unmarshal(data, &legacyErrors); err == nil {
+		e.LegacyErrors = legacyErrors
+		return nil
+	}
+
+	// Everything failed, we return an unrmarshalling error that contains the data.
+	// This way, even if everything failed, the user still has the original response in the logs.
+	return trace.Errorf("Failed to unmarshal Jira error: %q", string(data))
+}
+
+func (e ErrorDetails) String() string {
+	switch {
+	case len(e.Errors) > 0:
+		return fmt.Sprintf("%s", e.Errors)
+	case len(e.LegacyErrors) > 0:
+		return fmt.Sprintf("%s", e.LegacyErrors)
+	default:
+		return ""
+	}
 }
 
 type GetMyPermissionsQueryOptions struct {

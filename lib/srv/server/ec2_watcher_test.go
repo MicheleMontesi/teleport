@@ -1,18 +1,20 @@
 /*
-Copyright 2022 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package server
 
@@ -160,6 +162,13 @@ func TestEC2Watcher(t *testing.T) {
 			Tags:    map[string]utils.Strings{"env": {"dev"}},
 			SSM:     &types.AWSSSM{},
 		},
+		{
+			Types:       []string{"EC2"},
+			Regions:     []string{"us-west-2"},
+			Tags:        map[string]utils.Strings{"with-eice": {"please"}},
+			Integration: "my-aws-integration",
+			SSM:         &types.AWSSSM{},
+		},
 	}
 	ctx := context.Background()
 
@@ -183,12 +192,23 @@ func TestEC2Watcher(t *testing.T) {
 			Name: aws.String(ec2.InstanceStateNameRunning),
 		},
 	}
+	presentForEICE := ec2.Instance{
+		InstanceId: aws.String("instance-present-3"),
+		Tags: []*ec2.Tag{{
+			Key:   aws.String("with-eice"),
+			Value: aws.String("please"),
+		}},
+		State: &ec2.InstanceState{
+			Name: aws.String(ec2.InstanceStateNameRunning),
+		},
+	}
 
 	output := ec2.DescribeInstancesOutput{
 		Reservations: []*ec2.Reservation{{
 			Instances: []*ec2.Instance{
 				&present,
 				&presentOther,
+				&presentForEICE,
 				{
 					InstanceId: aws.String("instance-absent"),
 					Tags: []*ec2.Tag{{
@@ -216,7 +236,14 @@ func TestEC2Watcher(t *testing.T) {
 		}},
 	}
 	clients.ec2Client.output = &output
-	watcher, err := NewEC2Watcher(ctx, matchers, &clients, make(<-chan []types.Server))
+
+	fetchersFn := func() []Fetcher {
+		fetchers, err := MatchersToEC2InstanceFetchers(ctx, matchers, &clients)
+		require.NoError(t, err)
+
+		return fetchers
+	}
+	watcher, err := NewEC2Watcher(ctx, fetchersFn, make(<-chan []types.Server))
 	require.NoError(t, err)
 
 	go watcher.Run()
@@ -232,6 +259,13 @@ func TestEC2Watcher(t *testing.T) {
 		Region:     "us-west-2",
 		Instances:  []EC2Instance{toEC2Instance(&presentOther)},
 		Parameters: map[string]string{"token": "", "scriptName": ""},
+	}, *result.EC2)
+	result = <-watcher.InstancesC
+	require.Equal(t, EC2Instances{
+		Region:      "us-west-2",
+		Instances:   []EC2Instance{toEC2Instance(&presentForEICE)},
+		Parameters:  map[string]string{"token": "", "scriptName": "", "sshdConfigPath": ""},
+		Integration: "my-aws-integration",
 	}, *result.EC2)
 }
 

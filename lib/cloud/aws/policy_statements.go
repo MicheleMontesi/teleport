@@ -1,18 +1,20 @@
 /*
-Copyright 2021 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package aws
 
@@ -23,9 +25,8 @@ import (
 	"github.com/gravitational/trace"
 )
 
-var (
-	allResources = []string{"*"}
-)
+var wildcard = "*"
+var allResources = []string{wildcard}
 
 // StatementForIAMEditRolePolicy returns a IAM Policy Statement which allows editting Role Policy
 // of the resources.
@@ -54,8 +55,11 @@ func StatementForECSManageService() *Statement {
 		Effect: EffectAllow,
 		Actions: []string{
 			"ecs:DescribeClusters", "ecs:CreateCluster", "ecs:PutClusterCapacityProviders",
-			"ecs:DescribeServices", "ecs:CreateService", "ecs:UpdateService",
+			"ecs:DescribeServices", "ecs:CreateService", "ecs:UpdateService", "ecs:ListServices",
 			"ecs:RegisterTaskDefinition", "ecs:DescribeTaskDefinition", "ecs:DeregisterTaskDefinition",
+
+			// Required if the account has Resource Tagging Authorization enabled in Amazon ECS.
+			"ecs:TagResource",
 
 			// EC2 DescribeSecurityGroups is required so that the user can list the SG and then pick which ones they want to apply to the ECS Service.
 			"ec2:DescribeSecurityGroups",
@@ -133,6 +137,22 @@ func StatementForEC2InstanceConnectEndpoint() *Statement {
 	}
 }
 
+// StatementForEKSAccess returns the statement that allows enrolling of EKS clusters into Teleport.
+func StatementForEKSAccess() *Statement {
+	return &Statement{
+		Effect: EffectAllow,
+		Actions: []string{
+			"eks:ListClusters",
+			"eks:DescribeCluster",
+			"eks:ListAccessEntries",
+			"eks:CreateAccessEntry",
+			"eks:DeleteAccessEntry",
+			"eks:AssociateAccessPolicy",
+		},
+		Resources: allResources,
+	}
+}
+
 // StatementForAWSOIDCRoleTrustRelationship returns the Trust Relationship to allow the OpenID Connect Provider
 // set up during the AWS OIDC Onboarding to assume this Role.
 func StatementForAWSOIDCRoleTrustRelationship(accountID, providerURL string, audiences []string) *Statement {
@@ -166,24 +186,37 @@ func StatementForListRDSDatabases() *Statement {
 	}
 }
 
-// ExternalCloudAuditPolicyConfig holds options for the external cloud audit
+// StatementForS3BucketPublicRead returns the statement that
+// allows public/anonynous access to s3 bucket/prefix objects.
+func StatementForS3BucketPublicRead(s3bucketName, objectPrefix string) *Statement {
+	return &Statement{
+		Effect: EffectAllow,
+		Principals: StringOrMap{
+			wildcard: SliceOrString{},
+		},
+		Actions: []string{
+			"s3:GetObject",
+		},
+		Resources: []string{
+			fmt.Sprintf("arn:aws:s3:::%s/%s/*", s3bucketName, objectPrefix),
+		},
+	}
+}
+
+// ExternalAuditStoragePolicyConfig holds options for the External Audit Storage
 // IAM policy.
-type ExternalCloudAuditPolicyConfig struct {
+type ExternalAuditStoragePolicyConfig struct {
 	// Partition is the AWS partition to use.
 	Partition string
 	// Region is the AWS region to use.
 	Region string
 	// Account is the AWS account ID to use.
 	Account string
-	// AuditEventsARN is the S3 resource ARN where audit events are stored,
-	// including the bucket name, (optional) prefix, and a trailing wildcard
-	AuditEventsARN string
-	// SessionRecordingsARN is the S3 resource ARN where session recordings are stored,
-	// including the bucket name, (optional) prefix, and a trailing wildcard
-	SessionRecordingsARN string
-	// AthenaResultsARN is the S3 resource ARN where athena results are stored,
-	// including the bucket name, (optional) prefix, and a trailing wildcard
-	AthenaResultsARN string
+	// S3ARNs is a list of all S3 resource ARNs used for audit events, session
+	// recordings, and Athena query results. For each location, it should include an ARN for the
+	// base bucket and another wildcard ARN for all objects within the bucket
+	// and an optional path/prefix.
+	S3ARNs []string
 	// AthenaWorkgroupName is the name of the Athena workgroup used for queries.
 	AthenaWorkgroupName string
 	// GlueDatabaseName is the name of the AWS Glue database.
@@ -192,7 +225,7 @@ type ExternalCloudAuditPolicyConfig struct {
 	GlueTableName string
 }
 
-func (c *ExternalCloudAuditPolicyConfig) CheckAndSetDefaults() error {
+func (c *ExternalAuditStoragePolicyConfig) CheckAndSetDefaults() error {
 	if len(c.Partition) == 0 {
 		c.Partition = "aws"
 	}
@@ -202,14 +235,8 @@ func (c *ExternalCloudAuditPolicyConfig) CheckAndSetDefaults() error {
 	if len(c.Account) == 0 {
 		return trace.BadParameter("account is required")
 	}
-	if len(c.AuditEventsARN) == 0 {
-		return trace.BadParameter("audit events ARN is required")
-	}
-	if len(c.SessionRecordingsARN) == 0 {
-		return trace.BadParameter("session recordings ARN is required")
-	}
-	if len(c.AthenaResultsARN) == 0 {
-		return trace.BadParameter("athena results ARN is required")
+	if len(c.S3ARNs) < 2 {
+		return trace.BadParameter("at least two distinct S3 ARNs are required")
 	}
 	if len(c.AthenaWorkgroupName) == 0 {
 		return trace.BadParameter("athena workgroup name is required")
@@ -223,16 +250,16 @@ func (c *ExternalCloudAuditPolicyConfig) CheckAndSetDefaults() error {
 	return nil
 }
 
-// PolicyDocumentForExternalCloudAudit returns a PolicyDocument with the
-// necessary IAM permissions for the External Cloud Audit feature.
-func PolicyDocumentForExternalCloudAudit(cfg *ExternalCloudAuditPolicyConfig) (*PolicyDocument, error) {
+// PolicyDocumentForExternalAuditStorage returns a PolicyDocument with the
+// necessary IAM permissions for the External Audit Storage feature.
+func PolicyDocumentForExternalAuditStorage(cfg *ExternalAuditStoragePolicyConfig) (*PolicyDocument, error) {
 	if err := cfg.CheckAndSetDefaults(); err != nil {
 		return nil, trace.Wrap(err)
 	}
 	return &PolicyDocument{
 		Version: PolicyVersion,
 		Statements: []*Statement{
-			&Statement{
+			{
 				StatementID: "ReadWriteSessionsAndEvents",
 				Effect:      EffectAllow,
 				Actions: []string{
@@ -241,14 +268,18 @@ func PolicyDocumentForExternalCloudAudit(cfg *ExternalCloudAuditPolicyConfig) (*
 					"s3:GetObjectVersion",
 					"s3:ListMultipartUploadParts",
 					"s3:AbortMultipartUpload",
+					"s3:ListBucket",
+					"s3:ListBucketVersions",
+					"s3:ListBucketMultipartUploads",
+					"s3:GetBucketOwnershipControls",
+					"s3:GetBucketPublicAccessBlock",
+					"s3:GetBucketObjectLockConfiguration",
+					"s3:GetBucketVersioning",
+					"s3:GetBucketLocation",
 				},
-				Resources: []string{
-					cfg.AuditEventsARN,
-					cfg.SessionRecordingsARN,
-					cfg.AthenaResultsARN,
-				},
+				Resources: cfg.S3ARNs,
 			},
-			&Statement{
+			{
 				StatementID: "AllowAthenaQuery",
 				Effect:      EffectAllow,
 				Actions: []string{
@@ -266,7 +297,7 @@ func PolicyDocumentForExternalCloudAudit(cfg *ExternalCloudAuditPolicyConfig) (*
 					}.String(),
 				},
 			},
-			&Statement{
+			{
 				StatementID: "FullAccessOnGlueTable",
 				Effect:      EffectAllow,
 				Actions: []string{
@@ -301,4 +332,63 @@ func PolicyDocumentForExternalCloudAudit(cfg *ExternalCloudAuditPolicyConfig) (*
 			},
 		},
 	}, nil
+}
+
+// StatementAccessGraphAWSSync returns the statement that allows configuring the AWS Sync feature.
+func StatementAccessGraphAWSSync() *Statement {
+	return &Statement{
+		Effect: EffectAllow,
+		Actions: []string{
+			// EC2 IAM
+			"ec2:DescribeInstances",
+			"ec2:DescribeImages",
+			"ec2:DescribeTags",
+			"ec2:DescribeSnapshots",
+			"ec2:DescribeKeyPairs",
+			// EKS IAM
+			"eks:ListClusters",
+			"eks:DescribeCluster",
+			"eks:ListAccessEntries",
+			"eks:ListAccessPolicies",
+			"eks:ListAssociatedAccessPolicies",
+
+			// RDS IAM
+			"rds:DescribeDBInstances",
+			"rds:DescribeDBClusters",
+			"rds:ListTagsForResource",
+			"rds:DescribeDBProxies",
+
+			// DynamoDB IAM
+			"dynamodb:ListTables",
+			"dynamodb:DescribeTable",
+			// Redshift IAM
+			"redshift:DescribeClusters",
+			"redshift:Describe*",
+			// S3 IAM
+			"s3:ListAllMyBuckets",
+			"s3:GetBucketPolicy",
+			"s3:ListBucket",
+			"s3:GetBucketLocation",
+			// IAM IAM
+			"iam:ListUsers",
+			"iam:GetUser",
+			"iam:ListRoles",
+			"iam:ListGroups",
+			"iam:ListPolicies",
+			"iam:ListGroupsForUser",
+			"iam:ListInstanceProfiles",
+			"iam:ListUserPolicies",
+			"iam:GetUserPolicy",
+			"iam:ListAttachedUserPolicies",
+			"iam:ListGroupPolicies",
+			"iam:GetGroupPolicy",
+			"iam:ListAttachedGroupPolicies",
+			"iam:GetPolicy",
+			"iam:GetPolicyVersion",
+			"iam:ListRolePolicies",
+			"iam:ListAttachedRolePolicies",
+			"iam:GetRolePolicy",
+		},
+		Resources: allResources,
+	}
 }

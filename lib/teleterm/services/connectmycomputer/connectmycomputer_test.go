@@ -1,21 +1,26 @@
-// Copyright 2023 Gravitational, Inc
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package connectmycomputer
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"sync"
@@ -83,8 +88,64 @@ func TestRoleSetupRun_Idempotency(t *testing.T) {
 	_, err = roleSetup.Run(ctx, accessAndIdentity, certManager, &clusters.Cluster{URI: uri.NewClusterURI("foo")})
 	require.NoError(t, err)
 
-	require.Equal(t, 1, accessAndIdentity.callCounts["UpsertRole"], "expected two runs to update the role only once")
+	require.Equal(t, 1, accessAndIdentity.callCounts["CreateRole"], "expected two runs to create the role only once")
+	require.Equal(t, 0, accessAndIdentity.callCounts["UpdateRole"], "expected two runs to not update the role")
 	require.Equal(t, 1, accessAndIdentity.callCounts["UpdateUser"], "expected two runs to update the user only once")
+}
+
+func TestRoleSetupRun_RoleErrors(t *testing.T) {
+	existingRole, err := types.NewRole("connect-my-computer-alice", types.RoleSpecV6{})
+	require.NoError(t, err)
+
+	bogusErr := errors.New("something went wrong")
+
+	tests := []struct {
+		name          string
+		existingRole  types.Role
+		createRoleErr error
+		updateRoleErr error
+		wantErr       error
+	}{
+		{
+			name:          "creating role fails",
+			createRoleErr: bogusErr,
+			wantErr:       bogusErr,
+		},
+		{
+			name:          "updating role fails",
+			existingRole:  existingRole,
+			updateRoleErr: bogusErr,
+			wantErr:       bogusErr,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			t.Cleanup(cancel)
+
+			user, err := types.NewUser("alice")
+			require.NoError(t, err)
+
+			events := &mockEvents{}
+			certManager := &mockCertManager{}
+			accessAndIdentity := &mockAccessAndIdentity{
+				user:          user,
+				callCounts:    make(map[string]int),
+				events:        events,
+				role:          tt.existingRole,
+				createRoleErr: tt.createRoleErr,
+				updateRoleErr: tt.updateRoleErr,
+			}
+
+			roleSetup, err := NewRoleSetup(&RoleSetupConfig{})
+			require.NoError(t, err)
+
+			_, err = roleSetup.Run(ctx, accessAndIdentity, certManager, &clusters.Cluster{URI: uri.NewClusterURI("foo")})
+			require.Error(t, err)
+			require.ErrorIs(t, err, tt.wantErr)
+		})
+	}
 }
 
 const nodejoinWaitTestTimeout = 10 * time.Second
@@ -243,6 +304,8 @@ type mockAccessAndIdentity struct {
 	requireManualOpInitFire bool
 	node                    types.Server
 	nodeErr                 error
+	createRoleErr           error
+	updateRoleErr           error
 }
 
 func (m *mockAccessAndIdentity) GetUser(ctx context.Context, name string, withSecrets bool) (types.User, error) {
@@ -256,8 +319,28 @@ func (m *mockAccessAndIdentity) GetRole(ctx context.Context, name string) (types
 	return nil, trace.NotFound("role not found")
 }
 
-func (m *mockAccessAndIdentity) UpsertRole(ctx context.Context, role types.Role) (types.Role, error) {
-	m.callCounts["UpsertRole"]++
+func (m *mockAccessAndIdentity) CreateRole(ctx context.Context, role types.Role) (types.Role, error) {
+	m.callCounts["CreateRole"]++
+
+	if m.createRoleErr != nil {
+		return nil, m.createRoleErr
+	}
+
+	m.role = role
+	m.events.Fire(types.Event{
+		Type:     types.OpPut,
+		Resource: role,
+	})
+	return role, nil
+}
+
+func (m *mockAccessAndIdentity) UpdateRole(ctx context.Context, role types.Role) (types.Role, error) {
+	m.callCounts["UpdateRole"]++
+
+	if m.updateRoleErr != nil {
+		return nil, m.updateRoleErr
+	}
+
 	m.role = role
 	m.events.Fire(types.Event{
 		Type:     types.OpPut,

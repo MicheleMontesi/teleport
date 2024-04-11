@@ -1,30 +1,35 @@
 /**
- * Copyright 2020 Gravitational, Inc.
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
  *
- *     http://www.apache.org/licenses/LICENSE-2.0
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-import { ReactElement, useState, useEffect } from 'react';
+import { ReactElement, useEffect, useState } from 'react';
 import { useAttempt } from 'shared/hooks';
 
 import { User } from 'teleport/services/user';
 import useTeleport from 'teleport/useTeleport';
+import auth from 'teleport/services/auth/auth';
 
-export default function useUsers({ InviteCollaborators }: UsersContainerProps) {
+export default function useUsers({
+  InviteCollaborators,
+  EmailPasswordReset,
+}: UsersContainerProps) {
   const ctx = useTeleport();
   const [attempt, attemptActions] = useAttempt({ isProcessing: true });
   const [users, setUsers] = useState([] as User[]);
-  const [roles, setRoles] = useState([] as string[]);
   const [operation, setOperation] = useState({
     type: 'none',
   } as Operation);
@@ -77,11 +82,18 @@ export default function useUsers({ InviteCollaborators }: UsersContainerProps) {
     });
   }
 
-  function onCreate(u: User) {
+  async function onCreate(u: User) {
+    const webauthnResponse = await auth.getWebauthnResponseForAdminAction(true);
     return ctx.userService
-      .createUser(u)
+      .createUser(u, webauthnResponse)
       .then(result => setUsers([result, ...users]))
-      .then(() => ctx.userService.createResetPasswordToken(u.name, 'invite'));
+      .then(() =>
+        ctx.userService.createResetPasswordToken(
+          u.name,
+          'invite',
+          webauthnResponse
+        )
+      );
   }
 
   function onInviteCollaboratorsClose(newUsers?: User[]) {
@@ -93,29 +105,26 @@ export default function useUsers({ InviteCollaborators }: UsersContainerProps) {
     setOperation({ type: 'none' });
   }
 
+  function onEmailPasswordResetClose() {
+    setOperation({ type: 'none' });
+  }
+
+  async function fetchRoles(search: string): Promise<string[]> {
+    const { items } = await ctx.resourceService.fetchRoles({
+      search,
+      limit: 50,
+    });
+    return items.map(r => r.name);
+  }
+
   useEffect(() => {
-    function fetchRoles() {
-      if (ctx.getFeatureFlags().roles) {
-        return ctx.resourceService
-          .fetchRoles()
-          .then(resources => resources.map(role => role.name));
-      }
-
-      return Promise.resolve([]);
-    }
-
-    attemptActions.do(() =>
-      Promise.all([fetchRoles(), ctx.userService.fetchUsers()]).then(values => {
-        setRoles(values[0]);
-        setUsers(values[1]);
-      })
-    );
+    attemptActions.do(() => ctx.userService.fetchUsers().then(setUsers));
   }, []);
 
   return {
     attempt,
     users,
-    roles,
+    fetchRoles,
     operation,
     onStartCreate,
     onStartDelete,
@@ -130,6 +139,8 @@ export default function useUsers({ InviteCollaborators }: UsersContainerProps) {
     onInviteCollaboratorsClose,
     InviteCollaborators,
     inviteCollaboratorsOpen,
+    onEmailPasswordResetClose,
+    EmailPasswordReset,
   };
 }
 
@@ -149,8 +160,21 @@ export interface InviteCollaboratorsDialogProps {
   open: boolean;
 }
 
+export interface EmailPasswordResetDialogProps {
+  username: string;
+  onClose: () => void;
+}
+
+type InviteCollaboratorsElement = (
+  props: InviteCollaboratorsDialogProps
+) => ReactElement;
+type EmailPasswordResetElement = (
+  props: EmailPasswordResetDialogProps
+) => ReactElement;
+
 export type UsersContainerProps = {
-  InviteCollaborators?: (props: InviteCollaboratorsDialogProps) => ReactElement;
+  InviteCollaborators?: InviteCollaboratorsElement;
+  EmailPasswordReset?: EmailPasswordResetElement;
 };
 
 export type State = ReturnType<typeof useUsers>;

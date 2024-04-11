@@ -1,19 +1,19 @@
 /*
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
  *
- * Copyright 2022 Gravitational, Inc.
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
  *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- * /
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 package srv
@@ -21,16 +21,23 @@ package srv
 import (
 	"context"
 	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"os/exec"
 	"os/user"
 	"strconv"
 	"syscall"
 	"testing"
 
+	"github.com/gravitational/trace"
 	"github.com/stretchr/testify/require"
 
 	"github.com/gravitational/teleport"
 	"github.com/gravitational/teleport/api/types"
+	"github.com/gravitational/teleport/lib/utils/uds"
 )
 
 type stubUser struct {
@@ -129,7 +136,7 @@ func TestStartNewParker(t *testing.T) {
 						CommandContext: func(ctx context.Context, name string, arg ...string) *exec.Cmd {
 							require.NotNil(t, ctx)
 							require.Len(t, arg, 1)
-							require.Equal(t, arg[0], teleport.ParkSubCommand)
+							require.Equal(t, teleport.ParkSubCommand, arg[0])
 							parkerStarted = true
 							return exec.CommandContext(ctx, name, arg...)
 						},
@@ -172,4 +179,108 @@ func TestStartNewParker(t *testing.T) {
 			assertExpected()
 		})
 	}
+}
+
+func newSocketPair(t *testing.T) (localConn *uds.Conn, remoteFD *os.File) {
+	localConn, remoteConn, err := uds.NewSocketpair(uds.SocketTypeDatagram)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, remoteConn.Close())
+		require.NoError(t, localConn.Close())
+	})
+	remoteFD, err = remoteConn.File()
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, remoteFD.Close())
+	})
+	return localConn, remoteFD
+}
+
+func newHTTPTestServer(t *testing.T, listener net.Listener) *httptest.Server {
+	var err error
+	if listener == nil {
+		listener, err = net.Listen("tcp", "127.0.0.1:0")
+		require.NoError(t, err)
+	}
+	tsrv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "Hello, world")
+	}))
+	tsrv.Listener = listener
+	tsrv.Start()
+	t.Cleanup(tsrv.Close)
+	return tsrv
+}
+
+func TestLocalPortForwardCommand(t *testing.T) {
+	t.Parallel()
+	srv := newMockServer(t)
+	scx := newExecServerContext(t, srv)
+	scx.ExecType = teleport.ChanDirectTCPIP
+
+	// Start forwarding subprocess.
+	controlConn, controlFD := newSocketPair(t)
+	command, err := ConfigureCommand(scx, controlFD)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, command.Process.Kill())
+	})
+	require.NoError(t, command.Start())
+
+	// Create a client that will dial via the forwarder.
+	httpClient := http.Client{
+		Transport: &http.Transport{
+			Dial: func(network, addr string) (net.Conn, error) {
+				dialConn, dialFD := newSocketPair(t)
+				if _, _, err := controlConn.WriteWithFDs([]byte(addr), []*os.File{dialFD}); err != nil {
+					return nil, trace.Wrap(err)
+				}
+				return dialConn, nil
+			},
+		},
+	}
+
+	// Test the dialer on an http server.
+	tsrv := newHTTPTestServer(t, nil)
+	resp, err := httpClient.Get(tsrv.URL)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Equal(t, "Hello, world", string(body))
+}
+
+func TestRemotePortForwardCommand(t *testing.T) {
+	t.Parallel()
+	srv := newMockServer(t)
+	scx := newExecServerContext(t, srv)
+	scx.ExecType = teleport.TCPIPForwardRequest
+
+	// Start forwarding subprocess.
+	controlConn, controlFD := newSocketPair(t)
+	command, err := ConfigureCommand(scx, controlFD)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, command.Process.Kill())
+	})
+	require.NoError(t, command.Start())
+
+	// Request a listener from the forwarder.
+	replyConn, replyFD := newSocketPair(t)
+	_, _, err = controlConn.WriteWithFDs([]byte("127.0.0.1:0"), []*os.File{replyFD})
+	require.NoError(t, err)
+	var fbuf [1]*os.File
+	_, fn, err := replyConn.ReadWithFDs(nil, fbuf[:])
+	require.NoError(t, err)
+	require.Equal(t, 1, fn)
+	listener, err := net.FileListener(fbuf[0])
+	require.NoError(t, err)
+
+	// Test the listener on an http server.
+	tsrv := newHTTPTestServer(t, listener)
+	resp, err := http.Get(tsrv.URL)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Equal(t, "Hello, world", string(body))
 }

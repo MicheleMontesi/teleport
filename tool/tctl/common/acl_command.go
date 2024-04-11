@@ -1,18 +1,20 @@
 /*
-Copyright 2023 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package common
 
@@ -82,7 +84,7 @@ func (c *ACLCommand) Initialize(app *kingpin.Application, _ *servicecfg.Config) 
 }
 
 // TryRun takes the CLI command as an argument (like "acl ls") and executes it.
-func (c *ACLCommand) TryRun(ctx context.Context, cmd string, client auth.ClientI) (match bool, err error) {
+func (c *ACLCommand) TryRun(ctx context.Context, cmd string, client *auth.Client) (match bool, err error) {
 	switch cmd {
 	case c.ls.FullCommand():
 		err = c.List(ctx, client)
@@ -101,7 +103,7 @@ func (c *ACLCommand) TryRun(ctx context.Context, cmd string, client auth.ClientI
 }
 
 // List will list access lists visible to the user.
-func (c *ACLCommand) List(ctx context.Context, client auth.ClientI) error {
+func (c *ACLCommand) List(ctx context.Context, client *auth.Client) error {
 	var accessLists []*accesslist.AccessList
 	var nextKey string
 	for {
@@ -128,7 +130,7 @@ func (c *ACLCommand) List(ctx context.Context, client auth.ClientI) error {
 }
 
 // Get will display information about an access list visible to the user.
-func (c *ACLCommand) Get(ctx context.Context, client auth.ClientI) error {
+func (c *ACLCommand) Get(ctx context.Context, client *auth.Client) error {
 	accessList, err := client.AccessListClient().GetAccessList(ctx, c.accessListName)
 	if err != nil {
 		return trace.Wrap(err)
@@ -138,7 +140,7 @@ func (c *ACLCommand) Get(ctx context.Context, client auth.ClientI) error {
 }
 
 // UsersAdd will add a user to an access list.
-func (c *ACLCommand) UsersAdd(ctx context.Context, client auth.ClientI) error {
+func (c *ACLCommand) UsersAdd(ctx context.Context, client *auth.Client) error {
 	var expires time.Time
 	if c.expires != "" {
 		var err error
@@ -175,7 +177,7 @@ func (c *ACLCommand) UsersAdd(ctx context.Context, client auth.ClientI) error {
 }
 
 // UsersRemove will remove a user to an access list.
-func (c *ACLCommand) UsersRemove(ctx context.Context, client auth.ClientI) error {
+func (c *ACLCommand) UsersRemove(ctx context.Context, client *auth.Client) error {
 	err := client.AccessListClient().DeleteAccessListMember(ctx, c.accessListName, c.userName)
 	if err != nil {
 		return trace.Wrap(err)
@@ -187,7 +189,7 @@ func (c *ACLCommand) UsersRemove(ctx context.Context, client auth.ClientI) error
 }
 
 // UsersList will list the users in an access list.
-func (c *ACLCommand) UsersList(ctx context.Context, client auth.ClientI) error {
+func (c *ACLCommand) UsersList(ctx context.Context, client *auth.Client) error {
 	members, nextToken, err := client.AccessListClient().ListAccessListMembers(ctx, c.accessListName, 0, "")
 	if err != nil {
 		return trace.Wrap(err)

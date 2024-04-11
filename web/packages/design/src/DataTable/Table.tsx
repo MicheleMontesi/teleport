@@ -1,26 +1,34 @@
 /**
- * Copyright 2023 Gravitational, Inc
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
  *
- *      http://www.apache.org/licenses/LICENSE-2.0
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 import React from 'react';
 
-import { Text, Indicator, Box, Flex } from 'design';
+import { Box, Flex, Indicator, Text } from 'design';
 import * as Icons from 'design/Icon';
 
-import { StyledTable, StyledPanel, StyledTableWrapper } from './StyledTable';
-import { TableProps } from './types';
+import { StyledTable, StyledPanel } from './StyledTable';
+import {
+  BasicTableProps,
+  PagedTableProps,
+  SearchableBasicTableProps,
+  ServersideTableProps,
+  TableProps,
+} from './types';
 import { SortHeaderCell, TextCell } from './Cells';
 import { ClientSidePager, ServerSidePager } from './Pager';
 import InputSearch from './InputSearch';
@@ -136,55 +144,54 @@ export function Table<T>({
 
   if (serversideProps) {
     return (
-      <StyledTableWrapper borderRadius={3}>
-        <ServersideTable
-          style={style}
-          className={className}
-          data={state.data}
-          renderHeaders={renderHeaders}
-          renderBody={renderBody}
-          nextPage={fetching.onFetchNext}
-          prevPage={fetching.onFetchPrev}
-          pagination={state.pagination}
-          serversideProps={serversideProps}
-        />
-      </StyledTableWrapper>
+      <ServersideTable
+        style={style}
+        className={className}
+        data={state.data}
+        renderHeaders={renderHeaders}
+        renderBody={renderBody}
+        nextPage={fetching.onFetchNext}
+        prevPage={fetching.onFetchPrev}
+        pagination={state.pagination}
+        serversideProps={serversideProps}
+        fetchStatus={fetching.fetchStatus}
+      />
     );
   }
 
+  const paginationProps: PagedTableProps<T> = {
+    style,
+    className,
+    data: state.data as T[],
+    renderHeaders,
+    renderBody,
+    nextPage,
+    prevPage,
+    pagination: state.pagination,
+    searchValue: state.searchValue,
+    setSearchValue,
+    fetching,
+  };
+
+  if (state.pagination && state.pagination.CustomTable) {
+    return <state.pagination.CustomTable {...paginationProps} />;
+  }
+
   if (state.pagination) {
-    return (
-      <StyledTableWrapper borderRadius={3}>
-        <PagedTable
-          style={style}
-          className={className}
-          data={state.data}
-          renderHeaders={renderHeaders}
-          renderBody={renderBody}
-          nextPage={nextPage}
-          prevPage={prevPage}
-          pagination={state.pagination}
-          searchValue={state.searchValue}
-          setSearchValue={setSearchValue}
-          fetching={fetching}
-        />
-      </StyledTableWrapper>
-    );
+    return <PagedTable {...paginationProps} />;
   }
 
   if (isSearchable) {
     return (
-      <StyledTableWrapper borderRadius={3}>
-        <SearchableBasicTable
-          style={style}
-          className={className}
-          data={state.data}
-          renderHeaders={renderHeaders}
-          renderBody={renderBody}
-          searchValue={state.searchValue}
-          setSearchValue={setSearchValue}
-        />
-      </StyledTableWrapper>
+      <SearchableBasicTable
+        style={style}
+        className={className}
+        data={state.data}
+        renderHeaders={renderHeaders}
+        renderBody={renderBody}
+        searchValue={state.searchValue}
+        setSearchValue={setSearchValue}
+      />
     );
   }
 
@@ -225,12 +232,7 @@ function SearchableBasicTable<T>({
 }: SearchableBasicTableProps<T>) {
   return (
     <>
-      <StyledPanel>
-        <InputSearch
-          searchValue={searchValue}
-          setSearchValue={setSearchValue}
-        />
-      </StyledPanel>
+      <InputSearch searchValue={searchValue} setSearchValue={setSearchValue} />
       <StyledTable
         className={className}
         borderTopLeftRadius={0}
@@ -277,11 +279,13 @@ function PagedTable<T>({
   return (
     <>
       {isTopPager && (
-        <StyledPanel>
-          <InputSearch
-            searchValue={searchValue}
-            setSearchValue={setSearchValue}
-          />
+        <>
+          <StyledPanel>
+            <InputSearch
+              searchValue={searchValue}
+              setSearchValue={setSearchValue}
+            />
+          </StyledPanel>
           <ClientSidePager
             nextPage={nextPage}
             prevPage={prevPage}
@@ -289,7 +293,7 @@ function PagedTable<T>({
             {...fetching}
             {...pagination}
           />
-        </StyledPanel>
+        </>
       )}
       <StyledTable {...radiusProps} className={className} style={style}>
         {renderHeaders()}
@@ -322,6 +326,7 @@ function ServersideTable<T>({
   className,
   style,
   serversideProps,
+  fetchStatus,
 }: ServersideTableProps<T>) {
   return (
     <>
@@ -330,9 +335,15 @@ function ServersideTable<T>({
         {renderHeaders()}
         {renderBody(data)}
       </StyledTable>
-      <StyledPanel showTopBorder={true}>
-        <ServerSidePager nextPage={nextPage} prevPage={prevPage} />
-      </StyledPanel>
+      {(nextPage || prevPage) && (
+        <StyledPanel showTopBorder={true}>
+          <ServerSidePager
+            nextPage={nextPage}
+            prevPage={prevPage}
+            isLoading={fetchStatus === 'loading'}
+          />
+        </StyledPanel>
+      )}
     </>
   );
 }
@@ -412,30 +423,3 @@ const LoadingIndicator = ({ colSpan }: { colSpan: number }) => (
     </tr>
   </tfoot>
 );
-
-type BasicTableProps<T> = {
-  data: T[];
-  renderHeaders: () => JSX.Element;
-  renderBody: (data: T[]) => JSX.Element;
-  className?: string;
-  style?: React.CSSProperties;
-};
-
-type SearchableBasicTableProps<T> = BasicTableProps<T> & {
-  searchValue: string;
-  setSearchValue: (searchValue: string) => void;
-};
-
-type PagedTableProps<T> = SearchableBasicTableProps<T> & {
-  nextPage: () => void;
-  prevPage: () => void;
-  pagination: State<T>['state']['pagination'];
-  fetching?: State<T>['fetching'];
-};
-
-type ServersideTableProps<T> = BasicTableProps<T> & {
-  nextPage: () => void;
-  prevPage: () => void;
-  pagination: State<T>['state']['pagination'];
-  serversideProps: State<T>['serversideProps'];
-};

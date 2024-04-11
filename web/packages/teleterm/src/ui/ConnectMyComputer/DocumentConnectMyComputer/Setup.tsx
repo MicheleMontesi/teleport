@@ -1,23 +1,25 @@
-/*
-Copyright 2023 Gravitational, Inc.
+/**
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
-
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import styled from 'styled-components';
 import { Box, ButtonPrimary, Flex, Text, Alert } from 'design';
-import { makeEmptyAttempt, useAsync } from 'shared/hooks/useAsync';
+import { Attempt, makeEmptyAttempt, useAsync } from 'shared/hooks/useAsync';
 import { wait } from 'shared/utils/wait';
 import * as Alerts from 'design/Alert';
 
@@ -30,9 +32,8 @@ import {
   useConnectMyComputerContext,
 } from 'teleterm/ui/ConnectMyComputer';
 import { codeOrSignal } from 'teleterm/ui/utils/process';
-import { isAccessDeniedError } from 'teleterm/services/tshd/errors';
+import { isTshdRpcError } from 'teleterm/services/tshd/cloneableClient';
 import { useResourcesContext } from 'teleterm/ui/DocumentCluster/resourcesContext';
-import { useLogger } from 'teleterm/ui/hooks/useLogger';
 import { DocumentConnectMyComputer } from 'teleterm/ui/services/workspacesService';
 
 import { useAgentProperties } from '../useAgentProperties';
@@ -113,23 +114,13 @@ function Information(props: {
         </>
       )}
       <Text>
-        Connect My Computer allows you to add this device to the Teleport
-        cluster with just a few clicks.{' '}
-        <ClusterAndHostnameCopy clusterName={clusterName} hostname={hostname} />
+        <ClusterAndHostnameCopy clusterName={clusterName} hostname={hostname} />{' '}
+        Cluster users with the role <strong>{roleName}</strong> and users with
+        administrator privileges will be able to access your computer as{' '}
+        <strong>{systemUsername}</strong>.
         <br />
         <br />
-        Cluster users with the role <strong>{roleName}</strong> will be able to
-        access your computer as <strong>{systemUsername}</strong>.
-        <br />
-        <br />
-        Note that users with administrator privileges can assign that role to
-        themselves or craft another role which grants access to the node. We
-        recommend using Connect My Computer only in scenarios where no other
-        user could plausibly gain access to the node, such as when exploring a
-        Teleport cluster as its only user or in a home lab.
-        <br />
-        <br />
-        Your computer will be shared while Teleport Connect is open. To stop
+        Your device will be shared while Teleport Connect is open. To stop
         sharing, close Teleport Connect or stop the agent through the Connect My
         Computer tab. Sharing will resume on app restart, unless you stop the
         agent before exiting.
@@ -210,8 +201,8 @@ function AccessError(props: { access: ConnectMyComputerAccessNoAccess }) {
 }
 
 function AgentSetup() {
-  const logger = useLogger('AgentSetup');
   const ctx = useAppContext();
+  const { mainProcessClient, notificationsService } = ctx;
   const { rootClusterUri } = useWorkspaceContext();
   const {
     startAgent,
@@ -222,8 +213,18 @@ function AgentSetup() {
     agentProcessState,
   } = useConnectMyComputerContext();
   const { requestResourcesRefresh } = useResourcesContext();
-  const cluster = ctx.clustersService.findCluster(rootClusterUri);
-  const nodeToken = useRef<string>();
+  const rootCluster = ctx.clustersService.findCluster(rootClusterUri);
+
+  // The verify agent step checks if we can execute the binary. This triggers OS-level checks, such
+  // as Gatekeeper on macOS, before we do any real work. It is useful because it makes failures due
+  // to OS protections be reported in telemetry as failures of the verify agent step.
+  //
+  // If we didn't have this check as a separate step, then the step with generating the config file
+  // could run into Gatekeeper problems and that step can already fail for a myriad of other reasons.
+  const [verifyAgentAttempt, runVerifyAgentAttempt, setVerifyAgentAttempt] =
+    useAsync(
+      useCallback(() => ctx.connectMyComputerService.verifyAgent(), [ctx])
+    );
 
   const [createRoleAttempt, runCreateRoleAttempt, setCreateRoleAttempt] =
     useAsync(
@@ -233,14 +234,16 @@ function AgentSetup() {
             let certsReloaded = false;
 
             try {
-              const response = await ctx.connectMyComputerService.createRole(
-                rootClusterUri
-              );
+              const response =
+                await ctx.connectMyComputerService.createRole(rootClusterUri);
               certsReloaded = response.certsReloaded;
             } catch (error) {
-              if (isAccessDeniedError(error)) {
+              if (
+                isTshdRpcError(error, 'PERMISSION_DENIED') &&
+                !error.isResolvableWithRelogin
+              ) {
                 throw new Error(
-                  'Access denied. Contact your administrator for permissions to manage users and roles.'
+                  `Cannot set up the role: ${error.message}. Contact your administrator for permissions to manage users and roles.`
                 );
               }
               throw error;
@@ -255,24 +258,24 @@ function AgentSetup() {
         [ctx, rootClusterUri]
       )
     );
+
   const [
     generateConfigFileAttempt,
     runGenerateConfigFileAttempt,
     setGenerateConfigFileAttempt,
   ] = useAsync(
-    useCallback(async () => {
-      const { token } = await retryWithRelogin(ctx, rootClusterUri, () =>
-        ctx.connectMyComputerService.createAgentConfigFile(cluster)
-      );
-      nodeToken.current = token;
-    }, [cluster, ctx, rootClusterUri])
+    useCallback(
+      () =>
+        retryWithRelogin(ctx, rootClusterUri, () =>
+          ctx.connectMyComputerService.createAgentConfigFile(rootCluster)
+        ),
+      [rootCluster, ctx, rootClusterUri]
+    )
   );
+
   const [joinClusterAttempt, runJoinClusterAttempt, setJoinClusterAttempt] =
     useAsync(
       useCallback(async () => {
-        if (!nodeToken.current) {
-          throw new Error('Node token is empty');
-        }
         const [, error] = await startAgent();
         if (error) {
           throw error;
@@ -281,45 +284,44 @@ function AgentSetup() {
         // Now that the node has joined the server, let's refresh all open DocumentCluster instances
         // to show the new node.
         requestResourcesRefresh();
-
-        try {
-          await ctx.connectMyComputerService.deleteToken(
-            cluster.uri,
-            nodeToken.current
-          );
-        } catch (error) {
-          // the user may not have permissions to remove the token, but it will expire in a few minutes anyway
-          if (isAccessDeniedError(error)) {
-            logger.error('Access denied when deleting a token.', error);
-            return;
-          }
-          throw error;
-        }
-      }, [
-        startAgent,
-        ctx.connectMyComputerService,
-        cluster.uri,
-        requestResourcesRefresh,
-        logger,
-      ])
+      }, [startAgent, requestResourcesRefresh])
     );
 
-  const steps = [
-    {
-      name: 'Setting up the role',
-      attempt: createRoleAttempt,
-    },
+  const steps: SetupStep[] = [
     {
       name: 'Downloading the agent',
+      nameInFailureEvent: 'downloading_agent',
       attempt: downloadAgentAttempt,
+      runAttempt: runDownloadAgentAttempt,
+      setAttempt: setDownloadAgentAttempt,
+    },
+    {
+      name: 'Verifying the agent',
+      nameInFailureEvent: 'verifying_agent',
+      attempt: verifyAgentAttempt,
+      runAttempt: runVerifyAgentAttempt,
+      setAttempt: setVerifyAgentAttempt,
+    },
+    {
+      name: 'Setting up the role',
+      nameInFailureEvent: 'setting_up_role',
+      attempt: createRoleAttempt,
+      runAttempt: runCreateRoleAttempt,
+      setAttempt: setCreateRoleAttempt,
     },
     {
       name: 'Generating the config file',
+      nameInFailureEvent: 'generating_config_file',
       attempt: generateConfigFileAttempt,
+      runAttempt: runGenerateConfigFileAttempt,
+      setAttempt: setGenerateConfigFileAttempt,
     },
     {
       name: 'Joining the cluster',
+      nameInFailureEvent: 'joining_cluster',
       attempt: joinClusterAttempt,
+      runAttempt: runJoinClusterAttempt,
+      setAttempt: setJoinClusterAttempt,
       customError: () => {
         if (joinClusterAttempt.status !== 'error') {
           return;
@@ -367,86 +369,73 @@ function AgentSetup() {
     },
   ];
 
-  const runSteps = useCallback(async () => {
-    function withEventOnFailure(
-      fn: () => Promise<[void, Error]>,
-      failedStep: string
-    ): () => Promise<[void, Error]> {
-      return async () => {
-        const result = await fn();
-        const [, error] = result;
-        if (error) {
-          ctx.usageService.captureConnectMyComputerSetup(cluster.uri, {
-            success: false,
-            failedStep,
-          });
-        }
-        return result;
-      };
-    }
-
-    // all steps have to be cleared when starting the setup process;
+  const runSteps = async () => {
+    // all steps have to be cleared before starting the setup process;
     // otherwise we could see old errors on retry
     // (the error would be cleared when the given step starts, but it would be too late)
-    setCreateRoleAttempt(makeEmptyAttempt());
-    setDownloadAgentAttempt(makeEmptyAttempt());
-    setGenerateConfigFileAttempt(makeEmptyAttempt());
-    setJoinClusterAttempt(makeEmptyAttempt());
+    for (const step of steps) {
+      step.setAttempt(makeEmptyAttempt());
+    }
 
-    const actions = [
-      withEventOnFailure(runCreateRoleAttempt, 'setting_up_role'),
-      withEventOnFailure(runDownloadAgentAttempt, 'downloading_agent'),
-      withEventOnFailure(
-        runGenerateConfigFileAttempt,
-        'generating_config_file'
-      ),
-      withEventOnFailure(runJoinClusterAttempt, 'joining_cluster'),
-    ];
-    for (const action of actions) {
-      const [, error] = await action();
+    for (const step of steps) {
+      const [, error] = await step.runAttempt();
       if (error) {
+        ctx.usageService.captureConnectMyComputerSetup(rootCluster.uri, {
+          success: false,
+          failedStep: step.nameInFailureEvent,
+        });
+        // The error is reported by showing the attempt in the UI.
         return;
       }
     }
-    ctx.usageService.captureConnectMyComputerSetup(cluster.uri, {
+
+    ctx.usageService.captureConnectMyComputerSetup(rootCluster.uri, {
       success: true,
     });
     // Wait before navigating away from the document, so the user has time
     // to notice that all four steps have completed.
     await wait(750);
     markAgentAsConfigured();
-  }, [
-    setCreateRoleAttempt,
-    setDownloadAgentAttempt,
-    setGenerateConfigFileAttempt,
-    setJoinClusterAttempt,
-    runCreateRoleAttempt,
-    runDownloadAgentAttempt,
-    runGenerateConfigFileAttempt,
-    runJoinClusterAttempt,
-    markAgentAsConfigured,
-    ctx.usageService,
-    cluster.uri,
-  ]);
+  };
 
   useEffect(() => {
-    if (
-      [
-        createRoleAttempt,
-        downloadAgentAttempt,
-        generateConfigFileAttempt,
-        joinClusterAttempt,
-      ].every(attempt => attempt.status === '')
-    ) {
-      runSteps();
+    // TODO(ravicious): We should run the steps only when every attempt has its status set to '' and
+    // abort any action on unmount. However, there's a couple of things preventing us from doing so:
+    //
+    // * downloadAgentAttempt is kept in the context, so it's not reset between remounts like other
+    // attempts from this component. Instead of re-using the attempt from the context, the step with
+    // downloading an agent should be a separate attempt that merely calls downloadAgent from the
+    // context.
+    // * None of the steps support an abort signal at the moment.
+    //
+    // See the discussion on GitHub for more details:
+    // https://github.com/gravitational/teleport/pull/37330#discussion_r1467646824
+    runSteps();
+  }, []);
+
+  const retryRunSteps = async () => {
+    try {
+      // This will remove the binary but only if no other agents are running.
+      //
+      // Removing the binary is useful in situations where the download got corrupted or the OS
+      // decided to ban the binary from being executed for some reason. In those cases,
+      // redownloading the binary might resolve the problem.
+      //
+      // If other agents are running, then we at least know that there's probably no problems with
+      // the binary itself, in which case we can simply ignore the fact that it wasn't removed and
+      // carry on.
+      await mainProcessClient.tryRemoveConnectMyComputerAgentBinary();
+    } catch (error) {
+      const { agentBinaryPath } = mainProcessClient.getRuntimeSettings();
+      notificationsService.notifyError({
+        title: 'Could not remove the agent binary',
+        description: `Please try removing the binary manually to continue. The binary is at ${agentBinaryPath}. The error message was: ${error.message}`,
+      });
+      return;
     }
-  }, [
-    downloadAgentAttempt,
-    generateConfigFileAttempt,
-    joinClusterAttempt,
-    createRoleAttempt,
-    runSteps,
-  ]);
+
+    await runSteps();
+  };
 
   const hasSetupFailed = steps.some(s => s.attempt.status === 'error');
   const { clusterName, hostname } = useAgentProperties();
@@ -468,7 +457,7 @@ function AgentSetup() {
         }))}
       />
       {hasSetupFailed && (
-        <ButtonPrimary alignSelf="center" onClick={runSteps}>
+        <ButtonPrimary alignSelf="center" onClick={retryRunSteps}>
           Retry
         </ButtonPrimary>
       )}
@@ -498,9 +487,8 @@ function ClusterAndHostnameCopy(props: {
 }): JSX.Element {
   return (
     <>
-      The setup process will download and launch a Teleport agent, making your
-      computer available in the <strong>{props.clusterName}</strong> cluster as{' '}
-      <strong>{props.hostname}</strong>.
+      The setup process will make <strong>{props.hostname}</strong> available in
+      the <strong>{props.clusterName}</strong> cluster as an SSH server.
     </>
   );
 }
@@ -509,3 +497,12 @@ const Separator = styled(Box)`
   background: ${props => props.theme.colors.spotBackground[2]};
   height: 1px;
 `;
+
+type SetupStep = {
+  name: string;
+  nameInFailureEvent: string;
+  attempt: Attempt<void>;
+  runAttempt: () => Promise<[void, Error]>;
+  setAttempt: (attempt: Attempt<void>) => void;
+  customError?: () => JSX.Element;
+};

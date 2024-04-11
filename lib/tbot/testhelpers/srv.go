@@ -1,18 +1,20 @@
 /*
-Copyright 2022 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package testhelpers
 
@@ -25,11 +27,13 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/gravitational/teleport"
-	"github.com/gravitational/teleport/api/client/proto"
+	headerv1 "github.com/gravitational/teleport/api/gen/proto/go/teleport/header/v1"
+	machineidv1pb "github.com/gravitational/teleport/api/gen/proto/go/teleport/machineid/v1"
 	"github.com/gravitational/teleport/api/types"
 	"github.com/gravitational/teleport/lib/auth"
 	"github.com/gravitational/teleport/lib/auth/authclient"
 	"github.com/gravitational/teleport/lib/config"
+	"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/teleport/lib/service"
 	"github.com/gravitational/teleport/lib/service/servicecfg"
 	botconfig "github.com/gravitational/teleport/lib/tbot/config"
@@ -43,15 +47,19 @@ type DefaultBotConfigOpts struct {
 
 	// Makes the bot accept an Insecure auth or proxy server
 	Insecure bool
+
+	ServiceConfigs botconfig.ServiceConfigs
 }
+
+const AgentJoinToken = "i-am-a-join-token"
 
 // DefaultConfig returns a FileConfig to be used in tests, with random listen
 // addresses that are tied to the listeners returned in the FileDescriptor
 // slice, which should be passed as exported file descriptors to NewTeleport;
 // this is to ensure that we keep the listening socket open, to prevent other
 // processes from using the same port before we're done with it.
-func DefaultConfig(t *testing.T) (*config.FileConfig, []servicecfg.FileDescriptor) {
-	var fds []servicecfg.FileDescriptor
+func DefaultConfig(t *testing.T) (*config.FileConfig, []*servicecfg.FileDescriptor) {
+	var fds []*servicecfg.FileDescriptor
 
 	fc := &config.FileConfig{
 		Global: config.Global{
@@ -64,6 +72,7 @@ func DefaultConfig(t *testing.T) (*config.FileConfig, []servicecfg.FileDescripto
 			},
 			WebAddr:    testenv.NewTCPListener(t, service.ListenerProxyWeb, &fds),
 			TunAddr:    testenv.NewTCPListener(t, service.ListenerProxyTunnel, &fds),
+			KubeAddr:   testenv.NewTCPListener(t, service.ListenerProxyKube, &fds),
 			PublicAddr: []string{"localhost"}, // ListenerProxyWeb port will be appended
 		},
 		Auth: config.Auth{
@@ -72,6 +81,9 @@ func DefaultConfig(t *testing.T) (*config.FileConfig, []servicecfg.FileDescripto
 				EnabledFlag:   "true",
 				ListenAddress: testenv.NewTCPListener(t, service.ListenerAuth, &fds),
 			},
+			StaticTokens: config.StaticTokens{
+				config.StaticToken("db:" + AgentJoinToken),
+			},
 		},
 	}
 
@@ -79,7 +91,7 @@ func DefaultConfig(t *testing.T) (*config.FileConfig, []servicecfg.FileDescripto
 }
 
 // MakeAndRunTestAuthServer creates an auth server useful for testing purposes.
-func MakeAndRunTestAuthServer(t *testing.T, log utils.Logger, fc *config.FileConfig, fds []servicecfg.FileDescriptor) (auth *service.TeleportProcess) {
+func MakeAndRunTestAuthServer(t *testing.T, log utils.Logger, fc *config.FileConfig, fds []*servicecfg.FileDescriptor) (auth *service.TeleportProcess) {
 	t.Helper()
 
 	var err error
@@ -87,15 +99,21 @@ func MakeAndRunTestAuthServer(t *testing.T, log utils.Logger, fc *config.FileCon
 	require.NoError(t, config.ApplyFileConfig(fc, cfg))
 	cfg.FileDescriptors = fds
 	cfg.Log = log
-
 	cfg.CachePolicy.Enabled = false
 	cfg.Proxy.DisableWebInterface = true
+
+	// Disable session recording to avoid flakiness caused by TempDir cleanup.
+	cfg.Auth.SessionRecordingConfig.SetMode(types.RecordOff)
+	// Disable audit log as we don't rely on this in our tests and it can cause
+	// flakiness due to TempDir cleanup.
+	cfg.Auth.NoAudit = true
+
 	auth, err = service.NewTeleport(cfg)
 	require.NoError(t, err)
 	require.NoError(t, auth.Start())
 
 	t.Cleanup(func() {
-		cfg.Log.Info("Cleaning up Auth Server.")
+		cfg.Logger.InfoContext(context.Background(), "Cleaning up Auth Server.")
 		auth.Close()
 	})
 
@@ -110,7 +128,7 @@ func MakeAndRunTestAuthServer(t *testing.T, log utils.Logger, fc *config.FileCon
 // MakeDefaultAuthClient reimplements the bare minimum needed to create a
 // default root-level auth client for a Teleport server started by
 // MakeAndRunTestAuthServer.
-func MakeDefaultAuthClient(t *testing.T, log utils.Logger, fc *config.FileConfig) auth.ClientI {
+func MakeDefaultAuthClient(t *testing.T, log utils.Logger, fc *config.FileConfig) *auth.Client {
 	t.Helper()
 
 	cfg := servicecfg.MakeDefaultConfig()
@@ -156,16 +174,39 @@ func MakeDefaultAuthClient(t *testing.T, log utils.Logger, fc *config.FileConfig
 }
 
 // MakeBot creates a server-side bot and returns joining parameters.
-func MakeBot(t *testing.T, client auth.ClientI, name string, roles ...string) *proto.CreateBotResponse {
+func MakeBot(t *testing.T, client *auth.Client, name string, roles ...string) (*botconfig.OnboardingConfig, *machineidv1pb.Bot) {
+	ctx := context.TODO()
 	t.Helper()
 
-	bot, err := client.CreateBot(context.Background(), &proto.CreateBotRequest{
-		Name:  name,
-		Roles: roles,
+	b, err := client.BotServiceClient().CreateBot(ctx, &machineidv1pb.CreateBotRequest{
+		Bot: &machineidv1pb.Bot{
+			Metadata: &headerv1.Metadata{
+				Name: name,
+			},
+			Spec: &machineidv1pb.BotSpec{
+				Roles: roles,
+			},
+		},
 	})
-
 	require.NoError(t, err)
-	return bot
+
+	tokenName, err := utils.CryptoRandomHex(defaults.TokenLenBytes)
+	require.NoError(t, err)
+	tok, err := types.NewProvisionTokenFromSpec(
+		tokenName,
+		time.Now().Add(10*time.Minute),
+		types.ProvisionTokenSpecV2{
+			Roles:   []types.SystemRole{types.RoleBot},
+			BotName: b.Metadata.Name,
+		})
+	require.NoError(t, err)
+	err = client.CreateToken(ctx, tok)
+	require.NoError(t, err)
+
+	return &botconfig.OnboardingConfig{
+		TokenValue: tok.GetName(),
+		JoinMethod: types.JoinMethodToken,
+	}, b
 }
 
 // DefaultBotConfig creates a usable bot config from joining parameters.
@@ -175,7 +216,11 @@ func MakeBot(t *testing.T, client auth.ClientI, name string, roles ...string) *p
 // - Uses a memory storage destination
 // - Does not verify Proxy WebAPI certificates
 func DefaultBotConfig(
-	t *testing.T, fc *config.FileConfig, botParams *proto.CreateBotResponse, outputs []botconfig.Output, opts DefaultBotConfigOpts,
+	t *testing.T,
+	fc *config.FileConfig,
+	onboarding *botconfig.OnboardingConfig,
+	outputs []botconfig.Output,
+	opts DefaultBotConfigOpts,
 ) *botconfig.BotConfig {
 	t.Helper()
 
@@ -190,9 +235,7 @@ func DefaultBotConfig(
 
 	cfg := &botconfig.BotConfig{
 		AuthServer: authServer,
-		Onboarding: botconfig.OnboardingConfig{
-			JoinMethod: botParams.JoinMethod,
-		},
+		Onboarding: *onboarding,
 		Storage: &botconfig.StorageConfig{
 			Destination: &botconfig.DestinationMemory{},
 		},
@@ -201,9 +244,8 @@ func DefaultBotConfig(
 		// Set Insecure so the bot will trust the Proxy's webapi default signed
 		// certs.
 		Insecure: opts.Insecure,
+		Services: opts.ServiceConfigs,
 	}
-
-	cfg.Onboarding.SetToken(botParams.TokenID)
 
 	require.NoError(t, cfg.CheckAndSetDefaults())
 

@@ -1,16 +1,20 @@
-// Copyright 2023 Gravitational, Inc
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 // Package player includes an API to play back recorded sessions.
 package player
@@ -19,7 +23,6 @@ import (
 	"context"
 	"errors"
 	"math"
-	"os"
 	"sync/atomic"
 	"time"
 
@@ -27,6 +30,7 @@ import (
 	"github.com/jonboulle/clockwork"
 	"github.com/sirupsen/logrus"
 
+	"github.com/gravitational/teleport"
 	"github.com/gravitational/teleport/api/types/events"
 	"github.com/gravitational/teleport/lib/session"
 )
@@ -54,6 +58,7 @@ type Player struct {
 	advanceTo atomic.Int64
 
 	emit chan events.AuditEvent
+	wake chan int64
 	done chan struct{}
 
 	// playPause holds a channel to be closed when
@@ -64,10 +69,15 @@ type Player struct {
 	// and is inspired by "Rethinking Classical Concurrency Patterns"
 	// by Bryan C. Mills (GopherCon 2018): https://www.youtube.com/watch?v=5zXAHh5tJqQ
 	playPause chan chan struct{}
+
+	// err holds the error (if any) encountered during playback
+	err error
 }
 
 const normalPlayback = math.MinInt64
 
+// Streamer is the underlying streamer that provides
+// access to recorded session events.
 type Streamer interface {
 	StreamSessionEvents(
 		ctx context.Context,
@@ -100,10 +110,7 @@ func New(cfg *Config) (*Player, error) {
 
 	var log logrus.FieldLogger = cfg.Log
 	if log == nil {
-		l := logrus.New().WithField(trace.Component, "player")
-		l.Logger.SetOutput(os.Stdout) // TODO(zmb3) remove
-		l.Logger.SetLevel(logrus.DebugLevel)
-		log = l
+		log = logrus.New().WithField(teleport.ComponentKey, "player")
 	}
 
 	p := &Player{
@@ -111,8 +118,9 @@ func New(cfg *Config) (*Player, error) {
 		log:       log,
 		sessionID: cfg.SessionID,
 		streamer:  cfg.Streamer,
-		emit:      make(chan events.AuditEvent, 64),
+		emit:      make(chan events.AuditEvent, 1024),
 		playPause: make(chan chan struct{}, 1),
+		wake:      make(chan int64),
 		done:      make(chan struct{}),
 	}
 
@@ -137,6 +145,11 @@ const (
 	maxPlaybackSpeed     = 16
 )
 
+// SetSpeed adjusts the playback speed of the player.
+// It can be called at any time (the player can be in a playing
+// or paused state). A speed of 1.0 plays back at regular speed,
+// while a speed of 2.0 plays back twice as fast as originally
+// recorded. Valid speeds range from 0.25 to 16.0.
 func (p *Player) SetSpeed(s float64) error {
 	if s < minPlaybackSpeed || s > maxPlaybackSpeed {
 		return trace.BadParameter("speed %v is out of range", s)
@@ -146,8 +159,10 @@ func (p *Player) SetSpeed(s float64) error {
 }
 
 func (p *Player) stream() {
-	// TODO(zmb3): consider using context instead of close chan
-	eventsC, errC := p.streamer.StreamSessionEvents(context.TODO(), p.sessionID, 0)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	eventsC, errC := p.streamer.StreamSessionEvents(ctx, p.sessionID, 0)
 	lastDelay := int64(0)
 	for {
 		select {
@@ -155,13 +170,13 @@ func (p *Player) stream() {
 			close(p.emit)
 			return
 		case err := <-errC:
-			// TODO(zmb3): figure out how to surface the error
-			// (probably close the chan and expose a method)
 			p.log.Warn(err)
+			p.err = err
+			close(p.emit)
 			return
 		case evt := <-eventsC:
 			if evt == nil {
-				p.log.Debug("reached end of playback")
+				p.log.Debugf("reached end of playback for session %v", p.sessionID)
 				close(p.emit)
 				return
 			}
@@ -173,7 +188,7 @@ func (p *Player) stream() {
 			}
 
 			currentDelay := getDelay(evt)
-			if currentDelay > 0 && currentDelay > lastDelay {
+			if currentDelay > 0 && currentDelay >= lastDelay {
 				switch adv := p.advanceTo.Load(); {
 				case adv >= currentDelay:
 					// no timing delay necessary, we are fast forwarding
@@ -194,7 +209,13 @@ func (p *Player) stream() {
 						// time we were advanced to
 						lastDelay = adv
 					}
-					if err := p.applyDelay(time.Duration(currentDelay-lastDelay) * time.Millisecond); err != nil {
+
+					switch err := p.applyDelay(lastDelay, currentDelay); {
+					case errors.Is(err, errSeekWhilePaused):
+						p.log.Debug("seeked during pause, will restart stream")
+						go p.stream()
+						return
+					case err != nil:
 						close(p.emit)
 						return
 					}
@@ -203,13 +224,13 @@ func (p *Player) stream() {
 				lastDelay = currentDelay
 			}
 
-			p.log.Debugf("playing %v (%v)", evt.GetType(), evt.GetID())
-			select {
-			case p.emit <- evt:
-				p.lastPlayed.Store(currentDelay)
-			default:
-				p.log.Warnf("dropped event %v, reader too slow", evt.GetID())
-			}
+			// if the receiver can't keep up, let the channel throttle us
+			// (it's better for playback to be a little slower than realtime
+			// than to drop events)
+			//
+			// TODO: consider a select with a timeout to detect blocked readers?
+			p.emit <- evt
+			p.lastPlayed.Store(currentDelay)
 		}
 	}
 }
@@ -229,7 +250,12 @@ func (p *Player) C() <-chan events.AuditEvent {
 	return p.emit
 }
 
-// TODO(zmb3): add an Err() method to be checked after C is closed
+// Err returns the error (if any) that occurred during playback.
+// It should only be called after the channel returned by [C] is
+// closed.
+func (p *Player) Err() error {
+	return p.err
+}
 
 // Pause temporarily stops the player from emitting events.
 // It is a no-op if playback is currently paused.
@@ -251,26 +277,99 @@ func (p *Player) Play() error {
 // from the beginning. A duration greater than the length of the session
 // will cause playback to rapidly advance to the end of the recording.
 func (p *Player) SetPos(d time.Duration) error {
+	// we use a negative value to indicate rewinding, which means we can't
+	// rewind to position 0 (there is no negative 0)
+	if d == 0 {
+		d = 1 * time.Millisecond
+	}
 	if d.Milliseconds() < p.lastPlayed.Load() {
-		// if we're rewinding we store a negative value
 		d = -1 * d
 	}
 	p.advanceTo.Store(d.Milliseconds())
+
+	// try to wake up the player if it's waiting to emit an event
+	select {
+	case p.wake <- d.Milliseconds():
+	default:
+	}
+
 	return nil
 }
 
-// applyDelay "sleeps" for d in a manner that
-// can be canceled
-func (p *Player) applyDelay(d time.Duration) error {
-	p.log.Debugf("waiting %v until next event", d)
-	scaled := float64(d) / p.speed.Load().(float64)
-	select {
-	case <-p.done:
-		return errClosed
-	case <-p.clock.After(time.Duration(scaled)):
-		return nil
+// applyDelay applies the timing delay between the last emitted event
+// (lastDelay) and the event that will be emitted next (currentDelay).
+//
+// The delay can be interrupted by:
+// 1. The player being closed.
+// 2. The user pausing playback.
+// 3. The user seeking to a new position in the playback (SetPos)
+//
+// A nil return value indicates that the delay has elapsed and that
+// the next even can be emitted.
+func (p *Player) applyDelay(lastDelay, currentDelay int64) error {
+loop:
+	for {
+		// TODO(zmb3): changing play speed during a long sleep
+		// will not apply until after the sleep completes
+		speed := p.speed.Load().(float64)
+		scaled := float64(currentDelay-lastDelay) / speed
+
+		timer := p.clock.NewTimer(time.Duration(scaled) * time.Millisecond)
+		defer timer.Stop()
+
+		start := time.Now()
+
+		select {
+		case <-p.done:
+			return errClosed
+		case newPos := <-p.wake:
+			// the sleep was interrupted due to the user changing playback controls
+			switch {
+			case newPos == interruptForPause:
+				// the user paused playback while we were waiting to emit the next event:
+				// 1) figure out much of the sleep we completed
+				dur := float64(time.Since(start).Milliseconds()) * speed
+
+				// 2) wait here until the user resumes playback
+				if err := p.waitWhilePaused(); errors.Is(err, errSeekWhilePaused) {
+					// the user changed the playback position, so consider the delay
+					// applied and let the player pick up from the new position
+					return errSeekWhilePaused
+				}
+
+				// now that we're playing again, update our delay to account
+				// for the portion that was already satisfied and apply the
+				// remaining delay
+				lastDelay += int64(dur)
+				timer.Stop()
+				continue loop
+			case newPos > currentDelay:
+				// the user scrubbed forward in time past the current event,
+				// so we can return as if the delay has elapsed naturally
+				return nil
+			case newPos < 0:
+				// the user has rewinded playback, which means we need to restart
+				// the stream and can consider this delay as having elapsed naturally
+				return nil
+			case newPos < currentDelay:
+				// the user has scrubbed forward in time, but not enough to
+				// emit the next event - we need to delay more
+				lastDelay = newPos
+				timer.Stop()
+				continue loop
+			default:
+				return nil
+			}
+
+		case <-timer.Chan():
+			return nil
+		}
 	}
 }
+
+// interruptForPause is a special value used to interrupt the player's
+// sleep due to the user pausing playback.
+const interruptForPause = math.MaxInt64
 
 func (p *Player) setPlaying(play bool) {
 	ch := <-p.playPause
@@ -278,6 +377,13 @@ func (p *Player) setPlaying(play bool) {
 
 	if alreadyPlaying && !play {
 		ch = make(chan struct{})
+
+		// try to wake up the player if it's waiting to emit an event
+		select {
+		case p.wake <- interruptForPause:
+		default:
+		}
+
 	} else if !alreadyPlaying && play {
 		// signal waiters who are paused that it's time to resume playing
 		close(ch)
@@ -287,20 +393,34 @@ func (p *Player) setPlaying(play bool) {
 	p.playPause <- ch
 }
 
+var errSeekWhilePaused = errors.New("player seeked during pause")
+
 // waitWhilePaused blocks while the player is in a paused state.
 // It returns immediately if the player is currently playing.
 func (p *Player) waitWhilePaused() error {
-	ch := <-p.playPause
-	p.playPause <- ch
+	seeked := false
+	for {
+		ch := <-p.playPause
+		p.playPause <- ch
 
-	if alreadyPlaying := ch == nil; !alreadyPlaying {
-		select {
-		case <-p.done:
-			return errClosed
-		case <-ch:
+		if alreadyPlaying := ch == nil; !alreadyPlaying {
+			select {
+			case <-p.done:
+				return errClosed
+			case <-p.wake:
+				// seek while paused, this can happen an unlimited number of times,
+				// we just keep waiting until we're unpaused
+				seeked = true
+				continue
+			case <-ch:
+				// we have been unpaused
+			}
 		}
+		if seeked {
+			return errSeekWhilePaused
+		}
+		return nil
 	}
-	return nil
 }
 
 // LastPlayed returns the time of the last played event,

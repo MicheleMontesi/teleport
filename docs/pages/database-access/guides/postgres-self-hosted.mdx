@@ -3,7 +3,11 @@ title: Database Access with Self-Hosted PostgreSQL
 description: How to configure Teleport database access with self-hosted PostgreSQL.
 ---
 
-(!docs/pages/includes/database-access/db-introduction.mdx  dbType="PostgreSQL" dbConfigure="PostgreSQL database with mutual TLS authentication" dbName="PostgreSQL" !)
+(!docs/pages/includes/database-access/db-introduction.mdx  dbType="PostgreSQL" dbConfigure="PostgreSQL database" dbName="PostgreSQL" !)
+
+## How it works
+
+(!docs/pages/includes/database-access/how-it-works/mtls.mdx db="PostgreSQL"!)
 
 <Tabs>
 <TabItem scope={["oss", "enterprise"]} label="Self-Hosted">
@@ -62,7 +66,7 @@ to the PostgreSQL configuration file, `postgresql.conf`:
 ssl = on
 ssl_cert_file = '/path/to/server.crt'
 ssl_key_file = '/path/to/server.key'
-ssl_ca_file = '/path/toa/server.cas'
+ssl_ca_file = '/path/to/server.cas'
 ```
 
 See [Secure TCP/IP Connections with SSL](https://www.postgresql.org/docs/current/ssl-tcp.html)
@@ -144,13 +148,6 @@ Note that you will only be able to see databases your role has access to. See
 To retrieve credentials for a database and connect to it:
 
 ```code
-$ tsh db connect example-postgres
-```
-
-You can optionally specify the database name and the user to use by default
-when connecting to the database instance:
-
-```code
 $ tsh db connect --db-user=postgres --db-name=postgres example-postgres
 ```
 
@@ -163,7 +160,14 @@ $ tsh db logout example-postgres
 $ tsh db logout
 ```
 
+## Troubleshooting
+
+(!docs/pages/includes/database-access/pg-cancel-request-limitation.mdx!)
+
+(!docs/pages/includes/database-access/psql-ssl-syscall-error.mdx!)
+
 ## Next steps
 
 - Set up [automatic database user provisioning](../auto-user-provisioning/postgres.mdx).
 
+(!docs/pages/includes/database-access/guides-next-steps.mdx!)

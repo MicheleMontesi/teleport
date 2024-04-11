@@ -1,18 +1,20 @@
 /*
-Copyright 2020-2021 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package jira
 
@@ -40,9 +42,10 @@ const (
 
 	jiraMaxConns    = 100
 	jiraHTTPTimeout = 10 * time.Second
-	// Teleport has a 4096 character limit for the reason field so we
+	// JiraReasonLimit is the max size for a reason in jira.
+	// Teleport has a 4096-character limit for the reason field, so we
 	// truncate all reasons to a generous but conservative limit
-	jiraReasonLimit = 3000
+	JiraReasonLimit = 3000
 
 	jiraStatusUpdateTimeout time.Duration = 10 * time.Second
 )
@@ -128,7 +131,7 @@ func NewJiraClient(conf JiraConfig, clusterName, teleportProxyAddr string, statu
 				if resp.IsError() {
 					switch result := resp.Error().(type) {
 					case *ErrorResult:
-						return trace.Errorf("http error code=%v, errors=[%v]", resp.StatusCode(), strings.Join(result.ErrorMessages, ", "))
+						return trace.Errorf("http error code=%v, errors=[%s]", resp.StatusCode(), result)
 					case nil:
 						return nil
 					default:
@@ -448,11 +451,11 @@ func (j *Jira) AddResolutionComment(ctx context.Context, id string, resolution R
 }
 
 func truncateReasonFields(reqData RequestData) RequestData {
-	if reqData.Resolution.Reason != "" && len(reqData.Resolution.Reason) > jiraReasonLimit {
-		reqData.Resolution.Reason = reqData.Resolution.Reason[:jiraReasonLimit]
+	if reqData.Resolution.Reason != "" && len(reqData.Resolution.Reason) > JiraReasonLimit {
+		reqData.Resolution.Reason = reqData.Resolution.Reason[:JiraReasonLimit]
 	}
-	if reqData.RequestReason != "" && len(reqData.RequestReason) > jiraReasonLimit {
-		reqData.RequestReason = reqData.RequestReason[:jiraReasonLimit]
+	if reqData.RequestReason != "" && len(reqData.RequestReason) > JiraReasonLimit {
+		reqData.RequestReason = reqData.RequestReason[:JiraReasonLimit]
 	}
 	return reqData
 }

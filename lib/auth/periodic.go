@@ -1,18 +1,20 @@
 /*
-Copyright 2023 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package auth
 
@@ -21,6 +23,7 @@ import (
 
 	"golang.org/x/mod/semver"
 
+	"github.com/gravitational/teleport/api/client/proto"
 	"github.com/gravitational/teleport/api/types"
 	vc "github.com/gravitational/teleport/lib/versioncontrol"
 )
@@ -72,7 +75,7 @@ func (u *upgradeEnrollPeriodic) GenerateEnrollPrompt() (msg string, prompt bool)
 		return "", false
 	}
 
-	return fmt.Sprintf("Some agents are outdated and would benefit from enrollement in automatic upgrades."+
+	return fmt.Sprintf("Some agents are outdated and would benefit from enrollment in automatic upgrades."+
 		" (hint: use 'tctl inventory ls --upgrader=none' or 'tctl inventory ls --older-than=%s' to see more)", medianEnrolled), true
 }
 
@@ -101,37 +104,37 @@ func inspectVersionCounts(counts map[string]int) (median string, total int, ok b
 
 // instanceMetricsPeriodic is an aggregator for general instance metrics.
 type instanceMetricsPeriodic struct {
-	upgraderCounts map[string]int
+	upgraderCounts map[string]map[string]int
 	totalInstances int
 }
 
 func newInstanceMetricsPeriodic() *instanceMetricsPeriodic {
 	return &instanceMetricsPeriodic{
-		upgraderCounts: make(map[string]int),
+		upgraderCounts: make(map[string]map[string]int),
 	}
 }
 
 // VisitInstance adds an instance to ongoing aggregations.
-func (i *instanceMetricsPeriodic) VisitInstance(instance types.Instance) {
+func (i *instanceMetricsPeriodic) VisitInstance(instance proto.UpstreamInventoryHello) {
 	i.totalInstances++
 	if upgrader := instance.GetExternalUpgrader(); upgrader != "" {
-		i.upgraderCounts[upgrader]++
+		if _, exists := i.upgraderCounts[upgrader]; !exists {
+			i.upgraderCounts[upgrader] = make(map[string]int)
+		}
+		i.upgraderCounts[upgrader][instance.GetExternalUpgraderVersion()]++
 	}
 }
 
 // TotalEnrolledInUpgrades gets the total number of instances that have some upgrader defined.
 func (i *instanceMetricsPeriodic) TotalEnrolledInUpgrades() int {
 	var total int
-	for _, count := range i.upgraderCounts {
-		total += count
+	for _, upgraderVersion := range i.upgraderCounts {
+		for _, count := range upgraderVersion {
+			total += count
+		}
 	}
 
 	return total
-}
-
-// InstancesWithUpgrader gets the number of instances that advertise the given upgrader.
-func (i *instanceMetricsPeriodic) InstancesWithUpgrader(upgrader string) int {
-	return i.upgraderCounts[upgrader]
 }
 
 // TotalInstances gets the total number of known instances.

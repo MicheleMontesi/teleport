@@ -1,18 +1,22 @@
 /**
- * Copyright 2023 Gravitational, Inc
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
  *
- *      http://www.apache.org/licenses/LICENSE-2.0
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
+
+import stream from 'node:stream';
 
 import winston, {
   createLogger as createWinston,
@@ -24,6 +28,9 @@ import { isObject } from 'shared/utils/highbar';
 import split2 from 'split2';
 
 import { Logger, LoggerService, NodeLoggerService } from './types';
+import { KeepLastChunks } from './keepLastChunks';
+
+import type { Logform } from 'winston';
 
 import type { ChildProcess } from 'node:child_process';
 
@@ -90,32 +97,43 @@ export function createFileLoggerService(
   });
 
   if (opts.dev) {
-    instance.add(
-      new transports.Console({
-        format: format.printf(({ level, message, context }) => {
-          const loggerName =
-            opts.loggerNameColor &&
-            `\x1b[${opts.loggerNameColor}m${opts.name.toUpperCase()}\x1b[0m`;
-
-          const text = stringifier(message as unknown as unknown[]);
-          const logMessage = opts.passThroughMode
-            ? text
-            : `[${context}] ${level}: ${text}`;
-
-          return [loggerName, logMessage].filter(Boolean).join(' ');
-        }),
-      })
-    );
+    // Browser environment.
+    if (typeof window !== 'undefined') {
+      instance.add(getBrowserConsoleTransport(opts));
+    } else {
+      instance.add(getRegularConsoleTransport(opts));
+    }
   }
 
   return {
-    pipeProcessOutputIntoLogger(childProcess: ChildProcess): void {
-      const splitStream = split2(line => ({ level: 'info', message: [line] }));
+    pipeProcessOutputIntoLogger(
+      childProcess: ChildProcess,
+      lastLogs?: KeepLastChunks<string>
+    ): void {
+      const splitStream = split2();
+      const lineToWinstonFormat = new stream.Transform({
+        // Must be enabled in order for this stream to return anything else than a string or a
+        // buffer from the transform function.
+        objectMode: true,
+        transform: (line: string, encoding, callback) => {
+          callback(null, { level: 'info', message: [line] });
+        },
+      });
 
+      // splitStream receives raw output from the child process and outputs lines as chunks.
       childProcess.stdout.pipe(splitStream, { end: false });
       childProcess.stderr.pipe(splitStream, { end: false });
 
-      splitStream.pipe(instance);
+      // lineToWinstonFormat takes each line and converts it to Winston format.
+      splitStream.pipe(lineToWinstonFormat);
+
+      // Finally, we pipe the converted lines to a Winston instance.
+      lineToWinstonFormat.pipe(instance);
+
+      // Optionally, we pipe each line to lastLogs.
+      if (lastLogs) {
+        splitStream.pipe(lastLogs);
+      }
 
       // Because the .pipe calls above use { end: false }, the split stream won't end when the
       // source streams end. This gives us a chance to wait for both stdout and stderr to get closed
@@ -191,3 +209,46 @@ type FileLoggerOptions = {
    * */
   omitTimestamp?: boolean;
 };
+
+/** Does not stringify messages and logs directly using `console.*` functions. */
+function getBrowserConsoleTransport(opts: FileLoggerOptions) {
+  return new transports.Console({
+    log({ level, message, context }: Logform.TransformableInfo, next) {
+      const loggerName = getLoggerName(opts);
+
+      const logMessage = opts.passThroughMode
+        ? message
+        : [`[${context}] ${level}:`, ...message];
+
+      const toLog = [loggerName, logMessage].filter(Boolean).flat();
+      // We allow level to be only info, warn and error (createLoggerFromWinston).
+      console[level](...toLog);
+      next();
+    },
+  });
+}
+
+/** Stringifies log messages and logs with winston's console transport. */
+function getRegularConsoleTransport(opts: FileLoggerOptions) {
+  return new transports.Console({
+    format: format.printf(({ level, message, context }) => {
+      const loggerName = getLoggerName(opts);
+
+      const text = stringifier(message as unknown as unknown[]);
+      const logMessage = opts.passThroughMode
+        ? text
+        : `[${context}] ${level}: ${text}`;
+
+      return [loggerName, logMessage].filter(Boolean).join(' ');
+    }),
+  });
+}
+
+function getLoggerName(
+  opts: Pick<FileLoggerOptions, 'loggerNameColor' | 'name'>
+) {
+  return (
+    opts.loggerNameColor &&
+    `\x1b[${opts.loggerNameColor}m${opts.name.toUpperCase()}\x1b[0m`
+  );
+}

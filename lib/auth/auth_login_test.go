@@ -1,16 +1,20 @@
-// Copyright 2021 Gravitational, Inc
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package auth
 
@@ -26,8 +30,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/gravitational/teleport"
 	"github.com/gravitational/teleport/api/client/proto"
 	"github.com/gravitational/teleport/api/constants"
+	mfav1 "github.com/gravitational/teleport/api/gen/proto/go/teleport/mfa/v1"
 	"github.com/gravitational/teleport/api/types"
 	"github.com/gravitational/teleport/lib/auth/mocku2f"
 	wantypes "github.com/gravitational/teleport/lib/auth/webauthntypes"
@@ -154,7 +160,8 @@ func TestServer_CreateAuthenticateChallenge_authPreference(t *testing.T) {
 
 			authPreference, err := types.NewAuthPreference(*test.spec)
 			require.NoError(t, err)
-			require.NoError(t, authServer.SetAuthPreference(ctx, authPreference))
+			_, err = authServer.UpsertAuthPreference(ctx, authPreference)
+			require.NoError(t, err)
 
 			challenge, err := authServer.CreateAuthenticateChallenge(ctx, &proto.CreateAuthenticateChallengeRequest{
 				Request: &proto.CreateAuthenticateChallengeRequest_UserCredentials{
@@ -188,7 +195,8 @@ func TestCreateAuthenticateChallenge_WithAuth(t *testing.T) {
 	// TODO(codingllama): Use a public endpoint to verify?
 	mfaResp, err := u.webDev.SolveAuthn(res)
 	require.NoError(t, err)
-	_, _, err = srv.Auth().validateMFAAuthResponse(ctx, mfaResp, u.username, false /* passwordless */)
+	requiredExt := &mfav1.ChallengeExtensions{Scope: mfav1.ChallengeScope_CHALLENGE_SCOPE_LOGIN}
+	_, err = srv.Auth().ValidateMFAAuthResponse(ctx, mfaResp, u.username, requiredExt)
 	require.NoError(t, err)
 }
 
@@ -269,9 +277,9 @@ func TestCreateAuthenticateChallenge_WithUserCredentials_WithLock(t *testing.T) 
 
 		// Test last attempt returns locked error.
 		if i == defaults.MaxLoginAttempts {
-			require.Equal(t, err.Error(), MaxFailedAttemptsErrMsg)
+			require.Equal(t, MaxFailedAttemptsErrMsg, err.Error())
 		} else {
-			require.NotEqual(t, err.Error(), MaxFailedAttemptsErrMsg)
+			require.NotEqual(t, MaxFailedAttemptsErrMsg, err.Error())
 		}
 	}
 }
@@ -388,24 +396,78 @@ func TestCreateAuthenticateChallenge_mfaVerification(t *testing.T) {
 	prodRole, err = adminClient.UpsertRole(ctx, prodRole)
 	require.NoError(t, err, "UpsertRole(%q)", prodRole.GetName())
 
-	// Create a user with MFA devices...
-	userCreds, err := createUserWithSecondFactors(testServer)
-	require.NoError(t, err, "createUserWithSecondFactors")
-	username := userCreds.username
+	// Create a role that requires MFA when joining sessions
+	joinMFARole, err := types.NewRole("mfa_session_join", types.RoleSpecV6{
+		Options: types.RoleOptions{
+			RequireMFAType: types.RequireMFAType_SESSION,
+		},
+		Allow: types.RoleConditions{
+			Logins: []string{"{{internal.logins}}"},
+			NodeLabels: types.Labels{
+				"env": []string{"*"},
+			},
+			JoinSessions: []*types.SessionJoinPolicy{
+				{
+					Name:  "session_join",
+					Roles: []string{"access"},
+					Kinds: []string{string(types.SSHSessionKind)},
+					Modes: []string{string(types.SessionPeerMode)},
+				},
+			},
+		},
+	})
+	require.NoError(t, err, "NewRole(joinMFA)")
+	joinMFARole, err = adminClient.UpsertRole(ctx, joinMFARole)
+	require.NoError(t, err, "UpsertRole(%q)", joinMFARole.GetName())
 
-	// ...and assign the user a sane unix login, plus the prod role.
-	user, err := adminClient.GetUser(ctx, username, false /* withSecrets */)
-	require.NoError(t, err, "GetUser(%q)", username)
-	const login = "llama"
-	user.SetLogins(append(user.GetLogins(), login))
-	user.AddRole(prodRole.GetName())
-	_, err = adminClient.UpdateUser(ctx, user.(*types.UserV2))
-	require.NoError(t, err, "UpdateUser(%q)", username)
+	// Create a role that doesn't require MFA when joining sessions
+	joinNoMFARole, err := types.NewRole("no_mfa_session_join", types.RoleSpecV6{
+		Allow: types.RoleConditions{
+			Logins: []string{"{{internal.logins}}"},
+			NodeLabels: types.Labels{
+				"env": []string{"*"},
+			},
+			JoinSessions: []*types.SessionJoinPolicy{
+				{
+					Name:  "session_join",
+					Roles: []string{"access"},
+					Kinds: []string{string(types.SSHSessionKind)},
+					Modes: []string{string(types.SessionPeerMode)},
+				},
+			},
+		},
+	})
+	require.NoError(t, err, "NewRole(joinNoMFA)")
+	joinNoMFARole, err = adminClient.UpsertRole(ctx, joinNoMFARole)
+	require.NoError(t, err, "UpsertRole(%q)", joinNoMFARole.GetName())
 
-	userClient, err := testServer.NewClient(TestUser(username))
-	require.NoError(t, err, "NewClient(%q)", username)
+	const normalLogin = "llama"
+	createUser := func(role types.Role) *Client {
+		// Create a user with MFA devices...
+		userCreds, err := createUserWithSecondFactors(testServer)
+		require.NoError(t, err, "createUserWithSecondFactors")
+		username := userCreds.username
 
-	createReqForNode := func(node string) *proto.CreateAuthenticateChallengeRequest {
+		// ...and assign the user a sane unix login, plus the specified role.
+		user, err := adminClient.GetUser(ctx, username, false /* withSecrets */)
+		require.NoError(t, err, "GetUser(%q)", username)
+
+		user.SetLogins(append(user.GetLogins(), normalLogin))
+		user.AddRole(role.GetName())
+		_, err = adminClient.UpdateUser(ctx, user.(*types.UserV2))
+		require.NoError(t, err, "UpdateUser(%q)", username)
+
+		userClient, err := testServer.NewClient(TestUser(username))
+		require.NoError(t, err, "NewClient(%q)", username)
+
+		return userClient
+	}
+
+	prodAccessClient := createUser(prodRole)
+	joinMFAClient := createUser(joinMFARole)
+	joinNoMFAClient := createUser(joinNoMFARole)
+
+	createReqForNode := func(node, login string) *proto.CreateAuthenticateChallengeRequest {
 		return &proto.CreateAuthenticateChallengeRequest{
 			Request: &proto.CreateAuthenticateChallengeRequest_ContextUser{
 				ContextUser: &proto.ContextUser{},
@@ -423,25 +485,71 @@ func TestCreateAuthenticateChallenge_mfaVerification(t *testing.T) {
 
 	tests := []struct {
 		name            string
+		userClient      *Client
 		req             *proto.CreateAuthenticateChallengeRequest
 		wantMFARequired proto.MFARequired
 		wantChallenges  bool
 	}{
 		{
-			name:            "MFA not required, no challenges issued",
-			req:             createReqForNode(devNode),
+			name:            "MFA not required to start session, no challenges issued",
+			userClient:      prodAccessClient,
+			req:             createReqForNode(devNode, normalLogin),
 			wantMFARequired: proto.MFARequired_MFA_REQUIRED_NO,
 		},
 		{
-			name:            "MFA required",
-			req:             createReqForNode(prodNode),
+			name:            "MFA required to start session",
+			userClient:      prodAccessClient,
+			req:             createReqForNode(prodNode, normalLogin),
 			wantMFARequired: proto.MFARequired_MFA_REQUIRED_YES,
 			wantChallenges:  true,
 		},
+		{
+			name:            "MFA required to join session on prod node (prod role)",
+			userClient:      prodAccessClient,
+			req:             createReqForNode(prodNode, teleport.SSHSessionJoinPrincipal),
+			wantMFARequired: proto.MFARequired_MFA_REQUIRED_YES,
+			wantChallenges:  true,
+		},
+		{
+			name:            "MFA required to join session on dev node (prod role)",
+			userClient:      prodAccessClient,
+			req:             createReqForNode(devNode, teleport.SSHSessionJoinPrincipal),
+			wantMFARequired: proto.MFARequired_MFA_REQUIRED_YES,
+			wantChallenges:  true,
+		},
+		{
+			name:            "MFA required to join session on prod node (join MFA role)",
+			userClient:      joinMFAClient,
+			req:             createReqForNode(prodNode, teleport.SSHSessionJoinPrincipal),
+			wantMFARequired: proto.MFARequired_MFA_REQUIRED_YES,
+			wantChallenges:  true,
+		},
+		{
+			name:            "MFA required to join session dev node (join MFA role)",
+			userClient:      joinMFAClient,
+			req:             createReqForNode(prodNode, teleport.SSHSessionJoinPrincipal),
+			wantMFARequired: proto.MFARequired_MFA_REQUIRED_YES,
+			wantChallenges:  true,
+		},
+		{
+			name:            "MFA not required to join session, no challenges issued on dev node (join no MFA role)",
+			userClient:      joinNoMFAClient,
+			req:             createReqForNode(devNode, teleport.SSHSessionJoinPrincipal),
+			wantMFARequired: proto.MFARequired_MFA_REQUIRED_NO,
+		},
+		{
+			name:            "MFA not required to join session, no challenges issued on prod node (join no MFA role)",
+			userClient:      joinNoMFAClient,
+			req:             createReqForNode(prodNode, teleport.SSHSessionJoinPrincipal),
+			wantMFARequired: proto.MFARequired_MFA_REQUIRED_NO,
+		},
 	}
 	for _, test := range tests {
+		test := test
 		t.Run(test.name, func(t *testing.T) {
-			resp, err := userClient.CreateAuthenticateChallenge(ctx, test.req)
+			t.Parallel()
+
+			resp, err := test.userClient.CreateAuthenticateChallenge(ctx, test.req)
 			require.NoError(t, err, "CreateAuthenticateChallenge")
 
 			assert.Equal(t, test.wantMFARequired, resp.MFARequired, "resp.MFARequired mismatch")
@@ -526,7 +634,7 @@ func TestCreateRegisterChallenge(t *testing.T) {
 			DeviceType:  proto.DeviceType_DEVICE_TYPE_WEBAUTHN,
 			DeviceUsage: proto.DeviceUsage_DEVICE_USAGE_MFA,
 		})
-		assert.ErrorContains(t, err, "token or an MFA response")
+		assert.ErrorContains(t, err, "second factor authentication required")
 
 		// Acquire and solve an authn challenge.
 		authnChal, err := authClient.CreateAuthenticateChallenge(ctx, &proto.CreateAuthenticateChallengeRequest{
@@ -570,9 +678,8 @@ func TestCreateRegisterChallenge_unusableDevice(t *testing.T) {
 	require.NoError(t, err, "NewAuthPreference")
 
 	setAuthPref := func(t *testing.T, authPref types.AuthPreference) {
-		require.NoError(t,
-			authServer.SetAuthPreference(ctx, authPref),
-			"SetAuthPreference")
+		_, err = authServer.UpsertAuthPreference(ctx, authPref)
+		require.NoError(t, err, "UpsertAuthPreference")
 	}
 	setAuthPref(t, initialPref)
 
@@ -752,11 +859,12 @@ func TestServer_Authenticate_passwordless(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	require.NoError(t, authServer.SetAuthPreference(ctx, authPreference))
+	_, err = authServer.UpsertAuthPreference(ctx, authPreference)
+	require.NoError(t, err)
 
 	// Create user and initial WebAuthn device (MFA).
 	const user = "llama"
-	const password = "p@ssw0rd"
+	const password = "p@ssw0rd1234"
 	_, _, err = CreateUserAndRole(authServer, user, []string{"llama", "root"}, nil)
 	require.NoError(t, err)
 	require.NoError(t, authServer.UpsertPassword(user, []byte(password)))
@@ -901,7 +1009,7 @@ func TestServer_Authenticate_passwordless(t *testing.T) {
 				},
 				TTL: 24 * time.Hour,
 			})
-			require.True(t, trace.IsAccessDenied(err), "got err = %v, want AccessDenied")
+			require.True(t, trace.IsAccessDenied(err), "got err = %v, want AccessDenied", err)
 			attempts, err := authServer.GetUserLoginAttempts(user)
 			require.NoError(t, err)
 			require.NotEmpty(t, attempts, "Want at least one failed login attempt")
@@ -928,7 +1036,7 @@ func TestServer_Authenticate_passwordless(t *testing.T) {
 			require.NoError(t, err)
 			require.Empty(t, attempts, "Login attempts not reset")
 
-			require.Equal(t, len(test.loginHooks), int(loginHookCounter.Load()))
+			require.Len(t, test.loginHooks, int(loginHookCounter.Load()))
 		})
 	}
 }
@@ -962,7 +1070,7 @@ func TestServer_Authenticate_nonPasswordlessRequiresUsername(t *testing.T) {
 		{
 			name:    "WebAuthn",
 			dev:     mfa.WebDev,
-			wantErr: "invalid Webauthn response", // generic error as it _could_ be a passwordless attempt
+			wantErr: "invalid credentials", // generic error as it _could_ be a passwordless attempt
 		},
 	}
 	for _, test := range tests {
@@ -1163,7 +1271,8 @@ func configureForMFA(t *testing.T, srv *TestTLSServer) *configureMFAResp {
 
 	authServer := srv.Auth()
 	ctx := context.Background()
-	require.NoError(t, authServer.SetAuthPreference(ctx, authPreference))
+	_, err = authServer.UpsertAuthPreference(ctx, authPreference)
+	require.NoError(t, err)
 
 	// Create user with a default password.
 	const username = "llama@goteleport.com"

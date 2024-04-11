@@ -1,16 +1,20 @@
-// Copyright 2023 Gravitational, Inc
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package aws
 
@@ -25,6 +29,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/stretchr/testify/require"
 )
 
@@ -106,5 +111,38 @@ func (s *s3ClientMock) PutObject(ctx context.Context, in *s3.PutObjectInput, opt
 			return nil, err
 		}
 		return &s3.PutObjectOutput{}, nil
+	}
+}
+
+func TestCreateBucketConfiguration(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		regionIn string
+		expected *s3types.CreateBucketConfiguration
+	}{
+		{
+			name:     "special region",
+			regionIn: "us-east-1",
+			expected: nil,
+		},
+		{
+			name:     "regular region",
+			regionIn: "us-east-2",
+			expected: &s3types.CreateBucketConfiguration{
+				LocationConstraint: s3types.BucketLocationConstraintUsEast2,
+			},
+		},
+		{
+			name:     "unknown region",
+			regionIn: "unknown",
+			expected: &s3types.CreateBucketConfiguration{
+				LocationConstraint: "unknown",
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := CreateBucketConfiguration(tt.regionIn)
+			require.Equal(t, tt.expected, got)
+		})
 	}
 }

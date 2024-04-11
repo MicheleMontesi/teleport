@@ -1,23 +1,26 @@
-/*
-Copyright 2021-2022 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+/**
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 import useAttempt from 'shared/hooks/useAttemptNext';
 
 import cfg from 'teleport/config';
 import auth from 'teleport/services/auth';
+import { MfaChallengeScope } from 'teleport/services/auth/auth';
 
 import type { MfaAuthnResponse } from 'teleport/services/mfa';
 
@@ -29,7 +32,7 @@ import type { MfaAuthnResponse } from 'teleport/services/mfa';
 //    token, and after successfully obtaining the token, the function
 //    `onAuthenticated` will be called with this token.
 export default function useReAuthenticate(props: Props) {
-  const { onClose, actionText = defaultActionText } = props;
+  const { onClose, actionText = defaultActionText, challengeScope } = props;
 
   // Note that attempt state "success" is not used or required.
   // After the user submits, the control is passed back
@@ -50,12 +53,12 @@ export default function useReAuthenticate(props: Props) {
       .catch(handleError);
   }
 
-  function submitWithWebauthn() {
+  function submitWithWebauthn(scope: MfaChallengeScope) {
     setAttempt({ status: 'processing' });
 
     if ('onMfaResponse' in props) {
       auth
-        .getWebauthnResponse()
+        .getWebauthnResponse(scope)
         .then(webauthnResponse =>
           props.onMfaResponse({ webauthn_response: webauthnResponse })
         )
@@ -64,7 +67,7 @@ export default function useReAuthenticate(props: Props) {
     }
 
     auth
-      .createPrivilegeTokenWithWebauthn()
+      .createPrivilegeTokenWithWebauthn(scope)
       .then(props.onAuthenticated)
       .catch((err: Error) => {
         // This catches a webauthn frontend error that occurs on Firefox and replaces it with a more helpful error message.
@@ -94,6 +97,7 @@ export default function useReAuthenticate(props: Props) {
     auth2faType: cfg.getAuth2faType(),
     preferredMfaType: cfg.getPreferredMfaType(),
     actionText,
+    challengeScope,
     onClose,
   };
 }
@@ -101,7 +105,7 @@ export default function useReAuthenticate(props: Props) {
 const defaultActionText = 'performing this action';
 
 type BaseProps = {
-  onClose: () => void;
+  onClose?: () => void;
   /**
    * The text that will be appended to the text in the re-authentication dialog.
    *
@@ -112,6 +116,10 @@ type BaseProps = {
    *
    * */
   actionText?: string;
+  /**
+   * The MFA challenge scope of the action to perform, as defined in webauthn.proto.
+   */
+  challengeScope: MfaChallengeScope;
 };
 
 // MfaResponseProps defines a function

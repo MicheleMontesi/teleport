@@ -1,31 +1,33 @@
 /*
-Copyright 2021 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package common
 
 import (
 	"fmt"
 	"path"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/ghodss/yaml"
 	"github.com/gravitational/trace"
-	"golang.org/x/exp/slices"
 
 	"github.com/gravitational/teleport"
 	"github.com/gravitational/teleport/api/accessrequest"
@@ -219,6 +221,9 @@ func printRequest(cf *CLIConf, req types.AccessRequest) error {
 		// Display the expiry time in the local timezone. UTC is confusing.
 		table.AddRow([]string{"Access Expires:", req.GetAccessExpiry().Local().Format(time.DateTime)})
 	}
+	if req.GetAssumeStartTime() != nil {
+		table.AddRow([]string{"Assume Start Time:", req.GetAssumeStartTime().Local().Format(time.DateTime)})
+	}
 	table.AddRow([]string{"Status:", req.GetState().String()})
 
 	_, err := table.AsBuffer().WriteTo(cf.Stdout())
@@ -304,6 +309,15 @@ func onRequestReview(cf *CLIConf) error {
 		return trace.BadParameter("must supply exactly one of '--approve' or '--deny'")
 	}
 
+	var parsedAssumeStartTime *time.Time
+	if cf.AssumeStartTimeRaw != "" {
+		assumeStartTime, err := time.Parse(time.RFC3339, cf.AssumeStartTimeRaw)
+		if err != nil {
+			return trace.BadParameter("parsing assume-start-time (required format RFC3339 e.g 2023-12-12T23:20:50.52Z): %v", err)
+		}
+		parsedAssumeStartTime = &assumeStartTime
+	}
+
 	var state types.RequestState
 	switch {
 	case cf.Approve:
@@ -317,9 +331,10 @@ func onRequestReview(cf *CLIConf) error {
 		req, err = clt.SubmitAccessReview(cf.Context, types.AccessReviewSubmission{
 			RequestID: cf.RequestID,
 			Review: types.AccessReview{
-				Author:        cf.Username,
-				ProposedState: state,
-				Reason:        cf.ReviewReason,
+				Author:          cf.Username,
+				ProposedState:   state,
+				Reason:          cf.ReviewReason,
+				AssumeStartTime: parsedAssumeStartTime,
 			},
 		})
 		return trace.Wrap(err)
@@ -352,6 +367,7 @@ func showRequestTable(cf *CLIConf, reqs []types.AccessRequest) error {
 	table.AddColumn(asciitable.Column{Title: "Created At (UTC)"})
 	table.AddColumn(asciitable.Column{Title: "Request TTL"})
 	table.AddColumn(asciitable.Column{Title: "Session TTL"})
+	table.AddColumn(asciitable.Column{Title: "Assume Time (UTC)"})
 	table.AddColumn(asciitable.Column{Title: "Status"})
 	now := time.Now()
 	for _, req := range reqs {
@@ -362,6 +378,10 @@ func showRequestTable(cf *CLIConf, reqs []types.AccessRequest) error {
 		if err != nil {
 			return trace.Wrap(err)
 		}
+		assumeStartTime := ""
+		if req.GetAssumeStartTime() != nil {
+			assumeStartTime = req.GetAssumeStartTime().UTC().Format(time.RFC822)
+		}
 		table.AddRow([]string{
 			req.GetName(),
 			req.GetUser(),
@@ -370,6 +390,7 @@ func showRequestTable(cf *CLIConf, reqs []types.AccessRequest) error {
 			req.GetCreationTime().UTC().Format(time.RFC822),
 			time.Until(req.Expiry()).Round(time.Minute).String(),
 			time.Until(req.GetAccessExpiry()).Round(time.Minute).String(),
+			assumeStartTime,
 			req.GetState().String(),
 		})
 	}
@@ -426,13 +447,11 @@ func onRequestSearch(cf *CLIConf) error {
 		tableColumns = []string{"Name", "Namespace", "Labels", "Resource ID"}
 	default:
 		// For all other resources, we need to connect to the auth server.
-		proxyClient, err := tc.ConnectToProxy(cf.Context)
+		clusterClient, err := tc.ConnectToCluster(cf.Context)
 		if err != nil {
 			return trace.Wrap(err)
 		}
-		defer proxyClient.Close()
-
-		authClient := proxyClient.CurrentCluster()
+		defer clusterClient.Close()
 
 		req := proto.ListResourcesRequest{
 			Labels:              tc.Labels,
@@ -441,11 +460,17 @@ func onRequestSearch(cf *CLIConf) error {
 			UseSearchAsRoles:    true,
 		}
 
-		resources, err = accessrequest.GetResourcesByKind(cf.Context, authClient, req, cf.ResourceKind)
+		resources, err = accessrequest.GetResourcesByKind(cf.Context, clusterClient.AuthClient, req, cf.ResourceKind)
 		if err != nil {
 			return trace.Wrap(err)
 		}
-		tableColumns = []string{"Name", "Hostname", "Labels", "Resource ID"}
+
+		switch cf.ResourceKind {
+		case types.KindDatabase:
+			tableColumns = []string{"Database Name", "Labels", "Resource ID"}
+		default:
+			tableColumns = []string{"Name", "Hostname", "Labels", "Resource ID"}
+		}
 	}
 
 	var rows [][]string
@@ -488,11 +513,21 @@ func onRequestSearch(cf *CLIConf) error {
 			if r, ok := resource.(interface{ GetHostname() string }); ok {
 				hostName = r.GetHostname()
 			}
-			row = []string{
-				common.FormatResourceName(resource, cf.Verbose),
-				hostName,
-				common.FormatLabels(resource.GetAllLabels(), cf.Verbose),
-				resourceID,
+
+			switch cf.ResourceKind {
+			case types.KindDatabase:
+				row = []string{
+					common.FormatResourceName(resource, cf.Verbose),
+					common.FormatLabels(resource.GetAllLabels(), cf.Verbose),
+					resourceID,
+				}
+			default:
+				row = []string{
+					common.FormatResourceName(resource, cf.Verbose),
+					hostName,
+					common.FormatLabels(resource.GetAllLabels(), cf.Verbose),
+					resourceID,
+				}
 			}
 		}
 		rows = append(rows, row)

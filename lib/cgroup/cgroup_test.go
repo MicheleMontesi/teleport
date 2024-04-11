@@ -2,20 +2,22 @@
 // +build linux
 
 /*
-Copyright 2019 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package cgroup
 
@@ -77,6 +79,53 @@ func TestRootCreate(t *testing.T) {
 
 	// Make sure the cgroup filesystem has been unmounted.
 	require.NoDirExists(t, service.teleportRoot)
+}
+
+// TestRootCreateCustomRootPath given a service configured with a custom root
+// path, cgroups must be placed on the correct path.
+func TestRootCreateCustomRootPath(t *testing.T) {
+	// This test must be run as root. Only root can create cgroups.
+	if !isRoot() {
+		t.Skip("Tests for package cgroup can only be run as root.")
+	}
+
+	t.Parallel()
+
+	for _, rootPath := range []string{
+		"custom",
+		"/custom",
+		"nested/custom",
+		"/deep/nested/custom",
+	} {
+		rootPath := rootPath
+		t.Run(rootPath, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			service, err := New(&Config{
+				MountPath: dir,
+				RootPath:  rootPath,
+			})
+			require.NoError(t, err)
+			defer service.Close(false)
+
+			sessionID := uuid.New().String()
+			err = service.Create(sessionID)
+			require.NoError(t, err)
+
+			cgroupPath := path.Join(service.teleportRoot, sessionID)
+			require.DirExists(t, cgroupPath)
+			require.Contains(t, cgroupPath, rootPath)
+
+			err = service.Remove(sessionID)
+			require.NoError(t, err)
+			require.NoDirExists(t, cgroupPath)
+
+			// Teardown
+			err = service.Close(false)
+			require.NoError(t, err)
+			require.NoDirExists(t, service.teleportRoot)
+		})
+	}
 }
 
 // TestRootCleanup tests the ability for Teleport to remove and cleanup all

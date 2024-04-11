@@ -1,18 +1,20 @@
 /*
-Copyright 2023 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-	http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package awsoidc
 
@@ -20,9 +22,9 @@ import (
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	ec2Types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
-	ecsTypes "github.com/aws/aws-sdk-go-v2/service/ecs/types"
-	iamTypes "github.com/aws/aws-sdk-go-v2/service/iam/types"
+	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	ecstypes "github.com/aws/aws-sdk-go-v2/service/ecs/types"
+	iamtypes "github.com/aws/aws-sdk-go-v2/service/iam/types"
 	"github.com/stretchr/testify/require"
 )
 
@@ -39,7 +41,7 @@ func TestDefaultTags(t *testing.T) {
 	require.Equal(t, expectedTags, d)
 
 	t.Run("iam tags", func(t *testing.T) {
-		expectedIAMTags := []iamTypes.Tag{
+		expectedIAMTags := []iamtypes.Tag{
 			{Key: aws.String("teleport.dev/cluster"), Value: aws.String("mycluster")},
 			{Key: aws.String("teleport.dev/integration"), Value: aws.String("myawsaccount")},
 			{Key: aws.String("teleport.dev/origin"), Value: aws.String("integration_awsoidc")},
@@ -48,7 +50,7 @@ func TestDefaultTags(t *testing.T) {
 	})
 
 	t.Run("ecs tags", func(t *testing.T) {
-		expectedECSTags := []ecsTypes.Tag{
+		expectedECSTags := []ecstypes.Tag{
 			{Key: aws.String("teleport.dev/cluster"), Value: aws.String("mycluster")},
 			{Key: aws.String("teleport.dev/integration"), Value: aws.String("myawsaccount")},
 			{Key: aws.String("teleport.dev/origin"), Value: aws.String("integration_awsoidc")},
@@ -57,7 +59,7 @@ func TestDefaultTags(t *testing.T) {
 	})
 
 	t.Run("ec2 tags", func(t *testing.T) {
-		expectedEC2Tags := []ec2Types.Tag{
+		expectedEC2Tags := []ec2types.Tag{
 			{Key: aws.String("teleport.dev/cluster"), Value: aws.String("mycluster")},
 			{Key: aws.String("teleport.dev/integration"), Value: aws.String("myawsaccount")},
 			{Key: aws.String("teleport.dev/origin"), Value: aws.String("integration_awsoidc")},
@@ -66,37 +68,73 @@ func TestDefaultTags(t *testing.T) {
 	})
 
 	t.Run("resource is teleport managed", func(t *testing.T) {
-		t.Run("all tags match", func(t *testing.T) {
-			awsResourceTags := []ecsTypes.Tag{
-				{Key: aws.String("teleport.dev/cluster"), Value: aws.String("mycluster")},
-				{Key: aws.String("teleport.dev/integration"), Value: aws.String("myawsaccount")},
-				{Key: aws.String("teleport.dev/origin"), Value: aws.String("integration_awsoidc")},
-			}
-			require.True(t, d.MatchesECSTags(awsResourceTags), "resource was wrongly detected as not Teleport managed")
+		t.Run("ECS Tags", func(t *testing.T) {
+			t.Run("all tags match", func(t *testing.T) {
+				awsResourceTags := []ecstypes.Tag{
+					{Key: aws.String("teleport.dev/cluster"), Value: aws.String("mycluster")},
+					{Key: aws.String("teleport.dev/integration"), Value: aws.String("myawsaccount")},
+					{Key: aws.String("teleport.dev/origin"), Value: aws.String("integration_awsoidc")},
+				}
+				require.True(t, d.MatchesECSTags(awsResourceTags), "resource was wrongly detected as not Teleport managed")
+			})
+			t.Run("extra tags in aws resource", func(t *testing.T) {
+				awsResourceTags := []ecstypes.Tag{
+					{Key: aws.String("teleport.dev/cluster"), Value: aws.String("mycluster")},
+					{Key: aws.String("teleport.dev/integration"), Value: aws.String("myawsaccount")},
+					{Key: aws.String("teleport.dev/origin"), Value: aws.String("integration_awsoidc")},
+					{Key: aws.String("unrelated"), Value: aws.String("true")},
+				}
+				require.True(t, d.MatchesECSTags(awsResourceTags), "resource was wrongly detected as not Teleport managed")
+			})
+			t.Run("missing one of the labels should return false", func(t *testing.T) {
+				awsResourceTags := []ecstypes.Tag{
+					{Key: aws.String("teleport.dev/cluster"), Value: aws.String("mycluster")},
+					{Key: aws.String("teleport.dev/integration"), Value: aws.String("myawsaccount")},
+				}
+				require.False(t, d.MatchesECSTags(awsResourceTags), "resource was wrongly detected as Teleport managed")
+			})
+			t.Run("one of the labels has a different value, should return false", func(t *testing.T) {
+				awsResourceTags := []ecstypes.Tag{
+					{Key: aws.String("teleport.dev/cluster"), Value: aws.String("another-cluster")},
+					{Key: aws.String("teleport.dev/integration"), Value: aws.String("myawsaccount")},
+					{Key: aws.String("teleport.dev/origin"), Value: aws.String("integration_awsoidc")},
+				}
+				require.False(t, d.MatchesECSTags(awsResourceTags), "resource was wrongly detected as Teleport managed")
+			})
 		})
-		t.Run("extra tags in aws resource", func(t *testing.T) {
-			awsResourceTags := []ecsTypes.Tag{
-				{Key: aws.String("teleport.dev/cluster"), Value: aws.String("mycluster")},
-				{Key: aws.String("teleport.dev/integration"), Value: aws.String("myawsaccount")},
-				{Key: aws.String("teleport.dev/origin"), Value: aws.String("integration_awsoidc")},
-				{Key: aws.String("unrelated"), Value: aws.String("true")},
-			}
-			require.True(t, d.MatchesECSTags(awsResourceTags), "resource was wrongly detected as not Teleport managed")
-		})
-		t.Run("missing one of the labels should return false", func(t *testing.T) {
-			awsResourceTags := []ecsTypes.Tag{
-				{Key: aws.String("teleport.dev/cluster"), Value: aws.String("mycluster")},
-				{Key: aws.String("teleport.dev/integration"), Value: aws.String("myawsaccount")},
-			}
-			require.False(t, d.MatchesECSTags(awsResourceTags), "resource was wrongly detected as Teleport managed")
-		})
-		t.Run("one of the labels has a different value, should return false", func(t *testing.T) {
-			awsResourceTags := []ecsTypes.Tag{
-				{Key: aws.String("teleport.dev/cluster"), Value: aws.String("another-cluster")},
-				{Key: aws.String("teleport.dev/integration"), Value: aws.String("myawsaccount")},
-				{Key: aws.String("teleport.dev/origin"), Value: aws.String("integration_awsoidc")},
-			}
-			require.False(t, d.MatchesECSTags(awsResourceTags), "resource was wrongly detected as Teleport managed")
+		t.Run("IAM Tags", func(t *testing.T) {
+			t.Run("all tags match", func(t *testing.T) {
+				awsResourceTags := []iamtypes.Tag{
+					{Key: aws.String("teleport.dev/cluster"), Value: aws.String("mycluster")},
+					{Key: aws.String("teleport.dev/integration"), Value: aws.String("myawsaccount")},
+					{Key: aws.String("teleport.dev/origin"), Value: aws.String("integration_awsoidc")},
+				}
+				require.True(t, d.MatchesIAMTags(awsResourceTags), "resource was wrongly detected as not Teleport managed")
+			})
+			t.Run("extra tags in aws resource", func(t *testing.T) {
+				awsResourceTags := []iamtypes.Tag{
+					{Key: aws.String("teleport.dev/cluster"), Value: aws.String("mycluster")},
+					{Key: aws.String("teleport.dev/integration"), Value: aws.String("myawsaccount")},
+					{Key: aws.String("teleport.dev/origin"), Value: aws.String("integration_awsoidc")},
+					{Key: aws.String("unrelated"), Value: aws.String("true")},
+				}
+				require.True(t, d.MatchesIAMTags(awsResourceTags), "resource was wrongly detected as not Teleport managed")
+			})
+			t.Run("missing one of the labels should return false", func(t *testing.T) {
+				awsResourceTags := []iamtypes.Tag{
+					{Key: aws.String("teleport.dev/cluster"), Value: aws.String("mycluster")},
+					{Key: aws.String("teleport.dev/integration"), Value: aws.String("myawsaccount")},
+				}
+				require.False(t, d.MatchesIAMTags(awsResourceTags), "resource was wrongly detected as Teleport managed")
+			})
+			t.Run("one of the labels has a different value, should return false", func(t *testing.T) {
+				awsResourceTags := []iamtypes.Tag{
+					{Key: aws.String("teleport.dev/cluster"), Value: aws.String("another-cluster")},
+					{Key: aws.String("teleport.dev/integration"), Value: aws.String("myawsaccount")},
+					{Key: aws.String("teleport.dev/origin"), Value: aws.String("integration_awsoidc")},
+				}
+				require.False(t, d.MatchesIAMTags(awsResourceTags), "resource was wrongly detected as Teleport managed")
+			})
 		})
 	})
 }

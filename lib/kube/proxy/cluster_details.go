@@ -1,22 +1,27 @@
-// Copyright 2022 Gravitational, Inc
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package proxy
 
 import (
 	"context"
 	"encoding/base64"
+	"strings"
 	"sync"
 	"time"
 
@@ -27,6 +32,7 @@ import (
 	"github.com/gravitational/trace"
 	"github.com/jonboulle/clockwork"
 	"github.com/sirupsen/logrus"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -48,7 +54,7 @@ type kubeDetails struct {
 	// kubeCluster is the dynamic kube_cluster or a static generated from kubeconfig and that only has the name populated.
 	kubeCluster types.KubeCluster
 
-	// rwMu is the mutex to protect the kubeCodecs and rbacSupportedTypes.
+	// rwMu is the mutex to protect the kubeCodecs, gvkSupportedResources, and rbacSupportedTypes.
 	rwMu sync.RWMutex
 	// kubeCodecs is the codec factory for the cluster resources.
 	// The codec factory includes the default resources and the namespaced resources
@@ -60,6 +66,9 @@ type kubeDetails struct {
 	// The list is updated periodically to include the latest custom resources
 	// that are added to the cluster.
 	rbacSupportedTypes rbacSupportedResources
+	// gvkSupportedResources is the list of registered API path resources and their
+	// GVK definition.
+	gvkSupportedResources gvkSupportedResources
 	// isClusterOffline is true if the cluster is offline.
 	// An offline cluster will not be able to serve any requests until it comes back online.
 	// The cluster is marked as offline if the cluster schema cannot be created
@@ -117,7 +126,7 @@ func newClusterDetails(ctx context.Context, cfg clusterDetailsConfig) (_ *kubeDe
 	}
 	var isClusterOffline bool
 	// Create the codec factory and the list of supported types for RBAC.
-	codecFactory, rbacSupportedTypes, err := newClusterSchemaBuilder(creds.getKubeClient())
+	codecFactory, rbacSupportedTypes, gvkSupportedRes, err := newClusterSchemaBuilder(cfg.log, creds.getKubeClient())
 	if err != nil {
 		cfg.log.WithError(err).Warn("Failed to create cluster schema. Possibly the cluster is offline.")
 		// If the cluster is offline, we will not be able to create the codec factory
@@ -129,13 +138,14 @@ func newClusterDetails(ctx context.Context, cfg clusterDetailsConfig) (_ *kubeDe
 
 	ctx, cancel := context.WithCancel(ctx)
 	k := &kubeDetails{
-		kubeCreds:          creds,
-		dynamicLabels:      dynLabels,
-		kubeCluster:        cfg.cluster,
-		kubeCodecs:         codecFactory,
-		rbacSupportedTypes: rbacSupportedTypes,
-		cancelFunc:         cancel,
-		isClusterOffline:   isClusterOffline,
+		kubeCreds:             creds,
+		dynamicLabels:         dynLabels,
+		kubeCluster:           cfg.cluster,
+		kubeCodecs:            codecFactory,
+		rbacSupportedTypes:    rbacSupportedTypes,
+		cancelFunc:            cancel,
+		isClusterOffline:      isClusterOffline,
+		gvkSupportedResources: gvkSupportedRes,
 	}
 
 	k.wg.Add(1)
@@ -149,7 +159,7 @@ func newClusterDetails(ctx context.Context, cfg clusterDetailsConfig) (_ *kubeDe
 			case <-ctx.Done():
 				return
 			case <-ticker.Chan():
-				codecFactory, rbacSupportedTypes, err := newClusterSchemaBuilder(creds.getKubeClient())
+				codecFactory, rbacSupportedTypes, gvkSupportedResources, err := newClusterSchemaBuilder(cfg.log, creds.getKubeClient())
 				if err != nil {
 					cfg.log.WithError(err).Error("Failed to update cluster schema")
 					continue
@@ -158,6 +168,7 @@ func newClusterDetails(ctx context.Context, cfg clusterDetailsConfig) (_ *kubeDe
 				k.rwMu.Lock()
 				k.kubeCodecs = codecFactory
 				k.rbacSupportedTypes = rbacSupportedTypes
+				k.gvkSupportedResources = gvkSupportedResources
 				k.isClusterOffline = false
 				k.rwMu.Unlock()
 			}
@@ -187,6 +198,21 @@ func (k *kubeDetails) getClusterSupportedResources() (*serializer.CodecFactory, 
 		return nil, nil, trace.ConnectionProblem(nil, "kubernetes cluster %q is offline", k.kubeCluster.GetName())
 	}
 	return &(k.kubeCodecs), k.rbacSupportedTypes, nil
+}
+
+// getObjectGVK returns the default GVK (if any) registered for the specified request path.
+func (k *kubeDetails) getObjectGVK(resource apiResource) *schema.GroupVersionKind {
+	k.rwMu.RLock()
+	defer k.rwMu.RUnlock()
+	// kube doesn't use core but teleport does.
+	if resource.apiGroup == "core" {
+		resource.apiGroup = ""
+	}
+	return k.gvkSupportedResources[gvkSupportedResourcesKey{
+		name:     strings.Split(resource.resourceKind, "/")[0],
+		apiGroup: resource.apiGroup,
+		version:  resource.apiGroupVersion,
+	}]
 }
 
 // getKubeClusterCredentials generates kube credentials for dynamic clusters.
@@ -266,7 +292,9 @@ func getAWSResourceMatcherToCluster(kubeCluster types.KubeCluster, resourceMatch
 func getAWSClientRestConfig(cloudClients cloud.Clients, clock clockwork.Clock, resourceMatchers []services.ResourceMatcher) dynamicCredsClient {
 	return func(ctx context.Context, cluster types.KubeCluster) (*rest.Config, time.Time, error) {
 		region := cluster.GetAWSConfig().Region
-		var opts []cloud.AWSAssumeRoleOptionFn
+		opts := []cloud.AWSAssumeRoleOptionFn{
+			cloud.WithAmbientCredentials(),
+		}
 		if awsAssume := getAWSResourceMatcherToCluster(cluster, resourceMatchers); awsAssume != nil {
 			opts = append(opts, cloud.WithAssumeRole(awsAssume.AssumeRoleARN, awsAssume.ExternalID))
 		}

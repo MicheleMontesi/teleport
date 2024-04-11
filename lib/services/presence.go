@@ -1,18 +1,20 @@
 /*
-Copyright 2021 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package services
 
@@ -180,22 +182,30 @@ type Presence interface {
 	DeleteAllTunnelConnections() error
 
 	// CreateRemoteCluster creates a remote cluster
-	CreateRemoteCluster(types.RemoteCluster) error
+	CreateRemoteCluster(ctx context.Context, rc types.RemoteCluster) (types.RemoteCluster, error)
 
 	// UpdateRemoteCluster updates a remote cluster
-	UpdateRemoteCluster(ctx context.Context, rc types.RemoteCluster) error
+	UpdateRemoteCluster(ctx context.Context, rc types.RemoteCluster) (types.RemoteCluster, error)
+
+	// PatchRemoteCluster fetches a remote cluster and then calls updateFn
+	// to apply any changes, before persisting the updated remote cluster.
+	PatchRemoteCluster(ctx context.Context, name string, updateFn func(rc types.RemoteCluster) (types.RemoteCluster, error)) (types.RemoteCluster, error)
 
 	// GetRemoteClusters returns a list of remote clusters
-	GetRemoteClusters(opts ...MarshalOption) ([]types.RemoteCluster, error)
+	// Prefer ListRemoteClusters
+	GetRemoteClusters(ctx context.Context) ([]types.RemoteCluster, error)
+
+	// ListRemoteClusters returns a page of remote clusters
+	ListRemoteClusters(ctx context.Context, pageSize int, pageToken string) ([]types.RemoteCluster, string, error)
 
 	// GetRemoteCluster returns a remote cluster by name
-	GetRemoteCluster(clusterName string) (types.RemoteCluster, error)
+	GetRemoteCluster(ctx context.Context, clusterName string) (types.RemoteCluster, error)
 
 	// DeleteRemoteCluster deletes remote cluster by name
 	DeleteRemoteCluster(ctx context.Context, clusterName string) error
 
 	// DeleteAllRemoteClusters deletes all remote clusters
-	DeleteAllRemoteClusters() error
+	DeleteAllRemoteClusters(ctx context.Context) error
 
 	// GetApplicationServers returns all registered application servers.
 	GetApplicationServers(context.Context, string) ([]types.AppServer, error)

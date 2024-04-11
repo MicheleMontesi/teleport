@@ -1,26 +1,30 @@
 /*
-Copyright 2022 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package web
 
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"testing"
 	"time"
 
@@ -30,8 +34,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/gravitational/teleport/api/types"
-	"github.com/gravitational/teleport/lib/auth"
 	awslib "github.com/gravitational/teleport/lib/cloud/aws"
+	"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/teleport/lib/services"
 	dbiam "github.com/gravitational/teleport/lib/srv/db/common/iam"
 	"github.com/gravitational/teleport/lib/utils"
@@ -397,7 +401,7 @@ func TestHandleDatabaseServicesGet(t *testing.T) {
 	require.Len(t, respDBService.ResourceMatchers, 1)
 	respResourceMatcher := respDBService.ResourceMatchers[0]
 
-	require.Equal(t, respResourceMatcher.Labels, &types.Labels{"env": []string{"prod"}})
+	require.Equal(t, &types.Labels{"env": []string{"prod"}}, respResourceMatcher.Labels)
 }
 
 func TestHandleSQLServerConfigureScript(t *testing.T) {
@@ -414,7 +418,7 @@ func TestHandleSQLServerConfigureScript(t *testing.T) {
 	}{
 		{
 			desc: "valid token and uri",
-			uri:  "instance.example.teleport.dev",
+			uri:  "instance.example.teleport.dev:1433",
 			tokenFunc: func(t *testing.T) string {
 				pt, token := generateProvisionToken(t, types.RoleDatabase, env.clock.Now().Add(time.Hour))
 				require.NoError(t, env.server.Auth().CreateToken(ctx, pt))
@@ -423,7 +427,7 @@ func TestHandleSQLServerConfigureScript(t *testing.T) {
 			assertError: require.NoError,
 		},
 		{
-			desc: "valid token and invalid uri",
+			desc: "valid token and empty uri",
 			uri:  "",
 			tokenFunc: func(t *testing.T) string {
 				pt, token := generateProvisionToken(t, types.RoleDatabase, env.clock.Now().Add(time.Hour))
@@ -433,8 +437,48 @@ func TestHandleSQLServerConfigureScript(t *testing.T) {
 			assertError: require.Error,
 		},
 		{
+			desc: "valid token and invalid uri",
+			uri:  "hello#hello",
+			tokenFunc: func(t *testing.T) string {
+				pt, token := generateProvisionToken(t, types.RoleDatabase, env.clock.Now().Add(time.Hour))
+				require.NoError(t, env.server.Auth().CreateToken(ctx, pt))
+				return token
+			},
+			assertError: require.Error,
+		},
+		{
+			desc: "invalid line break character token and invalid uri",
+			uri:  "computer.domain\n.com:1433",
+			tokenFunc: func(t *testing.T) string {
+				pt, token := generateProvisionToken(t, types.RoleDatabase, env.clock.Now().Add(time.Hour))
+				require.NoError(t, env.server.Auth().CreateToken(ctx, pt))
+				return token
+			},
+			assertError: require.Error,
+		},
+		{
+			desc: "invalid character ` token and invalid uri",
+			uri:  "computer.domain`.com:1433",
+			tokenFunc: func(t *testing.T) string {
+				pt, token := generateProvisionToken(t, types.RoleDatabase, env.clock.Now().Add(time.Hour))
+				require.NoError(t, env.server.Auth().CreateToken(ctx, pt))
+				return token
+			},
+			assertError: require.Error,
+		},
+		{
+			desc: "invalid character | token and invalid uri",
+			uri:  "computer.domain|.com:1433",
+			tokenFunc: func(t *testing.T) string {
+				pt, token := generateProvisionToken(t, types.RoleDatabase, env.clock.Now().Add(time.Hour))
+				require.NoError(t, env.server.Auth().CreateToken(ctx, pt))
+				return token
+			},
+			assertError: require.Error,
+		},
+		{
 			desc:        "invalid token",
-			uri:         "instance.example.teleport.dev",
+			uri:         "instance.example.teleport.dev:1433",
 			tokenFunc:   func(_ *testing.T) string { return "random-token" },
 			assertError: require.Error,
 		},
@@ -446,6 +490,36 @@ func TestHandleSQLServerConfigureScript(t *testing.T) {
 				url.Values{"uri": []string{tc.uri}},
 			)
 			tc.assertError(t, err)
+		})
+	}
+
+}
+
+// TestHandleSQLServerConfigureScriptDatabaseURIEscaped given a SQL Server
+// database URI, ensures that special characters are escaped when placed on the
+// PowerShell script.
+func TestHandleSQLServerConfigureScriptDatabaseURIEscaped(t *testing.T) {
+	ctx := context.Background()
+	env := newWebPack(t, 1)
+	proxy := env.proxies[0]
+	pack := proxy.authPack(t, "user", nil /* roles */)
+	pt, token := generateProvisionToken(t, types.RoleDatabase, env.clock.Now().Add(time.Hour))
+	require.NoError(t, env.server.Auth().CreateToken(ctx, pt))
+	re := regexp.MustCompile(`\$DB_ADDRESS\s*=\s*'([^']+)'`)
+
+	for _, c := range []string{";", "\"", "'", "&", "$", "(", ")"} {
+		t.Run(c, func(t *testing.T) {
+			uri := fmt.Sprintf("database.ad%s.com:1433", c)
+			resp, err := pack.clt.Get(
+				ctx,
+				pack.clt.Endpoint("webapi/scripts/databases/configure/sqlserver", token, "configure-ad.ps1"),
+				url.Values{"uri": []string{uri}},
+			)
+			require.NoError(t, err)
+			escapedURIResult := re.FindStringSubmatch(string(resp.Bytes()))
+			require.Len(t, escapedURIResult, 2)
+			require.NotEqual(t, uri, escapedURIResult[1])
+			require.Contains(t, escapedURIResult[1], url.QueryEscape(c))
 		})
 	}
 }
@@ -487,7 +561,7 @@ func strPtr(str string) *string {
 func generateProvisionToken(t *testing.T, role types.SystemRole, expiresAt time.Time) (types.ProvisionToken, string) {
 	t.Helper()
 
-	token, err := utils.CryptoRandomHex(auth.TokenLenBytes)
+	token, err := utils.CryptoRandomHex(defaults.TokenLenBytes)
 	require.NoError(t, err)
 
 	pt, err := types.NewProvisionToken(token, types.SystemRoles{role}, expiresAt)

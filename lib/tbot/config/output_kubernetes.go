@@ -1,18 +1,20 @@
 /*
-Copyright 2023 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package config
 
@@ -43,6 +45,13 @@ type KubernetesOutput struct {
 	// This is named a little more verbosely to avoid conflicting with the
 	// name of the Teleport cluster to use.
 	KubernetesCluster string `yaml:"kubernetes_cluster"`
+
+	// DisableExecPlugin disables the default behavior of using `tbot` as a
+	// `kubectl` credentials exec plugin. This is useful in environments where
+	// `tbot` may not exist on the system that will consume the outputted
+	// kubeconfig. It does mean that kubectl will not be able to automatically
+	// refresh the credentials within an individual invocation.
+	DisableExecPlugin bool `yaml:"disable_exec_plugin"`
 }
 
 func (o *KubernetesOutput) templates() []template {
@@ -52,11 +61,18 @@ func (o *KubernetesOutput) templates() []template {
 		&templateKubernetes{
 			clusterName:          o.KubernetesCluster,
 			executablePathGetter: os.Executable,
+			disableExecPlugin:    o.DisableExecPlugin,
 		},
 	}
 }
 
 func (o *KubernetesOutput) Render(ctx context.Context, p provider, ident *identity.Identity) error {
+	ctx, span := tracer.Start(
+		ctx,
+		"KubernetesOutput/Render",
+	)
+	defer span.End()
+
 	dest := o.GetDestination()
 	if err := identity.SaveIdentity(ctx, ident, dest, identity.DestinationKinds()...); err != nil {
 		return trace.Wrap(err, "persisting identity")
@@ -107,9 +123,9 @@ func (o *KubernetesOutput) Describe() []FileDescription {
 	return fds
 }
 
-func (o KubernetesOutput) MarshalYAML() (interface{}, error) {
+func (o *KubernetesOutput) MarshalYAML() (interface{}, error) {
 	type raw KubernetesOutput
-	return withTypeHeader(raw(o), KubernetesOutputType)
+	return withTypeHeader((*raw)(o), KubernetesOutputType)
 }
 
 func (o *KubernetesOutput) UnmarshalYAML(node *yaml.Node) error {

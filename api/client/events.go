@@ -18,13 +18,13 @@ import (
 	"github.com/gravitational/trace"
 
 	"github.com/gravitational/teleport/api/client/proto"
+	kubewaitingcontainerpb "github.com/gravitational/teleport/api/gen/proto/go/teleport/kubewaitingcontainer/v1"
+	notificationsv1 "github.com/gravitational/teleport/api/gen/proto/go/teleport/notifications/v1"
 	"github.com/gravitational/teleport/api/types"
 	"github.com/gravitational/teleport/api/types/accesslist"
 	accesslistv1conv "github.com/gravitational/teleport/api/types/accesslist/convert/v1"
 	"github.com/gravitational/teleport/api/types/discoveryconfig"
 	discoveryconfigv1conv "github.com/gravitational/teleport/api/types/discoveryconfig/convert/v1"
-	"github.com/gravitational/teleport/api/types/externalcloudaudit"
-	externalcloudauditv1conv "github.com/gravitational/teleport/api/types/externalcloudaudit/convert/v1"
 	"github.com/gravitational/teleport/api/types/secreports"
 	secreprotsv1conv "github.com/gravitational/teleport/api/types/secreports/convert/v1"
 	"github.com/gravitational/teleport/api/types/userloginstate"
@@ -51,6 +51,21 @@ func EventToGRPC(in types.Event) (*proto.Event, error) {
 		return &out, nil
 	}
 	switch r := in.Resource.(type) {
+	case types.Resource153Unwrapper:
+		switch r := r.Unwrap().(type) {
+		case *kubewaitingcontainerpb.KubernetesWaitingContainer:
+			out.Resource = &proto.Event_KubernetesWaitingContainer{
+				KubernetesWaitingContainer: r,
+			}
+		case *notificationsv1.Notification:
+			out.Resource = &proto.Event_UserNotification{
+				UserNotification: r,
+			}
+		case *notificationsv1.GlobalNotification:
+			out.Resource = &proto.Event_GlobalNotification{
+				GlobalNotification: r,
+			}
+		}
 	case *types.ResourceHeader:
 		out.Resource = &proto.Event_ResourceHeader{
 			ResourceHeader: r,
@@ -164,10 +179,6 @@ func EventToGRPC(in types.Event) (*proto.Event, error) {
 		out.Resource = &proto.Event_SessionRecordingConfig{
 			SessionRecordingConfig: r,
 		}
-	case *externalcloudaudit.ExternalCloudAudit:
-		out.Resource = &proto.Event_ExternalCloudAudit{
-			ExternalCloudAudit: externalcloudauditv1conv.ToProto(r),
-		}
 	case *types.AuthPreferenceV2:
 		out.Resource = &proto.Event_AuthPreference{
 			AuthPreference: r,
@@ -251,6 +262,10 @@ func EventToGRPC(in types.Event) (*proto.Event, error) {
 	case *secreports.ReportState:
 		out.Resource = &proto.Event_ReportState{
 			ReportState: secreprotsv1conv.ToProtoReportState(r),
+		}
+	case *accesslist.Review:
+		out.Resource = &proto.Event_AccessListReview{
+			AccessListReview: accesslistv1conv.ToReviewProto(r),
 		}
 	default:
 		return nil, trace.BadParameter("resource type %T is not supported", in.Resource)
@@ -448,6 +463,21 @@ func EventFromGRPC(in *proto.Event) (*types.Event, error) {
 		if err != nil {
 			return nil, trace.Wrap(err)
 		}
+		return &out, nil
+	} else if r := in.GetAccessListReview(); r != nil {
+		out.Resource, err = accesslistv1conv.FromReviewProto(r)
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+		return &out, nil
+	} else if r := in.GetKubernetesWaitingContainer(); r != nil {
+		out.Resource = types.Resource153ToLegacy(r)
+		return &out, nil
+	} else if r := in.GetUserNotification(); r != nil {
+		out.Resource = types.Resource153ToLegacy(r)
+		return &out, nil
+	} else if r := in.GetGlobalNotification(); r != nil {
+		out.Resource = types.Resource153ToLegacy(r)
 		return &out, nil
 	} else {
 		return nil, trace.BadParameter("received unsupported resource %T", in.Resource)

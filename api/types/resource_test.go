@@ -1,4 +1,4 @@
-/**
+/*
  * Copyright 2022 Gravitational, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,6 +18,7 @@ package types
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -474,7 +475,7 @@ func TestResourcesWithLabels_ToMap(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			require.Equal(t, tt.r.ToMap(), tt.want)
+			require.Equal(t, tt.want, tt.r.ToMap())
 		})
 	}
 }
@@ -503,25 +504,38 @@ func TestValidLabelKey(t *testing.T) {
 }
 
 func TestFriendlyName(t *testing.T) {
-	appNoFriendly, err := NewAppV3(Metadata{
-		Name: "no friendly",
-	}, AppSpecV3{
-		URI: "https://some-uri.com",
-	},
-	)
-	require.NoError(t, err)
+	newApp := func(t *testing.T, name, description string, labels map[string]string) Application {
+		app, err := NewAppV3(Metadata{
+			Name:        name,
+			Description: description,
+			Labels:      labels,
+		}, AppSpecV3{
+			URI: "https://some-uri.com",
+		})
+		require.NoError(t, err)
 
-	appFriendly, err := NewAppV3(Metadata{
-		Name:        "no friendly",
-		Description: "friendly name",
-		Labels: map[string]string{
-			OriginLabel: OriginOkta,
-		},
-	}, AppSpecV3{
-		URI: "https://some-uri.com",
-	},
-	)
-	require.NoError(t, err)
+		return app
+	}
+
+	newGroup := func(t *testing.T, name, description string, labels map[string]string) UserGroup {
+		group, err := NewUserGroup(Metadata{
+			Name:        name,
+			Description: description,
+			Labels:      labels,
+		}, UserGroupSpecV1{})
+		require.NoError(t, err)
+
+		return group
+	}
+
+	newRole := func(t *testing.T, name string, labels map[string]string) Role {
+		role, err := NewRole(name, RoleSpecV6{})
+		require.NoError(t, err)
+		metadata := role.GetMetadata()
+		metadata.Labels = labels
+		role.SetMetadata(metadata)
+		return role
+	}
 
 	node, err := NewServer("node", KindNode, ServerSpecV2{
 		Hostname: "friendly hostname",
@@ -535,13 +549,46 @@ func TestFriendlyName(t *testing.T) {
 	}{
 		{
 			name:     "no friendly name",
-			resource: appNoFriendly,
+			resource: newApp(t, "no friendly", "no friendly", map[string]string{}),
 			expected: "",
 		},
 		{
-			name:     "friendly app name",
-			resource: appFriendly,
+			name: "friendly app name (uses description)",
+			resource: newApp(t, "friendly", "friendly name", map[string]string{
+				OriginLabel: OriginOkta,
+			}),
 			expected: "friendly name",
+		},
+		{
+			name: "friendly app name (uses label)",
+			resource: newApp(t, "friendly", "friendly name", map[string]string{
+				OriginLabel:      OriginOkta,
+				OktaAppNameLabel: "label friendly name",
+			}),
+			expected: "label friendly name",
+		},
+		{
+			name: "friendly group name (uses description)",
+			resource: newGroup(t, "friendly", "friendly name", map[string]string{
+				OriginLabel: OriginOkta,
+			}),
+			expected: "friendly name",
+		},
+		{
+			name: "friendly group name (uses label)",
+			resource: newGroup(t, "friendly", "friendly name", map[string]string{
+				OriginLabel:        OriginOkta,
+				OktaGroupNameLabel: "label friendly name",
+			}),
+			expected: "label friendly name",
+		},
+		{
+			name: "friendly role name (uses label)",
+			resource: newRole(t, "friendly", map[string]string{
+				OriginLabel:       OriginOkta,
+				OktaRoleNameLabel: "label friendly name",
+			}),
+			expected: "label friendly name",
 		},
 		{
 			name:     "friendly node name",
@@ -554,6 +601,225 @@ func TestFriendlyName(t *testing.T) {
 		test := test
 		t.Run(test.name, func(t *testing.T) {
 			require.Equal(t, test.expected, FriendlyName(test.resource))
+		})
+	}
+}
+
+func TestMetadataIsEqual(t *testing.T) {
+	newMetadata := func(changeFns ...func(*Metadata)) *Metadata {
+		metadata := &Metadata{
+			Name:        "name",
+			Namespace:   "namespace",
+			Description: "description",
+			Labels:      map[string]string{"label1": "value1"},
+			Expires:     &time.Time{},
+			ID:          1234,
+			Revision:    "aaaa",
+		}
+
+		for _, fn := range changeFns {
+			fn(metadata)
+		}
+
+		return metadata
+	}
+	tests := []struct {
+		name     string
+		m1       *Metadata
+		m2       *Metadata
+		expected bool
+	}{
+		{
+			name:     "empty equals",
+			m1:       &Metadata{},
+			m2:       &Metadata{},
+			expected: true,
+		},
+		{
+			name:     "nil equals",
+			m1:       nil,
+			m2:       (*Metadata)(nil),
+			expected: true,
+		},
+		{
+			name:     "one is nil",
+			m1:       &Metadata{},
+			m2:       (*Metadata)(nil),
+			expected: false,
+		},
+		{
+			name:     "populated equals",
+			m1:       newMetadata(),
+			m2:       newMetadata(),
+			expected: true,
+		},
+		{
+			name: "id and revision have no effect",
+			m1:   newMetadata(),
+			m2: newMetadata(func(m *Metadata) {
+				m.ID = 7890
+				m.Revision = "bbbb"
+			}),
+			expected: true,
+		},
+		{
+			name: "name is different",
+			m1:   newMetadata(),
+			m2: newMetadata(func(m *Metadata) {
+				m.Name = "different-name"
+			}),
+			expected: false,
+		},
+		{
+			name: "namespace is different",
+			m1:   newMetadata(),
+			m2: newMetadata(func(m *Metadata) {
+				m.Namespace = "different-namespace"
+			}),
+			expected: false,
+		},
+		{
+			name: "description is different",
+			m1:   newMetadata(),
+			m2: newMetadata(func(m *Metadata) {
+				m.Description = "different-description"
+			}),
+			expected: false,
+		},
+		{
+			name: "labels is different",
+			m1:   newMetadata(),
+			m2: newMetadata(func(m *Metadata) {
+				m.Labels = map[string]string{"label2": "value2"}
+			}),
+			expected: false,
+		},
+		{
+			name: "expires is different",
+			m1:   newMetadata(),
+			m2: newMetadata(func(m *Metadata) {
+				newTime := time.Date(1, 2, 3, 4, 5, 6, 7, time.UTC)
+				m.Expires = &newTime
+			}),
+			expected: false,
+		},
+		{
+			name:     "expires both nil",
+			m1:       newMetadata(func(m *Metadata) { m.Expires = nil }),
+			m2:       newMetadata(func(m *Metadata) { m.Expires = nil }),
+			expected: true,
+		},
+		{
+			name:     "expires m1 nil",
+			m1:       newMetadata(func(m *Metadata) { m.Expires = nil }),
+			m2:       newMetadata(),
+			expected: false,
+		},
+		{
+			name:     "expires m2 nil",
+			m1:       newMetadata(),
+			m2:       newMetadata(func(m *Metadata) { m.Expires = nil }),
+			expected: false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			require.Equal(t, test.expected, test.m1.IsEqual(test.m2))
+		})
+	}
+}
+
+func TestResourceHeaderIsEqual(t *testing.T) {
+	newHeader := func(changeFns ...func(*ResourceHeader)) *ResourceHeader {
+		header := &ResourceHeader{
+			Kind:    "kind",
+			SubKind: "subkind",
+			Version: "v1",
+			Metadata: Metadata{
+				Name:        "name",
+				Namespace:   "namespace",
+				Description: "description",
+				Labels:      map[string]string{"label1": "value1"},
+				Expires:     &time.Time{},
+				ID:          1234,
+				Revision:    "aaaa",
+			},
+		}
+
+		for _, fn := range changeFns {
+			fn(header)
+		}
+
+		return header
+	}
+	tests := []struct {
+		name     string
+		h1       *ResourceHeader
+		h2       *ResourceHeader
+		expected bool
+	}{
+		{
+			name:     "empty equals",
+			h1:       &ResourceHeader{},
+			h2:       &ResourceHeader{},
+			expected: true,
+		},
+		{
+			name:     "nil equals",
+			h1:       nil,
+			h2:       (*ResourceHeader)(nil),
+			expected: true,
+		},
+		{
+			name:     "one is nil",
+			h1:       &ResourceHeader{},
+			h2:       (*ResourceHeader)(nil),
+			expected: false,
+		},
+		{
+			name:     "populated equals",
+			h1:       newHeader(),
+			h2:       newHeader(),
+			expected: true,
+		},
+		{
+			name: "kind is different",
+			h1:   newHeader(),
+			h2: newHeader(func(h *ResourceHeader) {
+				h.Kind = "different-kind"
+			}),
+			expected: false,
+		},
+		{
+			name: "subkind is different",
+			h1:   newHeader(),
+			h2: newHeader(func(h *ResourceHeader) {
+				h.SubKind = "different-subkind"
+			}),
+			expected: false,
+		},
+		{
+			name: "metadata is different",
+			h1:   newHeader(),
+			h2: newHeader(func(h *ResourceHeader) {
+				h.Metadata = Metadata{}
+			}),
+			expected: false,
+		},
+		{
+			name: "version is different",
+			h1:   newHeader(),
+			h2: newHeader(func(h *ResourceHeader) {
+				h.Version = "different-version"
+			}),
+			expected: false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			require.Equal(t, test.expected, test.h1.IsEqual(test.h2))
 		})
 	}
 }

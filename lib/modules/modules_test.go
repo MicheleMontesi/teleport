@@ -1,18 +1,20 @@
 /*
-Copyright 2017-2021 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package modules_test
 
@@ -47,12 +49,11 @@ func TestValidateAuthPreferenceOnCloud(t *testing.T) {
 		},
 	})
 
-	authPref := types.DefaultAuthPreference()
-	err = testServer.AuthServer.SetAuthPreference(ctx, authPref)
+	authPref, err := testServer.AuthServer.UpsertAuthPreference(ctx, types.DefaultAuthPreference())
 	require.NoError(t, err)
 
 	authPref.SetSecondFactor(constants.SecondFactorOff)
-	err = testServer.AuthServer.SetAuthPreference(ctx, authPref)
+	_, err = testServer.AuthServer.UpdateAuthPreference(ctx, authPref)
 	require.EqualError(t, err, "cannot disable two-factor authentication on Cloud")
 }
 
@@ -72,10 +73,10 @@ func TestValidateSessionRecordingConfigOnCloud(t *testing.T) {
 	})
 
 	recConfig := types.DefaultSessionRecordingConfig()
-	err = testServer.AuthServer.SetSessionRecordingConfig(ctx, recConfig)
+	_, err = testServer.AuthServer.UpsertSessionRecordingConfig(ctx, recConfig)
 	require.NoError(t, err)
 
 	recConfig.SetMode(types.RecordAtProxy)
-	err = testServer.AuthServer.SetSessionRecordingConfig(ctx, recConfig)
+	_, err = testServer.AuthServer.UpsertSessionRecordingConfig(ctx, recConfig)
 	require.EqualError(t, err, "cannot set proxy recording mode on Cloud")
 }

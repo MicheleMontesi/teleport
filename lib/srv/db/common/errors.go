@@ -1,18 +1,20 @@
 /*
-Copyright 2021 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package common
 
@@ -45,29 +47,39 @@ func ConvertError(err error) error {
 		return nil
 	}
 	// Unwrap original error first.
-	if _, ok := err.(*trace.TraceErr); ok {
+	var traceErr *trace.TraceErr
+	if errors.As(err, &traceErr) {
 		return ConvertError(trace.Unwrap(err))
 	}
-	if pgErr, ok := err.(pgError); ok {
+	var pgErr pgError
+	if errors.As(err, &pgErr) {
 		return ConvertError(pgErr.Unwrap())
 	}
-	if causer, ok := err.(causer); ok {
-		return ConvertError(causer.Cause())
+
+	var c causer
+	if errors.As(err, &c) {
+		return ConvertError(c.Cause())
 	}
 	if _, ok := status.FromError(err); ok {
 		return trail.FromGRPC(err)
 	}
-	switch e := trace.Unwrap(err).(type) {
-	case *googleapi.Error:
-		return convertGCPError(e)
-	case awserr.RequestFailure:
-		return awslib.ConvertRequestFailureError(e)
-	case *azcore.ResponseError:
-		return azurelib.ConvertResponseError(e)
-	case *pgconn.PgError:
-		return convertPostgresError(e)
-	case *mysql.MyError:
-		return convertMySQLError(e)
+
+	var googleAPIErr *googleapi.Error
+	var awsRequestFailureErr awserr.RequestFailure
+	var azResponseErr *azcore.ResponseError
+	var pgError *pgconn.PgError
+	var myError *mysql.MyError
+	switch err := trace.Unwrap(err); {
+	case errors.As(err, &googleAPIErr):
+		return convertGCPError(googleAPIErr)
+	case errors.As(err, &awsRequestFailureErr):
+		return awslib.ConvertRequestFailureError(awsRequestFailureErr)
+	case errors.As(err, &azResponseErr):
+		return azurelib.ConvertResponseError(azResponseErr)
+	case errors.As(err, &pgError):
+		return convertPostgresError(pgError)
+	case errors.As(err, &myError):
+		return convertMySQLError(myError)
 	}
 	return err // Return unmodified.
 }
@@ -145,6 +157,8 @@ func ConvertConnectError(err error, sessionCtx *Session) error {
 		switch sessionCtx.Database.GetType() {
 		case types.DatabaseTypeElastiCache:
 			return createElastiCacheRedisAccessDeniedError(err, sessionCtx)
+		case types.DatabaseTypeMemoryDB:
+			return createMemoryDBAccessDeniedError(err, sessionCtx)
 		case types.DatabaseTypeRDS:
 			return createRDSAccessDeniedError(err, orgErr, sessionCtx)
 		case types.DatabaseTypeRDSProxy:
@@ -183,9 +197,37 @@ take a few minutes to propagate):
 	}
 }
 
+// createMemoryDBAccessDeniedError creates an error with help message
+// to setup IAM auth for MemoryDB Redis.
+func createMemoryDBAccessDeniedError(err error, sessionCtx *Session) error {
+	policy, getPolicyErr := dbiam.GetReadableAWSPolicyDocument(sessionCtx.Database)
+	if getPolicyErr != nil {
+		policy = fmt.Sprintf("failed to generate IAM policy: %v", getPolicyErr)
+	}
+
+	switch sessionCtx.Database.GetProtocol() {
+	case defaults.ProtocolRedis:
+		return trace.AccessDenied(`Could not connect to database:
+
+  %v
+
+Make sure that IAM auth is enabled for MemoryDB user %q and the user is in the
+ACL associated with the MemoryDB cluster. Also Teleport database agent's IAM
+policy must have "memorydb:Connect" permissions (note that IAM changes may take
+a few minutes to propagate):
+
+%v
+`, err, sessionCtx.DatabaseUser, policy)
+
+	default:
+		return trace.Wrap(err)
+	}
+}
+
 func isRDSMySQLIAMAuthError(err error) bool {
-	if causer, ok := err.(causer); ok {
-		return isRDSMySQLIAMAuthError(causer.Cause())
+	var c causer
+	if errors.As(err, &c) {
+		return isRDSMySQLIAMAuthError(c.Cause())
 	}
 	var mysqlError *mysql.MyError
 	if !errors.As(trace.Unwrap(err), &mysqlError) {

@@ -1,16 +1,20 @@
-// Copyright 2023 Gravitational, Inc
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package aggregating
 
@@ -21,6 +25,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/gravitational/trace"
 	"github.com/jonboulle/clockwork"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/require"
@@ -48,8 +53,13 @@ func TestSubmitOnce(t *testing.T) {
 	svc := reportService{bk}
 
 	var submitted []*prehogv1.UserActivityReport
+	var submittedPresence []*prehogv1.ResourcePresenceReport
 	submitOk := func(ctx context.Context, req *prehogv1.SubmitUsageReportsRequest) (uuid.UUID, error) {
+		if l := len(req.UserActivity) + len(req.ResourcePresence); l > submitBatchSize {
+			return uuid.Nil, trace.LimitExceeded("got %v reports, expected at most %v", l, submitBatchSize)
+		}
 		submitted = append(submitted, req.UserActivity...)
+		submittedPresence = append(submittedPresence, req.ResourcePresence...)
 		return uuid.New(), nil
 	}
 	submitErr := func(ctx context.Context, req *prehogv1.SubmitUsageReportsRequest) (uuid.UUID, error) {
@@ -68,6 +78,9 @@ func TestSubmitOnce(t *testing.T) {
 	reportFresh := newReport(time.Now().UTC())
 	require.NoError(t, svc.upsertUserActivityReport(ctx, reportFresh, reportTTL))
 
+	resCountReport := newResourcePresenceReport(time.Now().UTC())
+	require.NoError(t, svc.upsertResourcePresenceReport(ctx, resCountReport, reportTTL))
+
 	// successful submit, no alerts, no leftover reports
 	submitOnce(ctx, scfg)
 	require.Len(t, submitted, 1)
@@ -75,6 +88,10 @@ func TestSubmitOnce(t *testing.T) {
 	reports, err := svc.listUserActivityReports(ctx, 10)
 	require.NoError(t, err)
 	require.Empty(t, reports)
+	rReports, err := svc.listResourcePresenceReports(ctx, 10)
+	require.NoError(t, err)
+	require.Empty(t, rReports)
+
 	submitted = nil
 
 	alerts, err := scfg.Status.GetClusterAlerts(ctx, types.GetClusterAlertsRequest{
@@ -135,7 +152,9 @@ func TestSubmitOnce(t *testing.T) {
 	// successful submission, no remaining events but the alert stays for one more cycle
 	submitOnce(ctx, scfg)
 	require.Len(t, submitted, 1)
+	require.Len(t, submittedPresence, 1)
 	submitted = nil
+	submittedPresence = nil
 
 	alerts, err = scfg.Status.GetClusterAlerts(ctx, types.GetClusterAlertsRequest{
 		AlertID: alertName,
@@ -152,4 +171,21 @@ func TestSubmitOnce(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Empty(t, alerts)
+
+	for i := 0; i < 20; i++ {
+		require.NoError(t, svc.upsertUserActivityReport(ctx, newReport(time.Now().UTC().Add(time.Duration(i)*time.Second)), reportTTL))
+	}
+	for i := 0; i < 15; i++ {
+		require.NoError(t, svc.upsertResourcePresenceReport(ctx, newResourcePresenceReport(time.Now().UTC().Add(time.Duration(i)*time.Second)), reportTTL))
+	}
+	clk.Advance(submitLockDuration)
+	submitOnce(ctx, scfg)
+	clk.Advance(submitLockDuration)
+	submitOnce(ctx, scfg)
+	clk.Advance(submitLockDuration)
+	submitOnce(ctx, scfg)
+	clk.Advance(submitLockDuration)
+	submitOnce(ctx, scfg)
+	require.Len(t, submitted, 20)
+	require.Len(t, submittedPresence, 15)
 }

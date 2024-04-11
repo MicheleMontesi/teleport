@@ -1,18 +1,20 @@
 /*
-Copyright 2023 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package generic
 
@@ -127,17 +129,21 @@ func TestGenericCRUD(t *testing.T) {
 	require.Empty(t, out)
 
 	// Create both resources.
-	err = service.CreateResource(ctx, r1)
+	r1, err = service.CreateResource(ctx, r1)
 	require.NoError(t, err)
-	err = service.CreateResource(ctx, r2)
+	r2, err = service.CreateResource(ctx, r2)
 	require.NoError(t, err)
+
+	require.NotEmpty(t, r1.GetRevision())
+	require.NotEmpty(t, r2.GetRevision())
+	require.NotEqual(t, r1.GetRevision(), r2.GetRevision())
 
 	// Fetch all resources using paging default.
 	out, nextToken, err = service.ListResources(ctx, 0, "")
 	require.NoError(t, err)
 	require.Empty(t, nextToken)
 	require.Empty(t, cmp.Diff([]*testResource{r1, r2}, out,
-		cmpopts.IgnoreFields(types.Metadata{}, "ID", "Revision"),
+		cmpopts.IgnoreFields(types.Metadata{}, "ID"),
 	))
 
 	// Fetch a paginated list of resources.
@@ -156,21 +162,26 @@ func TestGenericCRUD(t *testing.T) {
 
 	require.Equal(t, 2, numPages)
 	require.Empty(t, cmp.Diff([]*testResource{r1, r2}, paginatedOut,
-		cmpopts.IgnoreFields(types.Metadata{}, "ID", "Revision"),
+		cmpopts.IgnoreFields(types.Metadata{}, "ID"),
 	))
+
+	// Count all resources.
+	count, err := service.CountResources(ctx)
+	require.NoError(t, err)
+	require.Equal(t, uint(2), count)
 
 	// Fetch a list of all resources
 	allResources, err := service.GetResources(ctx)
 	require.NoError(t, err)
 	require.Empty(t, cmp.Diff(paginatedOut, allResources,
-		cmpopts.IgnoreFields(types.Metadata{}, "ID", "Revision"),
+		cmpopts.IgnoreFields(types.Metadata{}, "ID"),
 	))
 
 	// Fetch a specific service provider.
 	r, err := service.GetResource(ctx, r2.GetName())
 	require.NoError(t, err)
 	require.Empty(t, cmp.Diff(r2, r,
-		cmpopts.IgnoreFields(types.Metadata{}, "ID", "Revision"),
+		cmpopts.IgnoreFields(types.Metadata{}, "ID"),
 	))
 
 	// Try to fetch a resource that doesn't exist.
@@ -178,22 +189,22 @@ func TestGenericCRUD(t *testing.T) {
 	require.ErrorIs(t, err, trace.NotFound(`generic resource "doesnotexist" doesn't exist`))
 
 	// Try to create the same resource.
-	err = service.CreateResource(ctx, r1)
+	_, err = service.CreateResource(ctx, r1)
 	require.ErrorIs(t, err, trace.AlreadyExists(`generic resource "r1" already exists`))
 
 	// Update a resource.
 	r1.SetStaticLabels(map[string]string{"newlabel": "newvalue"})
-	err = service.UpdateResource(ctx, r1)
+	r1, err = service.UpdateResource(ctx, r1)
 	require.NoError(t, err)
 	r, err = service.GetResource(ctx, r1.GetName())
 	require.NoError(t, err)
 	require.Empty(t, cmp.Diff(r1, r,
-		cmpopts.IgnoreFields(types.Metadata{}, "ID", "Revision"),
+		cmpopts.IgnoreFields(types.Metadata{}, "ID"),
 	))
 
 	// Update a resource that doesn't exist.
 	doesNotExist := newTestResource("doesnotexist")
-	err = service.UpdateResource(ctx, doesNotExist)
+	_, err = service.UpdateResource(ctx, doesNotExist)
 	require.ErrorIs(t, err, trace.NotFound(`generic resource "doesnotexist" doesn't exist`))
 
 	// Delete a resource.
@@ -203,41 +214,47 @@ func TestGenericCRUD(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, nextToken)
 	require.Empty(t, cmp.Diff([]*testResource{r2}, out,
-		cmpopts.IgnoreFields(types.Metadata{}, "ID", "Revision"),
+		cmpopts.IgnoreFields(types.Metadata{}, "ID"),
 	))
 
+	// Make sure count is updated.
+	count, err = service.CountResources(ctx)
+	require.NoError(t, err)
+	require.Equal(t, uint(1), count)
+
 	// Upsert a resource (create).
-	err = service.UpsertResource(ctx, r1)
+	r1, err = service.UpsertResource(ctx, r1)
 	require.NoError(t, err)
 	out, nextToken, err = service.ListResources(ctx, 200, "")
 	require.NoError(t, err)
 	require.Empty(t, nextToken)
 	require.Empty(t, cmp.Diff([]*testResource{r1, r2}, out,
-		cmpopts.IgnoreFields(types.Metadata{}, "ID", "Revision"),
+		cmpopts.IgnoreFields(types.Metadata{}, "ID"),
 	))
 
 	// Upsert a resource (update).
 	r1.SetStaticLabels(map[string]string{"newerlabel": "newervalue"})
-	err = service.UpsertResource(ctx, r1)
+	r1, err = service.UpsertResource(ctx, r1)
 	require.NoError(t, err)
 	out, nextToken, err = service.ListResources(ctx, 200, "")
 	require.NoError(t, err)
 	require.Empty(t, nextToken)
 	require.Empty(t, cmp.Diff([]*testResource{r1, r2}, out,
-		cmpopts.IgnoreFields(types.Metadata{}, "ID", "Revision"),
+		cmpopts.IgnoreFields(types.Metadata{}, "ID"),
 	))
 
 	// Update and swap a value
-	require.NoError(t, service.UpdateAndSwapResource(ctx, r2.GetName(), func(tr *testResource) error {
+	r2, err = service.UpdateAndSwapResource(ctx, r2.GetName(), func(tr *testResource) error {
 		tr.SetStaticLabels(map[string]string{"updateandswap": "labelvalue"})
 		return nil
-	}))
+	})
+	require.NoError(t, err)
 	r2.SetStaticLabels(map[string]string{"updateandswap": "labelvalue"})
 	out, nextToken, err = service.ListResources(ctx, 200, "")
 	require.NoError(t, err)
 	require.Empty(t, nextToken)
 	require.Empty(t, cmp.Diff([]*testResource{r1, r2}, out,
-		cmpopts.IgnoreFields(types.Metadata{}, "ID", "Revision"),
+		cmpopts.IgnoreFields(types.Metadata{}, "ID"),
 	))
 
 	// Try to delete a resource that doesn't exist.
@@ -249,10 +266,10 @@ func TestGenericCRUD(t *testing.T) {
 		item, err := backend.Get(ctx, service.MakeKey(r1.GetName()))
 		require.NoError(t, err)
 
-		r, err = unmarshalResource(item.Value)
+		r, err = unmarshalResource(item.Value, services.WithRevision(item.Revision))
 		require.NoError(t, err)
 		require.Empty(t, cmp.Diff(r1, r,
-			cmpopts.IgnoreFields(types.Metadata{}, "ID", "Revision"),
+			cmpopts.IgnoreFields(types.Metadata{}, "ID"),
 		))
 
 		return nil
@@ -266,4 +283,52 @@ func TestGenericCRUD(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, nextToken)
 	require.Empty(t, out)
+
+	// Make sure count is updated.
+	count, err = service.CountResources(ctx)
+	require.NoError(t, err)
+	require.Equal(t, uint(0), count)
+}
+
+func TestGenericListResourcesReturnNextResource(t *testing.T) {
+	ctx := context.Background()
+
+	memBackend, err := memory.New(memory.Config{
+		Context: ctx,
+		Clock:   clockwork.NewFakeClock(),
+	})
+	require.NoError(t, err)
+
+	service, err := NewService(&ServiceConfig[*testResource]{
+		Backend:       memBackend,
+		ResourceKind:  "generic resource",
+		PageLimit:     200,
+		BackendPrefix: "generic_prefix",
+		UnmarshalFunc: unmarshalResource,
+		MarshalFunc:   marshalResource,
+	})
+	require.NoError(t, err)
+
+	// Create a couple test resources.
+	r1 := newTestResource("r1")
+	r2 := newTestResource("r2")
+
+	_, err = service.WithPrefix("a-unique-prefix").UpsertResource(ctx, r1)
+	require.NoError(t, err)
+	_, err = service.WithPrefix("another-unique-prefix").UpsertResource(ctx, r2)
+	require.NoError(t, err)
+
+	page, next, err := service.ListResourcesReturnNextResource(ctx, 1, "")
+	require.NoError(t, err)
+	require.Empty(t, cmp.Diff([]*testResource{r1}, page,
+		cmpopts.IgnoreFields(types.Metadata{}, "ID"),
+	))
+	require.NotNil(t, next)
+
+	page, next, err = service.ListResourcesReturnNextResource(ctx, 1, "another-unique-prefix"+string(backend.Separator)+backend.GetPaginationKey(*next))
+	require.NoError(t, err)
+	require.Empty(t, cmp.Diff([]*testResource{r2}, page,
+		cmpopts.IgnoreFields(types.Metadata{}, "ID"),
+	))
+	require.Nil(t, next)
 }

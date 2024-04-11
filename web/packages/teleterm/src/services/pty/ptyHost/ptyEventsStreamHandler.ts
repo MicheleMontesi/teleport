@@ -1,17 +1,19 @@
 /**
- * Copyright 2023 Gravitational, Inc
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
  *
- *      http://www.apache.org/licenses/LICENSE-2.0
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 import { ClientDuplexStream } from '@grpc/grpc-js';
@@ -25,6 +27,11 @@ import {
   PtyEventStart,
   PtyServerEvent,
 } from 'teleterm/sharedProcess/ptyHost';
+import {
+  ptyEventOneOfIsData,
+  ptyEventOneOfIsExit,
+  ptyEventOneOfIsStartError,
+} from 'teleterm/helpers';
 
 export class PtyEventsStreamHandler {
   private logger: Logger;
@@ -44,23 +51,34 @@ export class PtyEventsStreamHandler {
     this.logger.info('Start');
 
     this.writeOrThrow(
-      new PtyClientEvent().setStart(
-        new PtyEventStart().setColumns(columns).setRows(rows)
-      )
+      PtyClientEvent.create({
+        event: {
+          oneofKind: 'start',
+          start: PtyEventStart.create({ columns, rows }),
+        },
+      })
     );
   }
 
   write(data: string): void {
     this.writeOrThrow(
-      new PtyClientEvent().setData(new PtyEventData().setMessage(data))
+      PtyClientEvent.create({
+        event: {
+          oneofKind: 'data',
+          data: PtyEventData.create({ message: data }),
+        },
+      })
     );
   }
 
   resize(columns: number, rows: number): void {
     this.writeOrThrow(
-      new PtyClientEvent().setResize(
-        new PtyEventResize().setColumns(columns).setRows(rows)
-      )
+      PtyClientEvent.create({
+        event: {
+          oneofKind: 'resize',
+          resize: PtyEventResize.create({ columns, rows }),
+        },
+      })
     );
   }
 
@@ -78,7 +96,7 @@ export class PtyEventsStreamHandler {
   onOpen(callback: () => void): RemoveListenerFunction {
     return this.addDataListenerAndReturnRemovalFunction(
       (event: PtyServerEvent) => {
-        if (event.hasOpen()) {
+        if (event.event.oneofKind === 'open') {
           callback();
         }
       }
@@ -88,8 +106,8 @@ export class PtyEventsStreamHandler {
   onData(callback: (data: string) => void): RemoveListenerFunction {
     return this.addDataListenerAndReturnRemovalFunction(
       (event: PtyServerEvent) => {
-        if (event.hasData()) {
-          callback(event.getData().getMessage());
+        if (ptyEventOneOfIsData(event.event)) {
+          callback(event.event.data.message);
         }
       }
     );
@@ -100,9 +118,9 @@ export class PtyEventsStreamHandler {
   ): RemoveListenerFunction {
     return this.addDataListenerAndReturnRemovalFunction(
       (event: PtyServerEvent) => {
-        if (event.hasExit()) {
-          this.logger.info('On exit', event.getExit().toObject());
-          callback(event.getExit().toObject());
+        if (ptyEventOneOfIsExit(event.event)) {
+          this.logger.info('On exit', event.event.exit);
+          callback(event.event.exit);
         }
       }
     );
@@ -111,12 +129,9 @@ export class PtyEventsStreamHandler {
   onStartError(callback: (message: string) => void): RemoveListenerFunction {
     return this.addDataListenerAndReturnRemovalFunction(
       (event: PtyServerEvent) => {
-        if (event.hasStartError()) {
-          this.logger.info(
-            'On start error',
-            event.getStartError().toObject().message
-          );
-          callback(event.getStartError().toObject().message);
+        if (ptyEventOneOfIsStartError(event.event)) {
+          this.logger.info('On start error', event.event.startError.message);
+          callback(event.event.startError.message);
         }
       }
     );

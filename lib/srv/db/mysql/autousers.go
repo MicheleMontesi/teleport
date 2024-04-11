@@ -1,18 +1,20 @@
 /*
-Copyright 2023 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package mysql
 
@@ -24,6 +26,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/coreos/go-semver/semver"
@@ -31,9 +34,9 @@ import (
 	"github.com/go-mysql-org/go-mysql/mysql"
 	"github.com/gravitational/trace"
 	"github.com/sirupsen/logrus"
-	"golang.org/x/exp/slices"
 
 	"github.com/gravitational/teleport/api/types"
+	apiawsutils "github.com/gravitational/teleport/api/utils/aws"
 	"github.com/gravitational/teleport/lib/srv/db/common"
 )
 
@@ -111,6 +114,11 @@ func (e *Engine) ActivateUser(ctx context.Context, sessionCtx *common.Session) e
 		return trace.BadParameter("Teleport does not have admin user configured for this database")
 	}
 
+	if sessionCtx.Database.IsRDS() &&
+		sessionCtx.Database.GetEndpointType() == apiawsutils.RDSEndpointTypeReader {
+		return trace.BadParameter("auto-user provisioning is not supported for RDS reader endpoints")
+	}
+
 	conn, err := e.connectAsAdminUser(ctx, sessionCtx)
 	if err != nil {
 		return trace.Wrap(err)
@@ -148,12 +156,14 @@ func (e *Engine) ActivateUser(ctx context.Context, sessionCtx *common.Session) e
 		sessionCtx.DatabaseUser,
 		details,
 	)
-	if err == nil {
-		return nil
+	if err != nil {
+		e.Log.Debugf("Call teleport_activate_user failed: %v", err)
+		err = convertActivateError(sessionCtx, err)
+		e.Audit.OnDatabaseUserCreate(ctx, sessionCtx, err)
+		return trace.Wrap(err)
 	}
-
-	e.Log.Debugf("Call teleport_activate_user failed: %v", err)
-	return trace.Wrap(convertActivateError(sessionCtx, err))
+	e.Audit.OnDatabaseUserCreate(ctx, sessionCtx, nil)
+	return nil
 }
 
 // DeactivateUser disables the database user.
@@ -179,6 +189,8 @@ func (e *Engine) DeactivateUser(ctx context.Context, sessionCtx *common.Session)
 		e.Log.Debugf("Failed to deactivate user %q: %v.", sessionCtx.DatabaseUser, err)
 		return nil
 	}
+
+	e.Audit.OnDatabaseUserDeactivate(ctx, sessionCtx, false, err)
 	return trace.Wrap(err)
 }
 
@@ -194,11 +206,6 @@ func (e *Engine) DeleteUser(ctx context.Context, sessionCtx *common.Session) err
 	}
 	defer conn.Close()
 
-	// TODO support DeleteUser for MariaDB.
-	if conn.isMariaDB() {
-		return trace.Wrap(e.DeactivateUser(ctx, sessionCtx))
-	}
-
 	e.Log.Infof("Deleting MySQL user %q for %v.", sessionCtx.DatabaseUser, sessionCtx.Identity.Username)
 
 	result, err := conn.Execute(fmt.Sprintf("CALL %s(?)", deleteUserProcedureName), sessionCtx.DatabaseUser)
@@ -208,18 +215,22 @@ func (e *Engine) DeleteUser(ctx context.Context, sessionCtx *common.Session) err
 			return nil
 		}
 
+		e.Audit.OnDatabaseUserDeactivate(ctx, sessionCtx, true, err)
 		return trace.Wrap(err)
 	}
 	defer result.Close()
 
+	deleted := true
 	switch readDeleteUserResult(result) {
 	case common.SQLStateUserDropped:
 		e.Log.Debugf("User %q deleted successfully.", sessionCtx.DatabaseUser)
 	case common.SQLStateUserDeactivated:
 		e.Log.Infof("Unable to delete user %q, it was disabled instead.", sessionCtx.DatabaseUser)
+		deleted = false
 	default:
 		e.Log.Warnf("Unable to determine user %q deletion state.", sessionCtx.DatabaseUser)
 	}
+	e.Audit.OnDatabaseUserDeactivate(ctx, sessionCtx, deleted, nil)
 
 	return trace.Wrap(err)
 }
@@ -473,7 +484,8 @@ func isProcedureUpdateRequired(conn *clientConn, wantSchema, wantVersion string)
 		return true, nil
 	}
 
-	// Paranoia, make sure the names match.
+	// Double check if all procedures are in place, this ensures that newly
+	// added procedures will be created even when there is no version bump.
 	foundProcedures := make([]string, 0, result.RowNumber())
 	for row := range result.Values {
 		procedure, err := result.GetString(row, 0)
@@ -527,7 +539,7 @@ func getCreateProcedureCommand(conn *clientConn, procedureName string) (string, 
 const (
 	// procedureVersion is a hard-coded string that is set as procedure
 	// comments to indicate the procedure version.
-	procedureVersion = "teleport-auto-user-v1"
+	procedureVersion = "teleport-auto-user-v4"
 
 	// mysqlMaxUsernameLength is the maximum username/role length for MySQL.
 	//
@@ -572,6 +584,8 @@ var (
 	mariadbDeactivateUserProcedure string
 	//go:embed sql/mariadb_revoke_roles.sql
 	mariadbRevokeRolesProcedure string
+	//go:embed sql/mariadb_delete_user.sql
+	mariadbDeleteProcedure string
 
 	// allProcedureNames contains a list of all procedures required to setup
 	// auto-user provisioning. Note that order matters here as later procedures
@@ -580,6 +594,7 @@ var (
 		revokeRolesProcedureName,
 		activateUserProcedureName,
 		deactivateUserProcedureName,
+		deleteUserProcedureName,
 	}
 
 	// mysqlProcedures maps procedure names to the procedures used for MySQL.
@@ -615,5 +630,6 @@ var (
 		activateUserProcedureName:   mariadbActivateUserProcedure,
 		deactivateUserProcedureName: mariadbDeactivateUserProcedure,
 		revokeRolesProcedureName:    mariadbRevokeRolesProcedure,
+		deleteUserProcedureName:     mariadbDeleteProcedure,
 	}
 )

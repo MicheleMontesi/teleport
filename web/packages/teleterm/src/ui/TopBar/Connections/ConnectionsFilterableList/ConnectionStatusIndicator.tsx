@@ -1,44 +1,59 @@
 /**
- * Copyright 2023 Gravitational, Inc
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
  *
- *      http://www.apache.org/licenses/LICENSE-2.0
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 import React from 'react';
 import styled from 'styled-components';
 import { Box } from 'design';
 
-export const ConnectionStatusIndicator: React.FC<Props> = props => {
-  const { connected, ...styles } = props;
-  return <StyledStatus $connected={connected} {...styles} />;
+type Status = 'on' | 'off' | 'error';
+
+export const ConnectionStatusIndicator = (props: {
+  status: Status;
+  [key: string]: any;
+}) => {
+  const { status, ...styles } = props;
+  return <StyledStatus $status={status} {...styles} />;
 };
 
-const StyledStatus = styled<Props>(Box)`
+const StyledStatus = styled(Box)`
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  ${props => {
-    const { $connected, theme } = props;
-    const backgroundColor = $connected
-      ? theme.colors.success
-      : theme.colors.grey[300];
+  ${(props: { $status: Status; [key: string]: any }) => {
+    const { $status, theme } = props;
+    let backgroundColor: string;
+
+    switch ($status) {
+      case 'on':
+        backgroundColor = theme.colors.success.main;
+        break;
+      case 'off':
+        backgroundColor = theme.colors.grey[300];
+        break;
+      case 'error':
+        // TODO(ravicious): Don't depend on color alone, add an exclamation mark.
+        backgroundColor = theme.colors.error.main;
+        break;
+      default:
+        $status satisfies never;
+    }
     return {
       backgroundColor,
     };
   }}
 `;
-
-type Props = {
-  connected: boolean;
-  [key: string]: any;
-};

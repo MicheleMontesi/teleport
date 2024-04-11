@@ -1,18 +1,20 @@
 /*
-Copyright 2018 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package helpers
 
@@ -28,6 +30,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/google/uuid"
 	"github.com/gravitational/trace"
 	"github.com/stretchr/testify/assert"
@@ -60,13 +63,14 @@ import (
 
 // CommandOptions controls how the SSH command is built.
 type CommandOptions struct {
-	ForwardAgent bool
-	ForcePTY     bool
-	ControlPath  string
-	SocketPath   string
-	ProxyPort    string
-	NodePort     string
-	Command      string
+	ForwardAgent  bool
+	ForcePTY      bool
+	X11Forwarding bool
+	ControlPath   string
+	SocketPath    string
+	ProxyPort     string
+	NodePort      string
+	Command       string
 }
 
 // ExternalSSHCommand runs an external SSH command (if an external ssh binary
@@ -85,6 +89,10 @@ func ExternalSSHCommand(o CommandOptions) (*exec.Cmd, error) {
 		execArgs = append(execArgs, "-oControlPersist=1s")
 		execArgs = append(execArgs, "-oConnectTimeout=2")
 		execArgs = append(execArgs, fmt.Sprintf("-oControlPath=%v", o.ControlPath))
+	}
+
+	if o.X11Forwarding {
+		execArgs = append(execArgs, "-X")
 	}
 
 	// The -tt flag is used to force PTY allocation. It's often used by
@@ -178,29 +186,6 @@ func CloseAgent(teleAgent *teleagent.AgentServer, socketDirPath string) error {
 	}
 
 	return nil
-}
-
-// GetLocalIP gets the non-loopback IP address of this host.
-func GetLocalIP() (string, error) {
-	addrs, err := net.InterfaceAddrs()
-	if err != nil {
-		return "", trace.Wrap(err)
-	}
-	for _, addr := range addrs {
-		var ip net.IP
-		switch v := addr.(type) {
-		case *net.IPNet:
-			ip = v.IP
-		case *net.IPAddr:
-			ip = v.IP
-		default:
-			continue
-		}
-		if !ip.IsLoopback() && ip.IsPrivate() {
-			return ip.String(), nil
-		}
-	}
-	return "", trace.NotFound("No non-loopback local IP address found")
 }
 
 func MustCreateUserIdentityFile(t *testing.T, tc *TeleInstance, username string, ttl time.Duration) string {
@@ -486,4 +471,19 @@ func FindNodeWithLabel(t *testing.T, ctx context.Context, cl apiclient.ListResou
 		assert.NoError(t, err)
 		return len(servers.Resources) >= 1
 	}
+}
+
+// UpsertAuthPrefAndWaitForCache upserts the authentication preference and waits
+// until the auth server's cache contains the new value. This is needed since
+// the cache doesn't always catch up before we need to use the preference value.
+func UpsertAuthPrefAndWaitForCache(
+	t *testing.T, ctx context.Context, srv *auth.Server, pref types.AuthPreference,
+) {
+	_, err := srv.UpsertAuthPreference(ctx, pref)
+	require.NoError(t, err)
+	require.EventuallyWithT(t, func(t *assert.CollectT) {
+		p, err := srv.GetAuthPreference(ctx)
+		require.NoError(t, err)
+		assert.Empty(t, cmp.Diff(&pref, &p))
+	}, 5*time.Second, 100*time.Millisecond)
 }

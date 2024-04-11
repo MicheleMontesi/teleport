@@ -1,16 +1,20 @@
-// Copyright 2022 Gravitational, Inc
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package proxy
 
@@ -32,6 +36,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 
 	"github.com/gravitational/teleport/api/types"
@@ -598,7 +603,9 @@ func (d *resourceFilterer) decode(buffer []byte) (runtime.Object, []byte, error)
 		// Logic from: https://github.com/kubernetes/client-go/blob/58ff029093df37cad9fa28778a37f11fa495d9cf/rest/request.go#L1040
 		return nil, buffer, nil
 	default:
-		out, err := decodeAndSetGVK(d.decoder, buffer)
+		// We are reading an API request and API honors the GVK in the request so we don't
+		// need to set it.
+		out, err := decodeAndSetGVK(d.decoder, buffer, nil /* defaults GVK */)
 		return out, nil, trace.Wrap(err)
 	}
 }
@@ -612,7 +619,9 @@ func (d *resourceFilterer) decodePartialObjectMetadata(row *metav1.TableRow) err
 	}
 	var err error
 	// decode only if row.Object.Object was not decoded before.
-	row.Object.Object, err = decodeAndSetGVK(d.decoder, row.Object.Raw)
+	// We are reading an API request and API honors the GVK in the request so we don't
+	// need to set it.
+	row.Object.Object, err = decodeAndSetGVK(d.decoder, row.Object.Raw, nil /* defaults GVK */)
 	return trace.Wrap(err)
 }
 
@@ -725,8 +734,10 @@ func newEncoderAndDecoderForContentType(contentType string, negotiator runtime.C
 
 // decodeAndSetGVK decodes the payload into the appropriate type using the decoder
 // provider and sets the GVK if available.
-func decodeAndSetGVK(decoder runtime.Decoder, payload []byte) (runtime.Object, error) {
-	obj, gvk, err := decoder.Decode(payload, nil, nil)
+// defaults is the fallback GVK used by the decoder if the payload doesn't set their
+// own GVK.
+func decodeAndSetGVK(decoder runtime.Decoder, payload []byte, defaults *schema.GroupVersionKind) (runtime.Object, error) {
+	obj, gvk, err := decoder.Decode(payload, defaults, nil)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}

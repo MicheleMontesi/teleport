@@ -1,18 +1,20 @@
-/*
-Copyright 2019 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+/**
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 import * as shared from 'shared/services/types';
 
@@ -26,13 +28,26 @@ export type AuthType = shared.AuthType;
 
 export type AuthProvider = tsh.AuthProvider;
 
-export type LoginLocalParams = { kind: 'local' } & tsh.LoginLocalParams;
+export interface LoginLocalParams {
+  kind: 'local';
+  clusterUri: uri.RootClusterUri;
+  username: string;
+  password: string;
+  token?: string;
+}
 
-export type LoginPasswordlessParams = {
+export interface LoginSsoParams {
+  kind: 'sso';
+  clusterUri: uri.RootClusterUri;
+  providerType: string;
+  providerName: string;
+}
+
+export interface LoginPasswordlessParams {
   kind: 'passwordless';
-} & tsh.LoginPasswordlessParams;
-
-export type LoginSsoParams = { kind: 'sso' } & tsh.LoginSsoParams;
+  clusterUri: uri.RootClusterUri;
+  onPromptCallback(res: WebauthnLoginPrompt): void;
+}
 
 export type LoginParams =
   | LoginLocalParams
@@ -41,7 +56,22 @@ export type LoginParams =
 
 export type LoginPasswordlessRequest = tsh.LoginPasswordlessRequest;
 
-export type WebauthnLoginPrompt = tsh.WebauthnLoginPrompt;
+export type WebauthnLoginPrompt =
+  | WebauthnLoginTapPrompt
+  | WebauthnLoginRetapPrompt
+  | WebauthnLoginPinPrompt
+  | WebauthnLoginCredentialPrompt;
+export type WebauthnLoginTapPrompt = { type: 'tap' };
+export type WebauthnLoginRetapPrompt = { type: 'retap' };
+export type WebauthnLoginPinPrompt = {
+  type: 'pin';
+  onUserResponse(pin: string): void;
+};
+export type WebauthnLoginCredentialPrompt = {
+  type: 'credential';
+  data: { credentials: tsh.CredentialInfo[] };
+  onUserResponse(index: number): void;
+};
 
 export interface AuthSettings extends tsh.AuthSettings {
   secondFactor: Auth2faType;
@@ -52,6 +82,16 @@ export interface AuthSettings extends tsh.AuthSettings {
 }
 
 export type ClustersServiceState = {
-  clusters: Map<uri.ClusterUri, tsh.Cluster>;
+  clusters: Map<
+    uri.ClusterUri,
+    tsh.Cluster & {
+      // TODO(gzdunek): Remove assumedRequests from loggedInUser.
+      // The AssumedRequest objects are needed only in AssumedRolesBar.
+      // We should be able to move fetching them there.
+      loggedInUser?: tsh.LoggedInUser & {
+        assumedRequests?: Record<string, tsh.AssumedRequest>;
+      };
+    }
+  >;
   gateways: Map<uri.GatewayUri, tsh.Gateway>;
 };

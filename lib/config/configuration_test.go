@@ -1,25 +1,26 @@
 /*
-Copyright 2015-2021 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package config
 
 import (
 	"bytes"
 	"encoding/base64"
-	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -207,8 +208,8 @@ func TestSampleConfig(t *testing.T) {
 			require.NoError(t, err)
 
 			// validate a couple of values:
-			require.Equal(t, fc.Global.DataDir, defaults.DataDir)
-			require.Equal(t, fc.Logger.Severity, "INFO")
+			require.Equal(t, defaults.DataDir, fc.Global.DataDir)
+			require.Equal(t, "INFO", fc.Logger.Severity)
 			require.Equal(t, testCase.expectClusterName, fc.Auth.ClusterName)
 			require.Equal(t, testCase.expectLicenseFile, fc.Auth.LicenseFile)
 			require.Equal(t, testCase.expectProxyWebAddr, fc.Proxy.WebAddr)
@@ -361,6 +362,15 @@ func TestConfigReading(t *testing.T) {
 					},
 					AssumeRoleARN: "arn:aws:iam::123456789012:role/DBDiscoverer",
 					ExternalID:    "externalID123",
+				},
+				{
+					Types:   []string{"eks"},
+					Regions: []string{"us-west-1", "us-east-1"},
+					Tags: map[string]apiutils.Strings{
+						"a": {"b"},
+					},
+					Integration:      "integration1",
+					KubeAppDiscovery: true,
 				},
 			},
 			AzureMatchers: []AzureMatcher{
@@ -541,7 +551,7 @@ func TestConfigReading(t *testing.T) {
 				ListenAddress: "tcp://windows_desktop",
 			},
 			PublicAddr: apiutils.Strings([]string{"winsrv.example.com:3028", "no-port.winsrv.example.com"}),
-			Hosts:      apiutils.Strings([]string{"win.example.com:3389", "no-port.win.example.com"}),
+			ADHosts:    apiutils.Strings([]string{"win.example.com:3389", "no-port.win.example.com"}),
 		},
 		Tracing: TracingService{
 			EnabledFlag: "yes",
@@ -592,7 +602,7 @@ func TestLabelParsing(t *testing.T) {
 	var err error
 	// empty spec. no errors, no labels
 	err = parseLabelsApply("", &conf)
-	require.Nil(t, err)
+	require.NoError(t, err)
 	require.Nil(t, conf.CmdLabels)
 	require.Nil(t, conf.Labels)
 
@@ -600,7 +610,7 @@ func TestLabelParsing(t *testing.T) {
 	err = parseLabelsApply(`key=value,more="much better"`, &conf)
 	require.NoError(t, err)
 	require.NotNil(t, conf.CmdLabels)
-	require.Len(t, conf.CmdLabels, 0)
+	require.Empty(t, conf.CmdLabels)
 	require.Equal(t, map[string]string{
 		"key":  "value",
 		"more": "much better",
@@ -608,7 +618,7 @@ func TestLabelParsing(t *testing.T) {
 
 	// static labels + command labels
 	err = parseLabelsApply(`key=value,more="much better",arch=[5m2s:/bin/uname -m "p1 p2"]`, &conf)
-	require.Nil(t, err)
+	require.NoError(t, err)
 	require.Equal(t, map[string]string{
 		"key":  "value",
 		"more": "much better",
@@ -758,7 +768,7 @@ func TestApplyConfig(t *testing.T) {
 	require.Equal(t, "tcp://mongo.example:27017", cfg.Proxy.MongoPublicAddrs[0].FullAddress())
 	require.Equal(t, "tcp://peerhost:1234", cfg.Proxy.PeerAddress.FullAddress())
 	require.Equal(t, "tcp://peer.example:1234", cfg.Proxy.PeerPublicAddr.FullAddress())
-	require.Equal(t, true, cfg.Proxy.IdP.SAMLIdP.Enabled)
+	require.True(t, cfg.Proxy.IdP.SAMLIdP.Enabled)
 	require.Equal(t, "", cfg.Proxy.IdP.SAMLIdP.BaseURL)
 
 	require.Equal(t, "tcp://127.0.0.1:3000", cfg.DiagnosticAddr.FullAddress())
@@ -880,7 +890,7 @@ SREzU8onbBsjMg9QDiSf5oJLKvd/Ren+zGY7
 			},
 		},
 	))
-	require.Equal(t, cfg.Kube.KubeconfigPath, "/tmp/kubeconfig")
+	require.Equal(t, "/tmp/kubeconfig", cfg.Kube.KubeconfigPath)
 	require.Empty(t, cmp.Diff(cfg.Kube.StaticLabels,
 		map[string]string{
 			"testKey": "testValue",
@@ -888,22 +898,23 @@ SREzU8onbBsjMg9QDiSf5oJLKvd/Ren+zGY7
 	))
 
 	require.True(t, cfg.Discovery.Enabled)
-	require.Equal(t, cfg.Discovery.AWSMatchers[0].Regions, []string{"eu-central-1"})
-	require.Equal(t, cfg.Discovery.AWSMatchers[0].Types, []string{"ec2"})
-	require.Equal(t, cfg.Discovery.AWSMatchers[0].AssumeRole.RoleARN, "arn:aws:iam::123456789012:role/DBDiscoverer")
-	require.Equal(t, cfg.Discovery.AWSMatchers[0].AssumeRole.ExternalID, "externalID123")
-	require.Equal(t, cfg.Discovery.AWSMatchers[0].Params, &types.InstallerParams{
+	require.Equal(t, []string{"eu-central-1"}, cfg.Discovery.AWSMatchers[0].Regions)
+	require.Equal(t, []string{"ec2"}, cfg.Discovery.AWSMatchers[0].Types)
+	require.Equal(t, "arn:aws:iam::123456789012:role/DBDiscoverer", cfg.Discovery.AWSMatchers[0].AssumeRole.RoleARN)
+	require.Equal(t, "externalID123", cfg.Discovery.AWSMatchers[0].AssumeRole.ExternalID)
+	require.Equal(t, &types.InstallerParams{
 		InstallTeleport: true,
 		JoinMethod:      "iam",
 		JoinToken:       types.IAMInviteTokenName,
 		ScriptName:      "default-installer",
 		SSHDConfig:      types.SSHDConfigPath,
-	})
+	}, cfg.Discovery.AWSMatchers[0].Params)
 
 	require.True(t, cfg.Okta.Enabled)
-	require.Equal(t, cfg.Okta.APIEndpoint, "https://some-endpoint")
-	require.Equal(t, cfg.Okta.APITokenPath, oktaAPITokenPath)
-	require.Equal(t, cfg.Okta.SyncPeriod, time.Second*300)
+	require.Equal(t, "https://some-endpoint", cfg.Okta.APIEndpoint)
+	require.Equal(t, oktaAPITokenPath, cfg.Okta.APITokenPath)
+	require.Equal(t, time.Second*300, cfg.Okta.SyncPeriod)
+	require.True(t, cfg.Okta.SyncSettings.SyncAccessLists)
 }
 
 // TestApplyConfigNoneEnabled makes sure that if a section is not enabled,
@@ -1020,7 +1031,7 @@ func TestApplyCustomSessionRecordingConfig(t *testing.T) {
 	require.NoError(t, err)
 
 	require.True(t, cfg.Auth.Enabled)
-	require.Equal(t, cfg.Auth.ClusterName.GetClusterName(), "example.com")
+	require.Equal(t, "example.com", cfg.Auth.ClusterName.GetClusterName())
 	require.Equal(t, types.OriginDefaults, cfg.Auth.Preference.Origin())
 	require.Equal(t, types.OriginDefaults, cfg.Auth.NetworkingConfig.Origin())
 	require.Equal(t, types.OriginConfigFile, cfg.Auth.SessionRecordingConfig.Origin())
@@ -1207,8 +1218,8 @@ func TestBackendDefaults(t *testing.T) {
        type: dir
        path: /var/lib/teleport/mybackend
 `)
-	require.Equal(t, cfg.Auth.StorageConfig.Type, lite.GetName())
-	require.Equal(t, cfg.Auth.StorageConfig.Params[defaults.BackendPath], "/var/lib/teleport/mybackend")
+	require.Equal(t, lite.GetName(), cfg.Auth.StorageConfig.Type)
+	require.Equal(t, "/var/lib/teleport/mybackend", cfg.Auth.StorageConfig.Params[defaults.BackendPath])
 
 	// Kubernetes proxy is disabled by default.
 	cfg = read(`teleport:
@@ -1323,9 +1334,9 @@ func TestParseCachePolicy(t *testing.T) {
 }
 
 func checkStaticConfig(t *testing.T, conf *FileConfig) {
-	require.Equal(t, conf.AuthToken, "xxxyyy")
-	require.Equal(t, conf.AdvertiseIP, "10.10.10.1:3022")
-	require.Equal(t, conf.PIDFile, "/var/run/teleport.pid")
+	require.Equal(t, "xxxyyy", conf.AuthToken)
+	require.Equal(t, "10.10.10.1:3022", conf.AdvertiseIP)
+	require.Equal(t, "/var/run/teleport.pid", conf.PIDFile)
 
 	require.Empty(t, cmp.Diff(conf.Limits, ConnectionLimits{
 		MaxConnections: 90,
@@ -1487,6 +1498,13 @@ func makeConfigFixture() string {
 			AssumeRoleARN: "arn:aws:iam::123456789012:role/DBDiscoverer",
 			ExternalID:    "externalID123",
 		},
+		{
+			Types:            []string{"eks"},
+			Regions:          []string{"us-west-1", "us-east-1"},
+			Tags:             map[string]apiutils.Strings{"a": {"b"}},
+			Integration:      "integration1",
+			KubeAppDiscovery: true,
+		},
 	}
 
 	conf.Discovery.AzureMatchers = []AzureMatcher{
@@ -1647,7 +1665,7 @@ func makeConfigFixture() string {
 			ListenAddress: "tcp://windows_desktop",
 		},
 		PublicAddr: apiutils.Strings([]string{"winsrv.example.com:3028", "no-port.winsrv.example.com"}),
-		Hosts:      apiutils.Strings([]string{"win.example.com:3389", "no-port.win.example.com"}),
+		ADHosts:    apiutils.Strings([]string{"win.example.com:3389", "no-port.win.example.com"}),
 	}
 
 	// Tracing service.
@@ -1781,7 +1799,11 @@ func TestSetDefaultListenerAddresses(t *testing.T) {
 			require.NoError(t, ApplyFileConfig(&tt.fc, cfg))
 			require.NoError(t, Configure(&CommandLineFlags{}, cfg, false))
 
-			require.Empty(t, cmp.Diff(cfg.Proxy, tt.want, cmpopts.EquateEmpty()))
+			opts := cmp.Options{
+				cmpopts.EquateEmpty(),
+				cmpopts.IgnoreFields(servicecfg.ProxyConfig{}, "AutomaticUpgradesChannels"),
+			}
+			require.Empty(t, cmp.Diff(cfg.Proxy, tt.want, opts...))
 		})
 	}
 }
@@ -1851,20 +1873,29 @@ func TestMergingCAPinConfig(t *testing.T) {
 
 func TestLicenseFile(t *testing.T) {
 	testCases := []struct {
-		path   string
-		result string
+		path    string
+		datadir string
+		result  string
 	}{
-		// 0 - no license
+		// 0 - no license, no data dir
 		{
-			path:   "",
-			result: filepath.Join(defaults.DataDir, defaults.LicenseFile),
+			path:    "",
+			datadir: "",
+			result:  filepath.Join(defaults.DataDir, defaults.LicenseFile),
 		},
-		// 1 - relative path
+		// 1 - relative path, default data dir
 		{
-			path:   "lic.pem",
-			result: filepath.Join(defaults.DataDir, "lic.pem"),
+			path:    "lic.pem",
+			datadir: "",
+			result:  filepath.Join(defaults.DataDir, "lic.pem"),
 		},
-		// 2 - absolute path
+		// 2 - relative path, custom data dir
+		{
+			path:    "baz.pem",
+			datadir: filepath.Join("foo", "bar"),
+			result:  filepath.Join("foo", "bar", "baz.pem"),
+		},
+		// 3 - absolute path
 		{
 			path:   "/etc/teleport/license",
 			result: "/etc/teleport/license",
@@ -1872,15 +1903,22 @@ func TestLicenseFile(t *testing.T) {
 	}
 
 	cfg := servicecfg.MakeDefaultConfig()
-	require.Equal(t, filepath.Join(defaults.DataDir, defaults.LicenseFile), cfg.Auth.LicenseFile)
 
-	for _, tc := range testCases {
-		fc := new(FileConfig)
-		require.NoError(t, fc.CheckAndSetDefaults())
-		fc.Auth.LicenseFile = tc.path
-		err := ApplyFileConfig(fc, cfg)
-		require.NoError(t, err)
-		require.Equal(t, tc.result, cfg.Auth.LicenseFile)
+	// the license file should be empty by default, as we can only fill
+	// in the default (<datadir>/license.pem) after we know what the
+	// data dir is supposed to be
+	require.Empty(t, cfg.Auth.LicenseFile)
+
+	for i, tc := range testCases {
+		t.Run(fmt.Sprintf("test%d", i), func(t *testing.T) {
+			fc := new(FileConfig)
+			require.NoError(t, fc.CheckAndSetDefaults())
+			fc.Auth.LicenseFile = tc.path
+			fc.DataDir = tc.datadir
+			err := ApplyFileConfig(fc, cfg)
+			require.NoError(t, err)
+			require.Equal(t, tc.result, cfg.Auth.LicenseFile)
+		})
 	}
 }
 
@@ -2111,7 +2149,11 @@ func TestProxyConfigurationVersion(t *testing.T) {
 			cfg := servicecfg.MakeDefaultConfig()
 			err := ApplyFileConfig(&tt.fc, cfg)
 			tt.checkErr(t, err)
-			require.Empty(t, cmp.Diff(cfg.Proxy, tt.want, cmpopts.EquateEmpty()))
+			opts := cmp.Options{
+				cmpopts.EquateEmpty(),
+				cmpopts.IgnoreFields(servicecfg.ProxyConfig{}, "AutomaticUpgradesChannels"),
+			}
+			require.Empty(t, cmp.Diff(cfg.Proxy, tt.want, opts...))
 		})
 	}
 }
@@ -2128,7 +2170,7 @@ func TestWindowsDesktopService(t *testing.T) {
 			desc:        "NOK - invalid static host addr",
 			expectError: require.Error,
 			mutate: func(fc *FileConfig) {
-				fc.WindowsDesktop.Hosts = []string{"badscheme://foo:1:2"}
+				fc.WindowsDesktop.ADHosts = []string{"badscheme://foo:1:2"}
 			},
 		},
 		{
@@ -2160,7 +2202,7 @@ func TestWindowsDesktopService(t *testing.T) {
 			desc:        "NOK - hosts specified but ldap not specified",
 			expectError: require.Error,
 			mutate: func(fc *FileConfig) {
-				fc.WindowsDesktop.Hosts = []string{"127.0.0.1:3389"}
+				fc.WindowsDesktop.ADHosts = []string{"127.0.0.1:3389"}
 				fc.WindowsDesktop.LDAP = LDAPConfig{
 					Addr: "",
 				}
@@ -2170,7 +2212,7 @@ func TestWindowsDesktopService(t *testing.T) {
 			desc:        "OK - hosts specified and ldap specified",
 			expectError: require.NoError,
 			mutate: func(fc *FileConfig) {
-				fc.WindowsDesktop.Hosts = []string{"127.0.0.1:3389"}
+				fc.WindowsDesktop.ADHosts = []string{"127.0.0.1:3389"}
 				fc.WindowsDesktop.LDAP = LDAPConfig{
 					Addr: "something",
 				}
@@ -2180,7 +2222,7 @@ func TestWindowsDesktopService(t *testing.T) {
 			desc:        "OK - no hosts specified and ldap not specified",
 			expectError: require.NoError,
 			mutate: func(fc *FileConfig) {
-				fc.WindowsDesktop.Hosts = []string{}
+				fc.WindowsDesktop.ADHosts = []string{}
 				fc.WindowsDesktop.LDAP = LDAPConfig{
 					Addr: "",
 				}
@@ -2190,7 +2232,7 @@ func TestWindowsDesktopService(t *testing.T) {
 			desc:        "OK - no hosts specified and ldap specified",
 			expectError: require.NoError,
 			mutate: func(fc *FileConfig) {
-				fc.WindowsDesktop.Hosts = []string{}
+				fc.WindowsDesktop.ADHosts = []string{}
 				fc.WindowsDesktop.LDAP = LDAPConfig{
 					Addr: "something",
 				}
@@ -2250,7 +2292,7 @@ func TestWindowsDesktopService(t *testing.T) {
 			mutate: func(fc *FileConfig) {
 				fc.WindowsDesktop.EnabledFlag = "yes"
 				fc.WindowsDesktop.ListenAddress = "0.0.0.0:3028"
-				fc.WindowsDesktop.Hosts = []string{"127.0.0.1:3389"}
+				fc.WindowsDesktop.ADHosts = []string{"127.0.0.1:3389"}
 				fc.WindowsDesktop.LDAP = LDAPConfig{
 					Addr: "something",
 				}
@@ -2784,7 +2826,7 @@ func TestDatabaseCLIFlags(t *testing.T) {
 			inFlags: CommandLineFlags{
 				DatabaseName:         "sqlserver",
 				DatabaseProtocol:     defaults.ProtocolSQLServer,
-				DatabaseURI:          "localhost:1433",
+				DatabaseURI:          "sqlserver.example.com:1433",
 				DatabaseADKeytabFile: "/etc/keytab",
 				DatabaseADDomain:     "EXAMPLE.COM",
 				DatabaseADSPN:        "MSSQLSvc/sqlserver.example.com:1433",
@@ -2792,7 +2834,7 @@ func TestDatabaseCLIFlags(t *testing.T) {
 			outDatabase: servicecfg.Database{
 				Name:     "sqlserver",
 				Protocol: defaults.ProtocolSQLServer,
-				URI:      "localhost:1433",
+				URI:      "sqlserver.example.com:1433",
 				TLS: servicecfg.DatabaseTLS{
 					Mode: servicecfg.VerifyFull,
 				},
@@ -2892,6 +2934,41 @@ func TestDatabaseCLIFlags(t *testing.T) {
 				},
 			},
 		},
+		{
+			desc: "AWS DynamoDB with session tags",
+			inFlags: CommandLineFlags{
+				DatabaseName:             "ddb",
+				DatabaseProtocol:         defaults.ProtocolDynamoDB,
+				DatabaseURI:              "dynamodb.us-east-1.amazonaws.com",
+				DatabaseAWSAccountID:     "123456789012",
+				DatabaseAWSRegion:        "us-east-1",
+				DatabaseAWSAssumeRoleARN: "arn:aws:iam::123456789012:role/DBDiscoverer",
+				DatabaseAWSExternalID:    "externalID123",
+				DatabaseAWSSessionTags:   "database_name=hello,something=else",
+			},
+			outDatabase: servicecfg.Database{
+				Name:     "ddb",
+				Protocol: defaults.ProtocolDynamoDB,
+				URI:      "dynamodb.us-east-1.amazonaws.com",
+				AWS: servicecfg.DatabaseAWS{
+					Region:        "us-east-1",
+					AccountID:     "123456789012",
+					AssumeRoleARN: "arn:aws:iam::123456789012:role/DBDiscoverer",
+					ExternalID:    "externalID123",
+					SessionTags: map[string]string{
+						"database_name": "hello",
+						"something":     "else",
+					},
+				},
+				StaticLabels: map[string]string{
+					types.OriginLabel: types.OriginConfigFile,
+				},
+				DynamicLabels: services.CommandLabels{},
+				TLS: servicecfg.DatabaseTLS{
+					Mode: servicecfg.VerifyFull,
+				},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -2905,67 +2982,8 @@ func TestDatabaseCLIFlags(t *testing.T) {
 				require.Contains(t, err.Error(), tt.outError)
 			} else {
 				require.NoError(t, err)
-				require.Equal(t,
-					config.Databases.Databases,
-					[]servicecfg.Database{tt.outDatabase},
-				)
+				require.Equal(t, []servicecfg.Database{tt.outDatabase}, config.Databases.Databases)
 			}
-		})
-	}
-}
-
-func TestTextFormatter(t *testing.T) {
-	tests := []struct {
-		comment      string
-		formatConfig []string
-		assertErr    require.ErrorAssertionFunc
-	}{
-		{
-			comment:      "invalid key (does not exist)",
-			formatConfig: []string{"level", "invalid key"},
-			assertErr:    require.Error,
-		},
-		{
-			comment:      "valid keys and formatting",
-			formatConfig: []string{"level", "component", "timestamp"},
-			assertErr:    require.NoError,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.comment, func(t *testing.T) {
-			formatter := &utils.TextFormatter{
-				ExtraFields: tt.formatConfig,
-			}
-			tt.assertErr(t, formatter.CheckAndSetDefaults())
-		})
-	}
-}
-
-func TestJSONFormatter(t *testing.T) {
-	tests := []struct {
-		comment     string
-		extraFields []string
-		assertErr   require.ErrorAssertionFunc
-	}{
-		{
-			comment:     "invalid key (does not exist)",
-			extraFields: []string{"level", "invalid key"},
-			assertErr:   require.Error,
-		},
-		{
-			comment:     "valid keys and formatting",
-			extraFields: []string{"level", "caller", "component", "timestamp"},
-			assertErr:   require.NoError,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.comment, func(t *testing.T) {
-			formatter := &utils.JSONFormatter{
-				ExtraFields: tt.extraFields,
-			}
-			tt.assertErr(t, formatter.CheckAndSetDefaults())
 		})
 	}
 }
@@ -3472,6 +3490,7 @@ jamf_service:
     sync_period_partial: 4h
     sync_period_full: 48h
     on_missing: NOOP
+    page_size: 10
   - {}`,
 			want: servicecfg.JamfConfig{
 				Spec: &types.JamfSpecV1{
@@ -3487,6 +3506,7 @@ jamf_service:
 							SyncPeriodPartial: types.Duration(4 * time.Hour),
 							SyncPeriodFull:    types.Duration(48 * time.Hour),
 							OnMissing:         "NOOP",
+							PageSize:          10,
 						},
 						{},
 					},
@@ -3574,7 +3594,7 @@ func TestAuthHostedPlugins(t *testing.T) {
 	}
 	notExist := func(t require.TestingT, err error, msgAndArgs ...interface{}) {
 		require.Error(t, err)
-		require.True(t, errors.Is(err, os.ErrNotExist), `expected "does not exist", but got %v`)
+		require.ErrorIs(t, err, os.ErrNotExist, `expected "does not exist", but got %v`, err)
 	}
 
 	tmpDir := t.TempDir()
@@ -3782,6 +3802,34 @@ func TestApplyDiscoveryConfig(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "tag matchers",
+			discoveryConfig: Discovery{
+				AccessGraph: &AccessGraphSync{
+					AWS: []AccessGraphAWSSync{
+						{
+							Regions:       []string{"us-west-2", "us-east-1"},
+							AssumeRoleARN: "arn:aws:iam::123456789012:role/DBDiscoverer",
+							ExternalID:    "externalID123",
+						},
+					},
+				},
+			},
+			expectedDiscovery: servicecfg.DiscoveryConfig{
+				Enabled: true,
+				AccessGraph: &types.AccessGraphSync{
+					AWS: []*types.AccessGraphAWSSync{
+						{
+							Regions: []string{"us-west-2", "us-east-1"},
+							AssumeRole: &types.AssumeRole{
+								RoleARN:    "arn:aws:iam::123456789012:role/DBDiscoverer",
+								ExternalID: "externalID123",
+							},
+						},
+					},
+				},
+			},
+		},
 	}
 
 	for _, tc := range tests {
@@ -3807,7 +3855,7 @@ func TestApplyOktaConfig(t *testing.T) {
 		errAssertionFunc require.ErrorAssertionFunc
 	}{
 		{
-			desc:            "valid config",
+			desc:            "valid config (access list sync defaults to false)",
 			createTokenFile: true,
 			oktaConfig: Okta{
 				Service: Service{
@@ -3818,6 +3866,71 @@ func TestApplyOktaConfig(t *testing.T) {
 			expectedOkta: servicecfg.OktaConfig{
 				Enabled:     true,
 				APIEndpoint: "https://test-endpoint",
+				SyncSettings: servicecfg.OktaSyncSettings{
+					SyncAccessLists: false,
+				},
+			},
+			errAssertionFunc: require.NoError,
+		},
+		{
+			desc:            "valid config (access list sync enabled)",
+			createTokenFile: true,
+			oktaConfig: Okta{
+				Service: Service{
+					EnabledFlag: "yes",
+				},
+				APIEndpoint: "https://test-endpoint",
+				Sync: OktaSync{
+					SyncAccessListsFlag: "yes",
+					DefaultOwners:       []string{"owner1"},
+				},
+			},
+			expectedOkta: servicecfg.OktaConfig{
+				Enabled:     true,
+				APIEndpoint: "https://test-endpoint",
+				SyncSettings: servicecfg.OktaSyncSettings{
+					SyncAccessLists: true,
+					DefaultOwners:   []string{"owner1"},
+				},
+			},
+			errAssertionFunc: require.NoError,
+		},
+		{
+			desc:            "valid config (access list sync with filters)",
+			createTokenFile: true,
+			oktaConfig: Okta{
+				Service: Service{
+					EnabledFlag: "yes",
+				},
+				APIEndpoint: "https://test-endpoint",
+				Sync: OktaSync{
+					SyncAccessListsFlag: "yes",
+					DefaultOwners:       []string{"owner1"},
+					GroupFilters: []string{
+						"group*",
+						"^admin-.*$",
+					},
+					AppFilters: []string{
+						"app*",
+						"^admin-.*$",
+					},
+				},
+			},
+			expectedOkta: servicecfg.OktaConfig{
+				Enabled:     true,
+				APIEndpoint: "https://test-endpoint",
+				SyncSettings: servicecfg.OktaSyncSettings{
+					SyncAccessLists: true,
+					DefaultOwners:   []string{"owner1"},
+					GroupFilters: []string{
+						"group*",
+						"^admin-.*$",
+					},
+					AppFilters: []string{
+						"app*",
+						"^admin-.*$",
+					},
+				},
 			},
 			errAssertionFunc: require.NoError,
 		},
@@ -3895,6 +4008,62 @@ func TestApplyOktaConfig(t *testing.T) {
 			},
 			errAssertionFunc: func(tt require.TestingT, err error, i ...interface{}) {
 				require.ErrorIs(t, err, trace.BadParameter(`error trying to find file %s`, i...))
+			},
+		},
+		{
+			desc:            "no default owners",
+			createTokenFile: true,
+			oktaConfig: Okta{
+				Service: Service{
+					EnabledFlag: "yes",
+				},
+				APIEndpoint: "https://test-endpoint",
+				Sync: OktaSync{
+					SyncAccessListsFlag: "yes",
+				},
+			},
+			errAssertionFunc: func(tt require.TestingT, err error, i ...interface{}) {
+				require.ErrorIs(t, err, trace.BadParameter("default owners must be set when access list import is enabled"))
+			},
+		},
+		{
+			desc:            "bad group filter",
+			createTokenFile: true,
+			oktaConfig: Okta{
+				Service: Service{
+					EnabledFlag: "yes",
+				},
+				APIEndpoint: "https://test-endpoint",
+				Sync: OktaSync{
+					SyncAccessListsFlag: "yes",
+					DefaultOwners:       []string{"owner1"},
+					GroupFilters: []string{
+						"^admin-.[[[*$",
+					},
+				},
+			},
+			errAssertionFunc: func(t require.TestingT, err error, i ...interface{}) {
+				require.ErrorContains(t, err, "error parsing group filter: ^admin-.[[[*$")
+			},
+		},
+		{
+			desc:            "bad app filter",
+			createTokenFile: true,
+			oktaConfig: Okta{
+				Service: Service{
+					EnabledFlag: "yes",
+				},
+				APIEndpoint: "https://test-endpoint",
+				Sync: OktaSync{
+					SyncAccessListsFlag: "yes",
+					DefaultOwners:       []string{"owner1"},
+					AppFilters: []string{
+						"^admin-.[[[*$",
+					},
+				},
+			},
+			errAssertionFunc: func(t require.TestingT, err error, i ...interface{}) {
+				require.ErrorContains(t, err, "error parsing app filter: ^admin-.[[[*$")
 			},
 		},
 	}
@@ -4284,6 +4453,11 @@ func TestDiscoveryConfig(t *testing.T) {
 						"service_accounts": []string{"a@example.com", "b@example.com"},
 					},
 				}
+				cfg["version"] = "v3"
+				cfg["teleport"].(cfgMap)["proxy_server"] = "example.com"
+				cfg["proxy_service"] = cfgMap{
+					"enabled": "no",
+				}
 			},
 			expectedGCPMatchers: []types.GCPMatcher{{
 				Types:     []string{"gce"},
@@ -4297,9 +4471,10 @@ func TestDiscoveryConfig(t *testing.T) {
 				ProjectIDs:      []string{"p1", "p2"},
 				ServiceAccounts: []string{"a@example.com", "b@example.com"},
 				Params: &types.InstallerParams{
-					JoinMethod: types.JoinMethodGCP,
-					JoinToken:  types.GCPInviteTokenName,
-					ScriptName: installers.InstallerScriptName,
+					JoinMethod:      types.JoinMethodGCP,
+					JoinToken:       types.GCPInviteTokenName,
+					ScriptName:      installers.InstallerScriptName,
+					PublicProxyAddr: "example.com",
 				},
 			}},
 		},
@@ -4612,6 +4787,11 @@ func TestDiscoveryConfig(t *testing.T) {
 						},
 					},
 				}
+				cfg["version"] = "v3"
+				cfg["teleport"].(cfgMap)["proxy_server"] = "example.com"
+				cfg["proxy_service"] = cfgMap{
+					"enabled": "no",
+				}
 			},
 			expectedAzureMatchers: []types.AzureMatcher{{
 				Types:          []string{"vm"},
@@ -4622,10 +4802,11 @@ func TestDiscoveryConfig(t *testing.T) {
 					"discover_teleport": []string{"yes"},
 				},
 				Params: &types.InstallerParams{
-					JoinMethod: "azure",
-					JoinToken:  "azure-discovery-token",
-					ScriptName: "default-installer",
-					Azure:      &types.AzureInstallerParams{},
+					JoinMethod:      "azure",
+					JoinToken:       "azure-discovery-token",
+					ScriptName:      "default-installer",
+					PublicProxyAddr: "example.com",
+					Azure:           &types.AzureInstallerParams{},
 				},
 			}},
 		},
@@ -4636,7 +4817,8 @@ func TestDiscoveryConfig(t *testing.T) {
 			mutate: func(cfg cfgMap) {
 				cfg["discovery_service"].(cfgMap)["enabled"] = "yes"
 				cfg["discovery_service"].(cfgMap)["azure"] = []cfgMap{
-					{"types": []string{"vm"},
+					{
+						"types":           []string{"vm"},
 						"regions":         []string{"westcentralus"},
 						"resource_groups": []string{"rg1"},
 						"subscriptions":   []string{"88888888-8888-8888-8888-888888888888"},
@@ -4678,7 +4860,8 @@ func TestDiscoveryConfig(t *testing.T) {
 			mutate: func(cfg cfgMap) {
 				cfg["discovery_service"].(cfgMap)["enabled"] = "yes"
 				cfg["discovery_service"].(cfgMap)["azure"] = []cfgMap{
-					{"types": []string{"vm"},
+					{
+						"types":           []string{"vm"},
 						"regions":         []string{"westcentralus"},
 						"resource_groups": []string{"rg1"},
 						"subscriptions":   []string{"88888888-8888-8888-8888-888888888888"},

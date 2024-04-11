@@ -1,18 +1,20 @@
-/*
-Copyright 2019 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+/**
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 import { makeEvent } from 'teleport/services/audit';
 
@@ -69,7 +71,18 @@ export const events = [
     event: 'access_request.search',
     namespace: 'default',
     resource_type: 'db_server',
-    search_as_roles: ['admin'],
+    search_as_roles: [
+      'admin',
+      'really-long-role-name-1',
+      'really-long-role-name-2',
+      'really-long-role-name-3',
+      'really-long-role-name-4',
+      'really-long-role-name-5',
+      'really-long-role-name-6',
+      'really-long-role-name-7',
+      'really-long-role-name-8',
+      'really-long-role-name-9',
+    ],
     time: '2022-06-08T15:10:35.368Z',
     uid: 'b13d61-b97-475f-86ef-1fedf',
     user: 'foo',
@@ -266,7 +279,7 @@ export const events = [
     user: 'unimplemented',
   },
   {
-    code: 'T8002I',
+    code: 'T80002I',
     event: 'github.updated',
     name: 'new_github_connector',
     time: '2020-06-05T19:28:28Z',
@@ -1755,6 +1768,7 @@ export const events = [
     cluster_name: 'im-a-cluster-name',
     code: 'TDP00I',
     desktop_addr: '100.104.52.89:3389',
+    desktop_name: 'desktop-name',
     desktop_labels: {
       env: 'prod',
       foo: 'bar',
@@ -1775,6 +1789,7 @@ export const events = [
     cluster_name: 'im-a-cluster-name',
     code: 'TDP01I',
     desktop_addr: '100.104.52.89:3389',
+    desktop_name: 'desktop-name',
     desktop_labels: {
       env: 'prod',
       foo: 'bar',
@@ -1793,6 +1808,7 @@ export const events = [
     cluster_name: 'im-a-cluster-name',
     code: 'TDP00W',
     desktop_addr: '100.104.52.89:3389',
+    desktop_name: 'desktop-name',
     desktop_labels: {
       env: 'prod',
       foo: 'bar',
@@ -2036,6 +2052,150 @@ export const events = [
     time: '2022-06-02T08:46:33.825Z',
     uid: '503e310d-8d88-4bea-bbbb-a1b35456a03a',
     user: 'alice',
+  },
+  {
+    cluster_name: 'im-a-cluster-name',
+    code: 'TDB07I',
+    db_name: 'master',
+    db_protocol: 'postgres',
+    db_service: 'postgres-local',
+    db_uri: 'localhost:1433',
+    db_user: 'alice',
+    ei: 50,
+    event: 'db.session.permissions.update',
+    sid: '3ed38c42-eef0-419b-b893-f2f10990f117',
+    time: '2022-06-02T08:46:33.825Z',
+    uid: '503e310d-8d88-4bea-bbbb-a1b35456a03a',
+    user: 'alice',
+    permission_summary: [
+      { counts: { table: 1, view: 2 }, permission: 'INSERT' },
+      { counts: { table: 2, view: 4 }, permission: 'SELECT' },
+      { counts: { table: 3 }, permission: 'UPDATE' },
+    ],
+  },
+  {
+    cluster_name: 'im-a-cluster-name',
+    code: 'TDB08I',
+    db_name: 'master',
+    db_protocol: 'postgres',
+    db_service: 'postgres-local',
+    db_uri: 'localhost:1433',
+    db_user: 'alice',
+    ei: 0,
+    event: 'db.session.user.create',
+    private_key_policy: 'none',
+    roles: null,
+    sid: '47f20b91-f5c3-4eef-85e1-9509252238e7',
+    success: true,
+    time: '2022-06-02T08:46:33.825Z',
+    uid: '95e74359-e5a1-4c76-970e-c522b550dbb9',
+    user: 'alice',
+    user_kind: 1,
+    username: 'alice',
+  },
+  {
+    cluster_name: 'im-a-cluster-name',
+    code: 'TDB08I',
+    db_name: 'master',
+    db_protocol: 'postgres',
+    db_service: 'postgres-local',
+    db_uri: 'localhost:1433',
+    db_user: 'alice',
+    ei: 0,
+    event: 'db.session.user.create',
+    private_key_policy: 'none',
+    roles: ['foo', 'bar'],
+    sid: '47f20b91-f5c3-4eef-85e1-9509252238e7',
+    success: true,
+    time: '2022-06-02T08:46:33.825Z',
+    uid: '95e74359-e5a1-4c76-970e-c522b550dbb9',
+    user: 'alice',
+    user_kind: 1,
+    username: 'alice',
+  },
+  {
+    cluster_name: 'im-a-cluster-name',
+    code: 'TDB08W',
+    db_name: 'master',
+    db_protocol: 'postgres',
+    db_service: 'postgres-local',
+    db_uri: 'localhost:1433',
+    db_user: 'alice',
+    ei: 0,
+    error: 'dummy error',
+    event: 'db.session.user.create',
+    message: 'dummy error',
+    private_key_policy: 'none',
+    roles: null,
+    sid: '3fd14bfe-be21-40a4-b1da-744fa14f5108',
+    success: false,
+    time: '2022-06-02T08:46:33.825Z',
+    uid: '4a4a6a70-c81d-4326-8565-3f7bd23b874f',
+    user: 'ben',
+    user_kind: 1,
+    username: 'ben',
+  },
+  {
+    cluster_name: 'im-a-cluster-name',
+    code: 'TDB09I',
+    db_name: 'master',
+    db_protocol: 'postgres',
+    db_service: 'postgres-local',
+    db_uri: 'localhost:1433',
+    db_user: 'alice',
+    delete: false,
+    ei: 5,
+    event: 'db.session.user.deactivate',
+    private_key_policy: 'none',
+    sid: 'c362e10b-dbc4-44e5-b90f-0bee5dd0c623',
+    success: true,
+    time: '2022-06-02T08:46:33.825Z',
+    uid: '0ab70491-4d33-4bc5-be58-27922a647f50',
+    user: 'ben',
+    user_kind: 1,
+    username: 'ben',
+  },
+  {
+    cluster_name: 'im-a-cluster-name',
+    code: 'TDB09I',
+    db_name: 'master',
+    db_protocol: 'postgres',
+    db_service: 'postgres-local',
+    db_uri: 'localhost:1433',
+    db_user: 'alice',
+    delete: true,
+    ei: 5,
+    event: 'db.session.user.deactivate',
+    private_key_policy: 'none',
+    sid: 'c362e10b-dbc4-44e5-b90f-0bee5dd0c623',
+    success: true,
+    time: '2022-06-02T08:46:33.825Z',
+    uid: '0ab70491-4d33-4bc5-be58-27922a647f50',
+    user: 'ben',
+    user_kind: 1,
+    username: 'ben',
+  },
+  {
+    cluster_name: 'im-a-cluster-name',
+    code: 'TDB09W',
+    db_name: 'master',
+    db_protocol: 'postgres',
+    db_service: 'postgres-local',
+    db_uri: 'localhost:1433',
+    db_user: 'alice',
+    delete: false,
+    ei: 4,
+    error: 'dummy error',
+    event: 'db.session.user.deactivate',
+    message: 'dummy error',
+    private_key_policy: 'none',
+    sid: '3bb429a1-be03-4c03-827c-98ff846dacf7',
+    success: false,
+    time: '2022-06-02T08:46:33.825Z',
+    uid: 'c6569248-ac06-417d-b5b6-e0bf94eccb1a',
+    user: 'ben',
+    user_kind: 1,
+    username: 'ben',
   },
   {
     ei: 0,
@@ -2615,7 +2775,7 @@ export const events = [
   },
   {
     cluster_name: 'im-a-cluster-name',
-    code: 'TV001I',
+    code: 'TV005I',
     device: {
       asset_tag: 'M2CQVQV64R',
       device_id: '99d39707-efdd-436c-94f3-6a1aeef1fbf2',
@@ -2629,64 +2789,7 @@ export const events = [
     time: '2023-01-12T19:28:36.842Z',
     uid: '94d33b77-82cd-4558-8893-0320699bf755',
     user: {
-      user: '3827e8ad-7cbe-4423-a80f-dfc89e83eb86.im-a-cluster-name',
-    },
-  },
-  {
-    cluster_name: 'im-a-cluster-name',
-    code: 'TV002I',
-    device: {
-      asset_tag: 'M2CQVQV64R',
-      device_id: '99d39707-efdd-436c-94f3-6a1aeef1fbf2',
-      os_type: 2,
-    },
-    ei: 0,
-    event: 'device', // legacy event
-    status: {
-      success: true,
-    },
-    time: '2023-01-12T19:28:36.842Z',
-    uid: '94d33b77-82cd-4558-8893-0320699bf755',
-    user: {
-      user: '3827e8ad-7cbe-4423-a80f-dfc89e83eb86.im-a-cluster-name',
-    },
-  },
-  {
-    cluster_name: 'im-a-cluster-name',
-    code: 'TV003I',
-    device: {
-      asset_tag: 'M2CQVQV64R',
-      device_id: '99d39707-efdd-436c-94f3-6a1aeef1fbf2',
-      os_type: 2,
-    },
-    ei: 0,
-    event: 'device', // legacy event
-    status: {
-      success: true,
-    },
-    time: '2023-01-12T19:28:36.842Z',
-    uid: '94d33b77-82cd-4558-8893-0320699bf755',
-    user: {
-      user: '3827e8ad-7cbe-4423-a80f-dfc89e83eb86.im-a-cluster-name',
-    },
-  },
-  {
-    cluster_name: 'im-a-cluster-name',
-    code: 'TV004I',
-    device: {
-      asset_tag: 'M2CQVQV64R',
-      device_id: '99d39707-efdd-436c-94f3-6a1aeef1fbf2',
-      os_type: 2,
-    },
-    ei: 0,
-    event: 'device', // legacy event
-    status: {
-      success: true,
-    },
-    time: '2023-01-12T19:28:36.842Z',
-    uid: '94d33b77-82cd-4558-8893-0320699bf755',
-    user: {
-      user: '3827e8ad-7cbe-4423-a80f-dfc89e83eb86.im-a-cluster-name',
+      user: 'this user wont render properly',
     },
   },
   {
@@ -2705,45 +2808,7 @@ export const events = [
     time: '2023-01-12T19:28:36.842Z',
     uid: '94d33b77-82cd-4558-8893-0320699bf755',
     user: {
-      user: '3827e8ad-7cbe-4423-a80f-dfc89e83eb86.im-a-cluster-name',
-    },
-  },
-  {
-    cluster_name: 'im-a-cluster-name',
-    code: 'TV006I',
-    device: {
-      asset_tag: 'M2CQVQV64R',
-      device_id: '99d39707-efdd-436c-94f3-6a1aeef1fbf2',
-      os_type: 2,
-    },
-    ei: 0,
-    event: 'device', // legacy event
-    status: {
-      success: false,
-    },
-    time: '2023-01-12T19:28:36.842Z',
-    uid: '94d33b77-82cd-4558-8893-0320699bf755',
-    user: {
-      user: '3827e8ad-7cbe-4423-a80f-dfc89e83eb86.im-a-cluster-name',
-    },
-  },
-  {
-    cluster_name: 'im-a-cluster-name',
-    code: 'TV007I',
-    device: {
-      asset_tag: 'M2CQVQV64R',
-      device_id: '99d39707-efdd-436c-94f3-6a1aeef1fbf2',
-      os_type: 2,
-    },
-    ei: 0,
-    event: 'device', // legacy event
-    status: {
-      success: true,
-    },
-    time: '2023-01-12T19:28:36.842Z',
-    uid: '94d33b77-82cd-4558-8893-0320699bf755',
-    user: {
-      user: '3827e8ad-7cbe-4423-a80f-dfc89e83eb86.im-a-cluster-name',
+      user: 'this user wont render properly',
     },
   },
   {
@@ -2925,6 +2990,70 @@ export const events = [
   },
   {
     cluster_name: 'im-a-cluster-name',
+    code: 'TV008I',
+    device: {
+      asset_tag: 'M2CQVQV64R',
+      credential_id: 'c7572891-8426-4e62-874f-c793029d53a6',
+      device_id: 'f84f6b35-6226-4e73-8205-3bcbd7d12970',
+      os_type: 2,
+    },
+    ei: 0,
+    event: 'device.webtoken.create',
+    success: true,
+    time: '2024-03-05T17:18:43.296Z',
+    uid: 'b1361d51-70fa-4f1b-803c-a252c2877707',
+    user: 'llama',
+    user_kind: 1,
+  },
+  {
+    cluster_name: 'im-a-cluster-name',
+    code: 'TV006I',
+    device: {
+      device_id: 'f84f6b35-6226-4e73-8205-3bcbd7d12970',
+      web_authentication: true,
+      web_session_id: 'my-session-id-12345',
+    },
+    ei: 0,
+    event: 'device.authenticate',
+    success: true,
+    time: '2024-04-08T19:34:48.1Z',
+    uid: 'fa279611-91d8-47b5-9fad-b8ea3e5286e0',
+    user: 'llama',
+  },
+  {
+    cluster_name: 'im-a-cluster-name',
+    code: 'TV009I',
+    device: {
+      device_id: 'f84f6b35-6226-4e73-8205-3bcbd7d12970',
+      web_authentication: true,
+      web_session_id: 'my-session-id-12345',
+    },
+    ei: 0,
+    event: 'device.authenticate.confirm',
+    success: false,
+    time: '2024-04-08T19:35:48.1Z',
+    uid: 'b1361d51-70fa-4f1b-803c-a252c2877707',
+    user: 'llama',
+    user_kind: 1,
+  },
+  {
+    cluster_name: 'im-a-cluster-name',
+    code: 'TV009I',
+    device: {
+      device_id: 'f84f6b35-6226-4e73-8205-3bcbd7d12970',
+      web_authentication: true,
+      web_session_id: 'my-session-id-12345',
+    },
+    ei: 0,
+    event: 'device.authenticate.confirm',
+    success: true,
+    time: '2024-04-08T19:36:48.1Z',
+    uid: 'b1361d51-70fa-4f1b-803c-a252c2877707',
+    user: 'llama',
+    user_kind: 1,
+  },
+  {
+    cluster_name: 'im-a-cluster-name',
     code: 'TLR00I',
     ei: 0,
     event: 'login_rule.create',
@@ -3094,6 +3223,29 @@ export const events = [
     name: 'assignment-id',
     source: 'source',
     user: 'mike',
+  },
+  {
+    code: 'TOK007I',
+    event: 'okta.user.sync',
+    time: '2023-05-08T19:21:36.144Z',
+    num_users_created: 5,
+    num_users_deleted: 1,
+    num_users_modified: 7,
+  },
+  {
+    code: 'TOK007E',
+    event: 'okta.user.sync',
+    time: '2023-05-08T19:21:36.144Z',
+  },
+  {
+    code: 'TOK006I',
+    event: 'okta.access_list.sync',
+    time: '2023-05-08T19:21:36.144Z',
+  },
+  {
+    code: 'TOK006E',
+    event: 'okta.access_list.sync',
+    time: '2023-05-08T19:21:36.144Z',
   },
   {
     code: 'TAL001I',
@@ -3267,6 +3419,45 @@ export const events = [
     total_execution_time_in_millis: 14082,
     uid: 'f44871b9-7247-467b-a760-8159d3f47bac',
     user: 'system',
+  },
+  {
+    cluster_name: 'leaf.tele.ottr.sh:443',
+    code: 'TB003I',
+    ei: 0,
+    event: 'bot.delete',
+    expires: '0001-01-01T00:00:00Z',
+    name: 'review2',
+    time: '2023-12-08T09:52:30.579Z',
+    uid: '0efbb33d-fa50-44e0-8dec-4ac89c0dd4ab',
+    user: 'noah',
+  },
+  {
+    cluster_name: 'leaf.tele.ottr.sh:443',
+    code: 'TB001I',
+    ei: 0,
+    event: 'bot.create',
+    expires: '0001-01-01T00:00:00Z',
+    name: 'made-by-noah',
+    time: '2023-12-08T10:53:39.798Z',
+    uid: '0efbb33d-fa50-44e0-8dec-4ac89c0dd4ab',
+    user: 'noah',
+  },
+  {
+    'addr.remote': '127.0.0.1:54378',
+    cluster_name: 'leaf.tele.ottr.sh',
+    code: 'TSPIFFE000I',
+    dns_sans: null,
+    ei: 0,
+    event: 'spiffe.svid.issued',
+    hint: '',
+    ip_sans: null,
+    serial_number: 'd1:e5:fc:bf:19:67:e7:8c:7a:21:37:b5:05:ea:77:41',
+    spiffe_id: 'spiffe://example.teleport.com/bar',
+    svid_type: 'x509',
+    time: '2024-02-02T15:48:25.35Z',
+    uid: '45e13afc-0890-4ffb-b125-99d93c26d7de',
+    user: 'bot-test12',
+    user_kind: 2,
   },
 ].map(makeEvent);
 

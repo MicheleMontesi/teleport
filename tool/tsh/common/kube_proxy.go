@@ -1,18 +1,20 @@
 /*
-Copyright 2023 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package common
 
@@ -21,6 +23,7 @@ import (
 	"crypto/tls"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -35,12 +38,13 @@ import (
 
 	"github.com/gravitational/teleport/api/client/proto"
 	apidefaults "github.com/gravitational/teleport/api/defaults"
+	"github.com/gravitational/teleport/api/mfa"
 	"github.com/gravitational/teleport/api/types"
 	"github.com/gravitational/teleport/api/utils/keys"
 	"github.com/gravitational/teleport/lib/asciitable"
 	"github.com/gravitational/teleport/lib/auth/native"
 	"github.com/gravitational/teleport/lib/client"
-	"github.com/gravitational/teleport/lib/client/mfa"
+	kubeclient "github.com/gravitational/teleport/lib/client/kube"
 	"github.com/gravitational/teleport/lib/kube/kubeconfig"
 	"github.com/gravitational/teleport/lib/srv/alpnproxy"
 	"github.com/gravitational/teleport/lib/utils"
@@ -59,6 +63,7 @@ type proxyKubeCommand struct {
 
 	labels              string
 	predicateExpression string
+	exec                bool
 }
 
 func newProxyKubeCommand(parent *kingpin.CmdClause) *proxyKubeCommand {
@@ -81,6 +86,7 @@ func newProxyKubeCommand(parent *kingpin.CmdClause) *proxyKubeCommand {
 		// This works as an hint to the user that the context name can be customized.
 		Default(kubeconfig.ContextName("{{.ClusterName}}", "{{.KubeName}}")).
 		StringVar(&c.overrideContextName)
+	c.Flag("exec", "Run the proxy in the background and reexec into a new shell with $KUBECONFIG already pointed to our config file.").BoolVar(&c.exec)
 	return c
 }
 
@@ -100,6 +106,7 @@ func (c *proxyKubeCommand) run(cf *CLIConf) error {
 	if err != nil {
 		return trace.Wrap(err)
 	}
+
 	if cf.Headless {
 		tc.AllowHeadless = true
 	}
@@ -115,7 +122,10 @@ func (c *proxyKubeCommand) run(cf *CLIConf) error {
 	}
 	defer localProxy.Close()
 
-	if err := c.printTemplate(cf, localProxy); err != nil {
+	// re-exec into a new shell with $KUBECONFIG already pointed to our config file
+	// if --exec flag is set or headless mode is enabled.
+	reexecIntoShell := cf.Headless || c.exec
+	if err := c.printTemplate(cf.Stdout(), reexecIntoShell, localProxy); err != nil {
 		return trace.Wrap(err)
 	}
 
@@ -132,7 +142,7 @@ func (c *proxyKubeCommand) run(cf *CLIConf) error {
 		return trace.Wrap(cf.RunCommand(cmd))
 	}
 
-	if cf.Headless {
+	if reexecIntoShell {
 		// If headless, run proxy in the background and reexec into a new shell with $KUBECONFIG already pointed to
 		// our config file
 		return trace.Wrap(runHeadlessKubeProxy(cf, localProxy))
@@ -258,13 +268,13 @@ func (c *proxyKubeCommand) printPrepare(cf *CLIConf, title string, clusters kube
 	fmt.Fprintln(cf.Stdout(), table.AsBuffer().String())
 }
 
-func (c *proxyKubeCommand) printTemplate(cf *CLIConf, localProxy *kubeLocalProxy) error {
-	if cf.Headless {
-		return trace.Wrap(proxyKubeHeadlessTemplate.Execute(cf.Stdout(), map[string]interface{}{
+func (c *proxyKubeCommand) printTemplate(w io.Writer, isReexec bool, localProxy *kubeLocalProxy) error {
+	if isReexec {
+		return trace.Wrap(proxyKubeHeadlessTemplate.Execute(w, map[string]interface{}{
 			"multipleContexts": len(localProxy.kubeconfig.Contexts) > 1,
 		}))
 	}
-	return trace.Wrap(proxyKubeTemplate.Execute(cf.Stdout(), map[string]interface{}{
+	return trace.Wrap(proxyKubeTemplate.Execute(w, map[string]interface{}{
 		"addr":           localProxy.GetAddr(),
 		"format":         c.format,
 		"randomPort":     c.port == "",
@@ -452,16 +462,16 @@ func loadKubeUserCerts(ctx context.Context, tc *client.TeleportClient, clusters 
 	defer span.End()
 
 	// Renew tsh session and reuse the proxy client.
-	var proxy *client.ProxyClient
+	var clusterClient *client.ClusterClient
 	err := client.RetryWithRelogin(ctx, tc, func() error {
 		var err error
-		proxy, err = tc.ConnectToProxy(ctx)
+		clusterClient, err = tc.ConnectToCluster(ctx)
 		return trace.Wrap(err)
 	})
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
-	defer proxy.Close()
+	defer clusterClient.Close()
 
 	// TODO for best performance, load one kube cert at a time.
 	kubeKeys, err := loadKubeKeys(tc, clusters.TeleportClusters())
@@ -485,7 +495,7 @@ func loadKubeUserCerts(ctx context.Context, tc *client.TeleportClient, clusters 
 		}
 
 		// Try issue.
-		cert, err := issueKubeCert(ctx, tc, proxy, cluster.TeleportCluster, cluster.KubeCluster)
+		cert, err := issueKubeCert(ctx, tc, clusterClient, cluster.TeleportCluster, cluster.KubeCluster)
 		if err != nil {
 			return nil, trace.Wrap(err)
 		}
@@ -524,7 +534,7 @@ func kubeCertFromKey(key *client.Key, kubeCluster string) (tls.Certificate, erro
 // If required it performs relogin procedure.
 func (k *kubeLocalProxy) getCertReissuer(tc *client.TeleportClient) func(ctx context.Context, teleportCluster, kubeCluster string) (tls.Certificate, error) {
 	return func(ctx context.Context, teleportCluster, kubeCluster string) (tls.Certificate, error) {
-		var proxy *client.ProxyClient
+		var clusterClient *client.ClusterClient
 		var currentContext string
 
 		// We save user's current context in case there was relogin, which will delete our
@@ -541,13 +551,13 @@ func (k *kubeLocalProxy) getCertReissuer(tc *client.TeleportClient) func(ctx con
 			defer cancel()
 
 			var err error
-			proxy, err = tc.ConnectToProxy(ctx)
+			clusterClient, err = tc.ConnectToCluster(ctx)
 			return trace.Wrap(err)
 		})
 		if err != nil {
 			return tls.Certificate{}, trace.Wrap(err)
 		}
-		defer proxy.Close()
+		defer clusterClient.Close()
 
 		// We recreate ephemeral kubeconfig to make sure it's there even after relogin.
 		k.kubeconfig.CurrentContext = currentContext
@@ -555,28 +565,24 @@ func (k *kubeLocalProxy) getCertReissuer(tc *client.TeleportClient) func(ctx con
 			return tls.Certificate{}, trace.Wrap(err)
 		}
 
-		return issueKubeCert(ctx, tc, proxy, teleportCluster, kubeCluster)
+		return issueKubeCert(ctx, tc, clusterClient, teleportCluster, kubeCluster)
 	}
 }
 
-func issueKubeCert(ctx context.Context, tc *client.TeleportClient, proxy *client.ProxyClient, teleportCluster, kubeCluster string) (tls.Certificate, error) {
-	var mfaRequired bool
-
+func issueKubeCert(ctx context.Context, tc *client.TeleportClient, clusterClient *client.ClusterClient, teleportCluster, kubeCluster string) (tls.Certificate, error) {
 	requesterName := proto.UserCertsRequest_TSH_KUBE_LOCAL_PROXY
 	if tc.AllowHeadless {
 		requesterName = proto.UserCertsRequest_TSH_KUBE_LOCAL_PROXY_HEADLESS
 	}
 
-	hint := fmt.Sprintf("MFA is required to access Kubernetes cluster %q", kubeCluster)
-	key, err := proxy.IssueUserCertsWithMFA(
+	key, mfaRequired, err := clusterClient.IssueUserCertsWithMFA(
 		ctx,
 		client.ReissueParams{
 			RouteToCluster:    teleportCluster,
 			KubernetesCluster: kubeCluster,
 			RequesterName:     requesterName,
 		},
-		tc.NewMFAPrompt(mfa.WithHintBeforePrompt(hint)),
-		client.WithMFARequired(&mfaRequired),
+		tc.NewMFAPrompt(mfa.WithPromptReasonSessionMFA("Kubernetes cluster", kubeCluster)),
 	)
 	if err != nil {
 		return tls.Certificate{}, trace.Wrap(err)
@@ -591,7 +597,7 @@ func issueKubeCert(ctx context.Context, tc *client.TeleportClient, proxy *client
 	if err != nil {
 		return tls.Certificate{}, trace.Wrap(err)
 	}
-	if err := checkIfCertsAreAllowedToAccessCluster(
+	if err := kubeclient.CheckIfCertsAreAllowedToAccessCluster(
 		key,
 		rootClusterName,
 		teleportCluster,
@@ -600,7 +606,7 @@ func issueKubeCert(ctx context.Context, tc *client.TeleportClient, proxy *client
 	}
 
 	// Save it if MFA was not required.
-	if !mfaRequired {
+	if mfaRequired == proto.MFARequired_MFA_REQUIRED_NO {
 		if err := tc.LocalAgent().AddKubeKey(key); err != nil {
 			return tls.Certificate{}, trace.Wrap(err)
 		}

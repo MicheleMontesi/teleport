@@ -1,36 +1,44 @@
 /*
-Copyright 2021 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package authz
 
 import (
 	"context"
-	"errors"
+	"fmt"
+	"net"
 	"testing"
 	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
+	"github.com/google/uuid"
 	"github.com/gravitational/trace"
-	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/metadata"
 
+	"github.com/gravitational/teleport/api/client/proto"
 	"github.com/gravitational/teleport/api/constants"
+	mfav1 "github.com/gravitational/teleport/api/gen/proto/go/teleport/mfa/v1"
+	"github.com/gravitational/teleport/api/mfa"
 	"github.com/gravitational/teleport/api/types"
+	apievents "github.com/gravitational/teleport/api/types/events"
 	"github.com/gravitational/teleport/api/utils/keys"
 	"github.com/gravitational/teleport/lib/backend/memory"
 	"github.com/gravitational/teleport/lib/modules"
@@ -40,7 +48,9 @@ import (
 	"github.com/gravitational/teleport/lib/utils"
 )
 
-const clusterName = "test-cluster"
+const (
+	clusterName = "test-cluster"
+)
 
 func TestContextLockTargets(t *testing.T) {
 	t.Parallel()
@@ -307,10 +317,10 @@ func TestAuthorizer_Authorize_deviceTrust(t *testing.T) {
 	tests := []struct {
 		name                 string
 		deviceMode           string
-		disableDeviceAuthz   bool
+		deviceAuthz          DeviceAuthorizationOpts // aka AuthorizerOpts.DeviceAuthorization
 		user                 IdentityGetter
 		wantErr              string
-		wantCtxAuthnDisabled bool // defaults to disableDeviceAuthz
+		wantCtxAuthnDisabled bool // defaults to deviceAuthz.disableDeviceRoleMode
 	}{
 		{
 			name:       "user without extensions and mode=off",
@@ -321,13 +331,24 @@ func TestAuthorizer_Authorize_deviceTrust(t *testing.T) {
 			name:       "nok: user without extensions and mode=required",
 			deviceMode: constants.DeviceTrustModeRequired,
 			user:       userWithoutExtensions,
-			wantErr:    "unauthorized device",
+			wantErr:    "access denied",
 		},
 		{
-			name:               "device authorization disabled",
-			deviceMode:         constants.DeviceTrustModeRequired,
-			disableDeviceAuthz: true,
-			user:               userWithoutExtensions,
+			name:       "global mode disabled only",
+			deviceMode: constants.DeviceTrustModeRequired,
+			deviceAuthz: DeviceAuthorizationOpts{
+				DisableGlobalMode: true,
+			},
+			user: userWithoutExtensions,
+		},
+		{
+			name:       "global and role modes disabled",
+			deviceMode: constants.DeviceTrustModeRequired,
+			deviceAuthz: DeviceAuthorizationOpts{
+				DisableGlobalMode: true,
+				DisableRoleMode:   true,
+			},
+			user: userWithoutExtensions,
 		},
 		{
 			name:       "user with extensions and mode=required",
@@ -345,8 +366,11 @@ func TestAuthorizer_Authorize_deviceTrust(t *testing.T) {
 			wantCtxAuthnDisabled: true, // BuiltinRole ctx validation disabled by default
 		},
 		{
-			name:               "BuiltinRole: device authorization disabled",
-			disableDeviceAuthz: true,
+			name: "BuiltinRole: device authorization disabled",
+			deviceAuthz: DeviceAuthorizationOpts{
+				DisableGlobalMode: true,
+				DisableRoleMode:   true,
+			},
 			user: BuiltinRole{
 				Role:        types.RoleProxy,
 				Username:    user.GetName(),
@@ -355,8 +379,11 @@ func TestAuthorizer_Authorize_deviceTrust(t *testing.T) {
 			},
 		},
 		{
-			name:               "RemoteBuiltinRole: device authorization disabled",
-			disableDeviceAuthz: true,
+			name: "RemoteBuiltinRole: device authorization disabled",
+			deviceAuthz: DeviceAuthorizationOpts{
+				DisableGlobalMode: true,
+				DisableRoleMode:   true,
+			},
 			user: RemoteBuiltinRole{
 				Role:        types.RoleProxy,
 				Username:    user.GetName(),
@@ -374,16 +401,15 @@ func TestAuthorizer_Authorize_deviceTrust(t *testing.T) {
 			apV2.Spec.DeviceTrust = &types.DeviceTrust{
 				Mode: test.deviceMode,
 			}
-			require.NoError(t,
-				client.SetAuthPreference(ctx, apV2),
-				"SetAuthPreference failed")
+			_, err = client.UpsertAuthPreference(ctx, apV2)
+			require.NoError(t, err, "UpsertAuthPreference failed")
 
 			// Create a new authorizer.
 			authorizer, err := NewAuthorizer(AuthorizerOpts{
-				ClusterName:                clusterName,
-				AccessPoint:                client,
-				LockWatcher:                watcher,
-				DisableDeviceAuthorization: test.disableDeviceAuthz,
+				ClusterName:         clusterName,
+				AccessPoint:         client,
+				LockWatcher:         watcher,
+				DeviceAuthorization: test.deviceAuthz,
 			})
 			require.NoError(t, err, "NewAuthorizer failed")
 
@@ -401,11 +427,270 @@ func TestAuthorizer_Authorize_deviceTrust(t *testing.T) {
 			}
 
 			// Verify that the auth.Context has the correct disableDeviceAuthorization
-			// value.
-			wantDisabled := test.disableDeviceAuthz || test.wantCtxAuthnDisabled
+			// value, based on either the global toggle or role mode.
+			wantDisabled := test.deviceAuthz.DisableRoleMode || test.wantCtxAuthnDisabled
 			assert.Equal(
-				t, wantDisabled, authCtx.disableDeviceAuthorization,
+				t, wantDisabled, authCtx.disableDeviceRoleMode,
 				"auth.Context.disableDeviceAuthorization not inherited from Authorizer")
+		})
+	}
+}
+
+// hostFQDN consists of host UUID and cluster name joined via .
+func hostFQDN(hostUUID, clusterName string) string {
+	return fmt.Sprintf("%v.%v", hostUUID, clusterName)
+}
+
+type fakeMFAAuthenticator struct {
+	mfaData map[string]*MFAAuthData // keyed by totp token
+}
+
+func (a *fakeMFAAuthenticator) ValidateMFAAuthResponse(ctx context.Context, resp *proto.MFAAuthenticateResponse, user string, requiredExtensions *mfav1.ChallengeExtensions) (*MFAAuthData, error) {
+	mfaData, ok := a.mfaData[resp.GetTOTP().GetCode()]
+	if !ok {
+		return nil, trace.AccessDenied("invalid MFA")
+	}
+	return mfaData, nil
+}
+
+func TestAuthorizer_AuthorizeAdminAction(t *testing.T) {
+	ctx := context.Background()
+	client, watcher, _ := newTestResources(t)
+
+	// Enable Webauthn.
+	authPreference, err := types.NewAuthPreference(types.AuthPreferenceSpecV2{
+		Type:         constants.Local,
+		SecondFactor: constants.SecondFactorWebauthn,
+		Webauthn: &types.Webauthn{
+			RPID: "localhost",
+		},
+	})
+	require.NoError(t, err)
+	_, err = client.UpsertAuthPreference(ctx, authPreference)
+	require.NoError(t, err)
+
+	// Create a new local user.
+	localUser, _, err := createUserAndRole(client, "localuser", []string{"local"}, nil)
+	require.NoError(t, err)
+
+	// Create new local user with a host-like username.
+	userWithHostName, _, err := createUserAndRole(client, hostFQDN(uuid.NewString(), clusterName), []string{"local"}, nil)
+	require.NoError(t, err)
+
+	// Create a new bot user.
+	bot, err := types.NewUser("robot")
+	require.NoError(t, err)
+	botMetadata := bot.GetMetadata()
+	botMetadata.Labels = map[string]string{
+		types.BotLabel:           bot.GetName(),
+		types.BotGenerationLabel: "0",
+	}
+	bot.SetMetadata(botMetadata)
+	_, err = client.CreateUser(ctx, bot)
+	require.NoError(t, err)
+
+	validTOTPCode := "valid"
+	validReusableTOTPCode := "valid-reusable"
+	fakeMFAAuthentictor := &fakeMFAAuthenticator{
+		mfaData: map[string]*MFAAuthData{
+			validTOTPCode: {},
+			validReusableTOTPCode: {
+				AllowReuse: mfav1.ChallengeAllowReuse_CHALLENGE_ALLOW_REUSE_YES,
+			},
+		},
+	}
+
+	// Create a new authorizer.
+	authorizer, err := NewAuthorizer(AuthorizerOpts{
+		ClusterName:      clusterName,
+		AccessPoint:      client,
+		LockWatcher:      watcher,
+		MFAAuthenticator: fakeMFAAuthentictor,
+	})
+	require.NoError(t, err, "NewAuthorizer failed")
+
+	validMFA := &proto.MFAAuthenticateResponse{
+		Response: &proto.MFAAuthenticateResponse_TOTP{
+			TOTP: &proto.TOTPResponse{
+				Code: validTOTPCode,
+			},
+		},
+	}
+
+	validMFAWithReuse := &proto.MFAAuthenticateResponse{
+		Response: &proto.MFAAuthenticateResponse_TOTP{
+			TOTP: &proto.TOTPResponse{
+				Code: validReusableTOTPCode,
+			},
+		},
+	}
+
+	invalidMFA := &proto.MFAAuthenticateResponse{
+		Response: &proto.MFAAuthenticateResponse_TOTP{
+			TOTP: &proto.TOTPResponse{
+				Code: "invalid",
+			},
+		},
+	}
+
+	for _, tt := range []struct {
+		name                      string
+		user                      IdentityGetter
+		withMFA                   *proto.MFAAuthenticateResponse
+		allowedReusedMFA          bool
+		contextGetter             func() context.Context
+		wantErrContains           string
+		wantAdminActionAuthorized bool
+	}{
+		{
+			name: "NOK local user no mfa",
+			user: LocalUser{
+				Username: localUser.GetName(),
+				Identity: tlsca.Identity{
+					Username: localUser.GetName(),
+				},
+			},
+			wantAdminActionAuthorized: false,
+		}, {
+			name: "NOK local user mfa verified cert",
+			user: LocalUser{
+				Username: localUser.GetName(),
+				Identity: tlsca.Identity{
+					Username:    localUser.GetName(),
+					MFAVerified: "mfa-verified-test",
+				},
+			},
+			wantAdminActionAuthorized: false,
+		}, {
+			name: "NOK local user mfa verified private key policy",
+			user: LocalUser{
+				Username: localUser.GetName(),
+				Identity: tlsca.Identity{
+					Username:         localUser.GetName(),
+					PrivateKeyPolicy: keys.PrivateKeyPolicyHardwareKeyTouch,
+				},
+			},
+			wantAdminActionAuthorized: false,
+		}, {
+			// edge case for the admin role check.
+			name: "NOK local user with host-like username",
+			user: LocalUser{
+				Username: userWithHostName.GetName(),
+				Identity: tlsca.Identity{
+					Username: userWithHostName.GetName(),
+				},
+			},
+			wantAdminActionAuthorized: false,
+		}, {
+			name: "NOK local user invalid mfa",
+			user: LocalUser{
+				Username: localUser.GetName(),
+				Identity: tlsca.Identity{
+					Username: localUser.GetName(),
+				},
+			},
+			withMFA:                   invalidMFA,
+			wantErrContains:           "access denied",
+			wantAdminActionAuthorized: true,
+		}, {
+			name: "NOK local user reused mfa with reuse not allowed",
+			user: LocalUser{
+				Username: localUser.GetName(),
+				Identity: tlsca.Identity{
+					Username: localUser.GetName(),
+				},
+			},
+			withMFA:                   validMFAWithReuse,
+			wantAdminActionAuthorized: false,
+		}, {
+			name: "OK local user valid mfa",
+			user: LocalUser{
+				Username: localUser.GetName(),
+				Identity: tlsca.Identity{
+					Username: localUser.GetName(),
+				},
+			},
+			withMFA:                   validMFA,
+			wantAdminActionAuthorized: true,
+		}, {
+			name: "OK local user reused mfa with reuse allowed",
+			user: LocalUser{
+				Username: localUser.GetName(),
+				Identity: tlsca.Identity{
+					Username: localUser.GetName(),
+				},
+			},
+			withMFA:                   validMFAWithReuse,
+			allowedReusedMFA:          true,
+			wantAdminActionAuthorized: true,
+		}, {
+			name: "OK admin",
+			user: BuiltinRole{
+				Role:     types.RoleAdmin,
+				Username: hostFQDN(uuid.NewString(), clusterName),
+			},
+			wantAdminActionAuthorized: true,
+		}, {
+			name: "OK bot",
+			user: LocalUser{
+				Username: bot.GetName(),
+				Identity: tlsca.Identity{
+					Username: bot.GetName(),
+				},
+			},
+			wantAdminActionAuthorized: true,
+		}, {
+			name: "OK admin impersonating local user",
+			user: LocalUser{
+				Username: localUser.GetName(),
+				Identity: tlsca.Identity{
+					Username:     localUser.GetName(),
+					Impersonator: hostFQDN(uuid.NewString(), clusterName),
+				},
+			},
+			wantAdminActionAuthorized: true,
+		}, {
+			name: "OK bot impersonating local user",
+			user: LocalUser{
+				Username: localUser.GetName(),
+				Identity: tlsca.Identity{
+					Username:     localUser.GetName(),
+					Impersonator: bot.GetName(),
+				},
+			},
+			wantAdminActionAuthorized: true,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			if tt.withMFA != nil {
+				encodedMFAResp, err := mfa.EncodeMFAChallengeResponseCredentials(tt.withMFA)
+				require.NoError(t, err)
+				md := metadata.MD(map[string][]string{
+					mfa.ResponseMetadataKey: {encodedMFAResp},
+				})
+				ctx = metadata.NewIncomingContext(ctx, md)
+			}
+			userCtx := context.WithValue(ctx, contextUser, tt.user)
+			authCtx, err := authorizer.Authorize(userCtx)
+			if tt.wantErrContains != "" {
+				require.ErrorContains(t, err, tt.wantErrContains, "Expected matching Authorize error")
+				return
+			}
+			require.NoError(t, err)
+
+			var authAdminActionErr error
+			if tt.allowedReusedMFA {
+				authAdminActionErr = authCtx.AuthorizeAdminActionAllowReusedMFA()
+			} else {
+				authAdminActionErr = authCtx.AuthorizeAdminAction()
+			}
+
+			if tt.wantAdminActionAuthorized {
+				require.NoError(t, authAdminActionErr)
+			} else {
+				require.ErrorIs(t, authAdminActionErr, &mfa.ErrAdminActionMFARequired)
+			}
 		})
 	}
 }
@@ -494,7 +779,7 @@ func TestContext_GetAccessState(t *testing.T) {
 				localUser := ctx.Identity.(LocalUser)
 				localUser.Identity.DeviceExtensions = deviceExt
 				ctx.Identity = localUser
-				ctx.disableDeviceAuthorization = true
+				ctx.disableDeviceRoleMode = true
 				return &ctx
 			},
 			want: services.AccessState{
@@ -594,104 +879,6 @@ func TestCheckIPPinning(t *testing.T) {
 			require.NoError(t, err)
 		}
 
-	}
-}
-
-func TestAuthorizeWithVerbs(t *testing.T) {
-	backend, err := memory.New(memory.Config{})
-	require.NoError(t, err)
-	accessService := local.NewAccessService(backend)
-
-	role, err := types.NewRole("test", types.RoleSpecV6{
-		Allow: types.RoleConditions{
-			Rules: []types.Rule{
-				{
-					Resources: []string{types.KindUser},
-					Verbs:     []string{types.ActionRead},
-				},
-			},
-		},
-	})
-	require.NoError(t, err)
-	_, err = accessService.CreateRole(context.Background(), role)
-	require.NoError(t, err)
-
-	tests := []struct {
-		name         string
-		delegate     Authorizer
-		kind         string
-		verbs        []string
-		errAssertion require.ErrorAssertionFunc
-	}{
-		{
-			name: "regular auth",
-			delegate: AuthorizerFunc(func(ctx context.Context) (*Context, error) {
-				return &Context{}, nil
-			}),
-			errAssertion: require.NoError,
-		},
-		{
-			name: "regular auth with verbs",
-			delegate: AuthorizerFunc(func(ctx context.Context) (*Context, error) {
-				accessChecker, err := services.NewAccessChecker(&services.AccessInfo{
-					Roles: []string{"test"},
-				}, "test-cluster", accessService)
-				require.NoError(t, err)
-				return &Context{
-					Checker: accessChecker,
-				}, nil
-			}),
-			kind:         types.KindUser,
-			verbs:        []string{types.VerbRead},
-			errAssertion: require.NoError,
-		},
-		{
-			name: "connection problem",
-			delegate: AuthorizerFunc(func(ctx context.Context) (*Context, error) {
-				return nil, trace.ConnectionProblem(errors.New("err msg"), "err msg")
-			}),
-			errAssertion: func(t require.TestingT, err error, _ ...interface{}) {
-				require.True(t, trace.IsConnectionProblem(err))
-				require.Equal(t, "failed to connect to the database", err.Error())
-			},
-		},
-		{
-			name: "not found",
-			delegate: AuthorizerFunc(func(ctx context.Context) (*Context, error) {
-				return nil, trace.NotFound("err msg")
-			}),
-			errAssertion: func(t require.TestingT, err error, _ ...interface{}) {
-				require.True(t, trace.IsNotFound(err))
-				require.Equal(t, "access denied\n\taccess denied\n\t\terr msg", trace.UserMessage(err))
-			},
-		},
-		{
-			name: "access denied",
-			delegate: AuthorizerFunc(func(ctx context.Context) (*Context, error) {
-				return nil, trace.AccessDenied("access denied")
-			}),
-			errAssertion: func(t require.TestingT, err error, _ ...interface{}) {
-				require.ErrorIs(t, err, trace.AccessDenied("access denied"))
-			},
-		},
-		{
-			name: "private key policy error",
-			delegate: AuthorizerFunc(func(ctx context.Context) (*Context, error) {
-				return nil, keys.NewPrivateKeyPolicyError("error")
-			}),
-			errAssertion: func(t require.TestingT, err error, _ ...interface{}) {
-				require.ErrorIs(t, err, keys.NewPrivateKeyPolicyError("error"))
-			},
-		},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			ctx := context.Background()
-			log := logrus.New()
-			_, err = AuthorizeWithVerbs(ctx, log, test.delegate, true, test.kind, test.verbs...)
-			test.errAssertion(t, ConvertAuthorizerError(ctx, log, err))
-		})
 	}
 }
 
@@ -813,6 +1000,26 @@ func TestIsUserFunctions(t *testing.T) {
 	}
 }
 
+func TestConnectionMetadata(t *testing.T) {
+	for name, test := range map[string]struct {
+		ctx                        context.Context
+		expectedConnectionMetadata apievents.ConnectionMetadata
+	}{
+		"with client address": {
+			ctx:                        ContextWithClientSrcAddr(context.Background(), &net.TCPAddr{IP: net.IPv4(10, 255, 0, 0), Port: 1234}),
+			expectedConnectionMetadata: apievents.ConnectionMetadata{RemoteAddr: "10.255.0.0:1234"},
+		},
+		"empty client address": {
+			ctx:                        context.Background(),
+			expectedConnectionMetadata: apievents.ConnectionMetadata{},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			require.Empty(t, cmp.Diff(test.expectedConnectionMetadata, ConnectionMetadata(test.ctx)))
+		})
+	}
+}
+
 // fakeCtxUser is used for auth.Context tests.
 type fakeCtxUser struct {
 	types.User
@@ -848,7 +1055,7 @@ func newTestResources(t *testing.T) (*testClient, *services.LockWatcher, Authori
 	require.NoError(t, err)
 	caSvc := local.NewCAService(backend)
 	accessSvc := local.NewAccessService(backend)
-	identitySvc := local.NewIdentityService(backend)
+	identitySvc := local.NewTestIdentityService(backend)
 	eventsSvc := local.NewEventsService(backend)
 
 	client := &testClient{
@@ -861,10 +1068,14 @@ func newTestResources(t *testing.T) (*testClient, *services.LockWatcher, Authori
 
 	// Set default singletons
 	ctx := context.Background()
-	client.SetAuthPreference(ctx, types.DefaultAuthPreference())
-	client.SetClusterAuditConfig(ctx, types.DefaultClusterAuditConfig())
-	client.SetClusterNetworkingConfig(ctx, types.DefaultClusterNetworkingConfig())
-	client.SetSessionRecordingConfig(ctx, types.DefaultSessionRecordingConfig())
+	_, err = client.UpsertAuthPreference(ctx, types.DefaultAuthPreference())
+	require.NoError(t, err)
+	err = client.SetClusterAuditConfig(ctx, types.DefaultClusterAuditConfig())
+	require.NoError(t, err)
+	_, err = client.UpsertClusterNetworkingConfig(ctx, types.DefaultClusterNetworkingConfig())
+	require.NoError(t, err)
+	_, err = client.UpsertSessionRecordingConfig(ctx, types.DefaultSessionRecordingConfig())
+	require.NoError(t, err)
 
 	lockSvc := local.NewAccessService(backend)
 

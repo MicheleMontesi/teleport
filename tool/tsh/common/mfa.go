@@ -1,18 +1,20 @@
 /*
-Copyright 2021 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package common
 
@@ -25,15 +27,16 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 
-	"golang.org/x/exp/slices"
-
 	"github.com/gravitational/teleport"
 	"github.com/gravitational/teleport/api/client/proto"
 	"github.com/gravitational/teleport/api/constants"
+	mfav1 "github.com/gravitational/teleport/api/gen/proto/go/teleport/mfa/v1"
+	"github.com/gravitational/teleport/api/mfa"
 	"github.com/gravitational/teleport/api/types"
 	"github.com/gravitational/teleport/api/utils/prompt"
 	"github.com/gravitational/teleport/lib/asciitable"
@@ -42,7 +45,6 @@ import (
 	wantypes "github.com/gravitational/teleport/lib/auth/webauthntypes"
 	wanwin "github.com/gravitational/teleport/lib/auth/webauthnwin"
 	"github.com/gravitational/teleport/lib/client"
-	"github.com/gravitational/teleport/lib/client/mfa"
 	"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/teleport/lib/utils"
 
@@ -112,18 +114,18 @@ func (c *mfaLSCommand) run(cf *CLIConf) error {
 
 	var devs []*types.MFADevice
 	if err := client.RetryWithRelogin(cf.Context, tc, func() error {
-		pc, err := tc.ConnectToProxy(cf.Context)
+		clusterClient, err := tc.ConnectToCluster(cf.Context)
 		if err != nil {
 			return trace.Wrap(err)
 		}
-		defer pc.Close()
-		aci, err := pc.ConnectToRootCluster(cf.Context)
+		defer clusterClient.Close()
+		rootAuthClient, err := clusterClient.ConnectToRootCluster(cf.Context)
 		if err != nil {
 			return trace.Wrap(err)
 		}
-		defer aci.Close()
+		defer rootAuthClient.Close()
 
-		resp, err := aci.GetMFADevices(cf.Context, &proto.GetMFADevicesRequest{})
+		resp, err := rootAuthClient.GetMFADevices(cf.Context, &proto.GetMFADevicesRequest{})
 		if err != nil {
 			return trace.Wrap(err)
 		}
@@ -312,16 +314,16 @@ func (c *mfaAddCommand) addDeviceRPC(ctx context.Context, tc *client.TeleportCli
 
 	var dev *types.MFADevice
 	if err := client.RetryWithRelogin(ctx, tc, func() error {
-		pc, err := tc.ConnectToProxy(ctx)
+		clusterClient, err := tc.ConnectToCluster(ctx)
 		if err != nil {
 			return trace.Wrap(err)
 		}
-		defer pc.Close()
-		aci, err := pc.ConnectToRootCluster(ctx)
+		defer clusterClient.Close()
+		rootAuthClient, err := clusterClient.ConnectToRootCluster(ctx)
 		if err != nil {
 			return trace.Wrap(err)
 		}
-		defer aci.Close()
+		defer rootAuthClient.Close()
 
 		// TODO(awly): mfa: move this logic somewhere under /lib/auth/, closer
 		// to the server logic. The CLI layer should ideally be thin.
@@ -333,7 +335,11 @@ func (c *mfaAddCommand) addDeviceRPC(ctx context.Context, tc *client.TeleportCli
 
 		// Issue the authn challenge.
 		// Required for the registration challenge.
-		authChallenge, err := aci.CreateAuthenticateChallenge(ctx, &proto.CreateAuthenticateChallengeRequest{})
+		authChallenge, err := rootAuthClient.CreateAuthenticateChallenge(ctx, &proto.CreateAuthenticateChallengeRequest{
+			ChallengeExtensions: &mfav1.ChallengeExtensions{
+				Scope: mfav1.ChallengeScope_CHALLENGE_SCOPE_MANAGE_DEVICES,
+			},
+		})
 		if err != nil {
 			return trace.Wrap(err)
 		}
@@ -349,13 +355,13 @@ func (c *mfaAddCommand) addDeviceRPC(ctx context.Context, tc *client.TeleportCli
 
 		// Prompt for authentication.
 		// Does nothing if no challenges were issued (aka user has no devices).
-		authnResp, err := tc.NewMFAPrompt(mfa.WithPromptDevicePrefix("*registered*"))(ctx, authChallenge)
+		authnResp, err := tc.NewMFAPrompt(mfa.WithPromptDeviceType(mfa.DeviceDescriptorRegistered)).Run(ctx, authChallenge)
 		if err != nil {
 			return trace.Wrap(err)
 		}
 
 		// Issue the registration challenge.
-		registerChallenge, err := aci.CreateRegisterChallenge(ctx, &proto.CreateRegisterChallengeRequest{
+		registerChallenge, err := rootAuthClient.CreateRegisterChallenge(ctx, &proto.CreateRegisterChallengeRequest{
 			ExistingMFAResponse: authnResp,
 			DeviceType:          devTypePB,
 			DeviceUsage:         usage,
@@ -372,7 +378,7 @@ func (c *mfaAddCommand) addDeviceRPC(ctx context.Context, tc *client.TeleportCli
 		}
 
 		// Complete registration and confirm new key.
-		addResp, err := aci.AddMFADeviceSync(ctx, &proto.AddMFADeviceSyncRequest{
+		addResp, err := rootAuthClient.AddMFADeviceSync(ctx, &proto.AddMFADeviceSyncRequest{
 			NewDeviceName:  c.devName,
 			NewMFAResponse: registerResp,
 			DeviceUsage:    usage,
@@ -561,21 +567,21 @@ func (c *mfaRemoveCommand) run(cf *CLIConf) error {
 
 	ctx := cf.Context
 	if err := client.RetryWithRelogin(ctx, tc, func() error {
-		pc, err := tc.ConnectToProxy(ctx)
+		clusterClient, err := tc.ConnectToCluster(ctx)
 		if err != nil {
 			return trace.Wrap(err)
 		}
-		defer pc.Close()
-		aci, err := pc.ConnectToRootCluster(ctx)
+		defer clusterClient.Close()
+		rootAuthClient, err := clusterClient.ConnectToRootCluster(ctx)
 		if err != nil {
 			return trace.Wrap(err)
 		}
-		defer aci.Close()
+		defer rootAuthClient.Close()
 
 		// Lookup device to delete.
 		// This lets us exit early if the device doesn't exist and enables the
 		// Touch ID cleanup at the end.
-		devicesResp, err := aci.GetMFADevices(ctx, &proto.GetMFADevicesRequest{})
+		devicesResp, err := rootAuthClient.GetMFADevices(ctx, &proto.GetMFADevicesRequest{})
 		if err != nil {
 			return trace.Wrap(err)
 		}
@@ -591,9 +597,12 @@ func (c *mfaRemoveCommand) run(cf *CLIConf) error {
 		}
 
 		// Issue and solve authn challenge.
-		authnChal, err := aci.CreateAuthenticateChallenge(ctx, &proto.CreateAuthenticateChallengeRequest{
+		authnChal, err := rootAuthClient.CreateAuthenticateChallenge(ctx, &proto.CreateAuthenticateChallengeRequest{
 			Request: &proto.CreateAuthenticateChallengeRequest_ContextUser{
 				ContextUser: &proto.ContextUser{},
+			},
+			ChallengeExtensions: &mfav1.ChallengeExtensions{
+				Scope: mfav1.ChallengeScope_CHALLENGE_SCOPE_MANAGE_DEVICES,
 			},
 		})
 		if err != nil {
@@ -605,7 +614,7 @@ func (c *mfaRemoveCommand) run(cf *CLIConf) error {
 		}
 
 		// Delete device.
-		if err := aci.DeleteMFADeviceSync(ctx, &proto.DeleteMFADeviceSyncRequest{
+		if err := rootAuthClient.DeleteMFADeviceSync(ctx, &proto.DeleteMFADeviceSyncRequest{
 			DeviceName:          c.name,
 			ExistingMFAResponse: authnSolved,
 		}); err != nil {

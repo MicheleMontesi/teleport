@@ -1,34 +1,49 @@
 /*
-Copyright 2023 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package automaticupgrades
 
 import (
+	"context"
 	"os"
+	"os/exec"
 	"strconv"
+	"strings"
 
 	log "github.com/sirupsen/logrus"
 )
 
 const (
+	// EnvUpgrader environment variable specifies the external upgrader type
+	// Ex: unit, kube
+	EnvUpgrader = "TELEPORT_EXT_UPGRADER"
+	// EnvUpgraderVersion environment variable specifies the external upgrader version
+	// Ex: v14.3.6
+	EnvUpgraderVersion = "TELEPORT_EXT_UPGRADER_VERSION"
+
 	// automaticUpgradesEnvar defines the env var to lookup when deciding whether to enable AutomaticUpgrades feature.
 	automaticUpgradesEnvar = "TELEPORT_AUTOMATIC_UPGRADES"
 
 	// automaticUpgradesChannelEnvar defines a customer automatic upgrades version release channel.
 	automaticUpgradesChannelEnvar = "TELEPORT_AUTOMATIC_UPGRADES_CHANNEL"
+
+	// teleportUpgradeScript defines the default teleport-upgrade script path
+	teleportUpgradeScript = "/usr/sbin/teleport-upgrade"
 )
 
 // IsEnabled reads the TELEPORT_AUTOMATIC_UPGRADES and returns whether Automatic Upgrades are enabled or disabled.
@@ -55,4 +70,19 @@ func IsEnabled() bool {
 // https://updates.releases.teleport.dev/v1/stable/cloud
 func GetChannel() string {
 	return os.Getenv(automaticUpgradesChannelEnvar)
+}
+
+// GetUpgraderVersion returns the teleport upgrader version
+func GetUpgraderVersion(ctx context.Context) string {
+	if os.Getenv(EnvUpgrader) == "unit" {
+		out, err := exec.CommandContext(ctx, teleportUpgradeScript, "version").Output()
+		if err != nil {
+			log.WithError(err).Debug("Failed to exec /usr/sbin/teleport-upgrade version command.")
+		} else {
+			if version := strings.TrimSpace(string(out)); version != "" {
+				return version
+			}
+		}
+	}
+	return os.Getenv(EnvUpgraderVersion)
 }

@@ -1,16 +1,20 @@
-// Copyright 2023 Gravitational, Inc
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package services
 
@@ -35,7 +39,14 @@ import (
 )
 
 // UnifiedResourceKinds is a list of all kinds that are stored in the unified resource cache.
-var UnifiedResourceKinds []string = []string{types.KindNode, types.KindKubeServer, types.KindDatabaseServer, types.KindAppServer, types.KindSAMLIdPServiceProvider, types.KindWindowsDesktop}
+var UnifiedResourceKinds []string = []string{
+	types.KindNode,
+	types.KindKubeServer,
+	types.KindDatabaseServer,
+	types.KindAppServer,
+	types.KindWindowsDesktop,
+	types.KindSAMLIdPServiceProvider,
+}
 
 // UnifiedResourceCacheConfig is used to configure a UnifiedResourceCache
 type UnifiedResourceCacheConfig struct {
@@ -86,7 +97,7 @@ func NewUnifiedResourceCache(ctx context.Context, cfg UnifiedResourceCacheConfig
 
 	m := &UnifiedResourceCache{
 		log: log.WithFields(log.Fields{
-			trace.Component: cfg.Component,
+			teleport.ComponentKey: cfg.Component,
 		}),
 		cfg: cfg,
 		nameTree: btree.NewG(cfg.BTreeDegree, func(a, b *item) bool {
@@ -128,8 +139,19 @@ func (c *UnifiedResourceCache) put(ctx context.Context, resource resource) error
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	key := resourceKey(resource)
-	c.resources[key] = resource
 	sortKey := makeResourceSortKey(resource)
+	oldResource, exists := c.resources[key]
+	if exists {
+		// If the resource has changed in such a way that the sort keys
+		// for the nameTree or typeTree change, remove the old entries
+		// from those trees before adding a new one. This can happen
+		// when a node's hostname changes
+		oldSortKey := makeResourceSortKey(oldResource)
+		if string(oldSortKey.byName) != string(sortKey.byName) {
+			c.deleteSortKey(oldSortKey)
+		}
+	}
+	c.resources[key] = resource
 	c.nameTree.ReplaceOrInsert(&item{Key: sortKey.byName, Value: key})
 	c.typeTree.ReplaceOrInsert(&item{Key: sortKey.byType, Value: key})
 	return nil
@@ -147,6 +169,16 @@ func putResources[T resource](cache *UnifiedResourceCache, resources []T) {
 	}
 }
 
+func (c *UnifiedResourceCache) deleteSortKey(sortKey resourceSortKey) error {
+	if _, ok := c.nameTree.Delete(&item{Key: sortKey.byName}); !ok {
+		return trace.NotFound("key %q is not found in unified cache name sort tree", string(sortKey.byName))
+	}
+	if _, ok := c.typeTree.Delete(&item{Key: sortKey.byType}); !ok {
+		return trace.NotFound("key %q is not found in unified cache type sort tree", string(sortKey.byType))
+	}
+	return nil
+}
+
 // delete removes the item by key, returns NotFound error
 // if item does not exist
 func (c *UnifiedResourceCache) delete(ctx context.Context, res types.Resource) error {
@@ -162,12 +194,7 @@ func (c *UnifiedResourceCache) delete(ctx context.Context, res types.Resource) e
 	sortKey := makeResourceSortKey(resource)
 
 	return c.read(ctx, func(cache *UnifiedResourceCache) error {
-		if _, ok := cache.nameTree.Delete(&item{Key: sortKey.byName}); !ok {
-			return trace.NotFound("key %q is not found in unified cache name sort tree", string(sortKey.byName))
-		}
-		if _, ok := cache.typeTree.Delete(&item{Key: sortKey.byType}); !ok {
-			return trace.NotFound("key %q is not found in unified cache type sort tree", string(sortKey.byType))
-		}
+		cache.deleteSortKey(sortKey)
 		// delete from resource map
 		delete(c.resources, key)
 		return nil
@@ -372,7 +399,12 @@ func makeResourceSortKey(resource types.Resource) resourceSortKey {
 	case types.AppServer:
 		app := r.GetApp()
 		if app != nil {
-			name = app.GetName()
+			friendlyName := types.FriendlyName(app)
+			if friendlyName != "" {
+				name = friendlyName
+			} else {
+				name = app.GetName()
+			}
 			kind = types.KindApp
 		}
 	case types.SAMLIdPServiceProvider:
@@ -712,12 +744,20 @@ const (
 // MakePaginatedResources converts a list of resources into a list of paginated proto representations.
 func MakePaginatedResources(requestType string, resources []types.ResourceWithLabels) ([]*proto.PaginatedResource, error) {
 	paginatedResources := make([]*proto.PaginatedResource, 0, len(resources))
-	for _, resource := range resources {
+	for _, r := range resources {
 		var protoResource *proto.PaginatedResource
 		resourceKind := requestType
 		if requestType == types.KindUnifiedResource {
-			resourceKind = resource.GetKind()
+			resourceKind = r.GetKind()
 		}
+
+		var logins []string
+		resource := r
+		if enriched, ok := r.(*types.EnrichedResource); ok {
+			resource = enriched.ResourceWithLabels
+			logins = enriched.Logins
+		}
+
 		switch resourceKind {
 		case types.KindDatabaseServer:
 			database, ok := resource.(*types.DatabaseServerV3)
@@ -746,7 +786,7 @@ func MakePaginatedResources(requestType string, resources []types.ResourceWithLa
 				return nil, trace.BadParameter("%s has invalid type %T", resourceKind, resource)
 			}
 
-			protoResource = &proto.PaginatedResource{Resource: &proto.PaginatedResource_Node{Node: srv}}
+			protoResource = &proto.PaginatedResource{Resource: &proto.PaginatedResource_Node{Node: srv}, Logins: logins}
 		case types.KindKubeServer:
 			srv, ok := resource.(*types.KubernetesServerV3)
 			if !ok {
@@ -760,7 +800,7 @@ func MakePaginatedResources(requestType string, resources []types.ResourceWithLa
 				return nil, trace.BadParameter("%s has invalid type %T", resourceKind, resource)
 			}
 
-			protoResource = &proto.PaginatedResource{Resource: &proto.PaginatedResource_WindowsDesktop{WindowsDesktop: desktop}}
+			protoResource = &proto.PaginatedResource{Resource: &proto.PaginatedResource_WindowsDesktop{WindowsDesktop: desktop}, Logins: logins}
 		case types.KindWindowsDesktopService:
 			desktopService, ok := resource.(*types.WindowsDesktopServiceV3)
 			if !ok {
@@ -782,7 +822,8 @@ func MakePaginatedResources(requestType string, resources []types.ResourceWithLa
 			}
 
 			protoResource = &proto.PaginatedResource{Resource: &proto.PaginatedResource_UserGroup{UserGroup: userGroup}}
-		case types.KindSAMLIdPServiceProvider, types.KindAppOrSAMLIdPServiceProvider:
+		case types.KindAppOrSAMLIdPServiceProvider:
+			//nolint:staticcheck // SA1019. TODO(sshah) DELETE IN 17.0
 			switch appOrSP := resource.(type) {
 			case *types.AppServerV3:
 				protoResource = &proto.PaginatedResource{
@@ -805,6 +846,13 @@ func MakePaginatedResources(requestType string, resources []types.ResourceWithLa
 			default:
 				return nil, trace.BadParameter("%s has invalid type %T", resourceKind, resource)
 			}
+		case types.KindSAMLIdPServiceProvider:
+			serviceProvider, ok := resource.(*types.SAMLIdPServiceProviderV1)
+			if !ok {
+				return nil, trace.BadParameter("%s has invalid type %T", resourceKind, resource)
+			}
+
+			protoResource = &proto.PaginatedResource{Resource: &proto.PaginatedResource_SAMLIdPServiceProvider{SAMLIdPServiceProvider: serviceProvider}}
 		default:
 			return nil, trace.NotImplemented("resource type %s doesn't support pagination", resource.GetKind())
 		}

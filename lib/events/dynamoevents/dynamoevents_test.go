@@ -1,18 +1,20 @@
 /*
-Copyright 2018 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package dynamoevents
 
@@ -33,10 +35,12 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/gravitational/teleport"
+	apidefaults "github.com/gravitational/teleport/api/defaults"
 	"github.com/gravitational/teleport/api/types"
 	apievents "github.com/gravitational/teleport/api/types/events"
 	"github.com/gravitational/teleport/lib/events"
 	"github.com/gravitational/teleport/lib/events/test"
+	"github.com/gravitational/teleport/lib/session"
 	"github.com/gravitational/teleport/lib/utils"
 )
 
@@ -429,6 +433,42 @@ func TestConfig_CheckAndSetDefaults(t *testing.T) {
 			err := test.config.CheckAndSetDefaults()
 			test.assertionFn(t, test.config, err)
 		})
+	}
+}
+
+// TestEmitSessionEventsSameIndex given events that share the same session ID
+// and index, the emit should fail, avoiding any event to get overwritten.
+func TestEmitSessionEventsSameIndex(t *testing.T) {
+	ctx := context.Background()
+	tt := setupDynamoContext(t)
+	sessionID := session.NewID()
+
+	require.NoError(t, tt.log.EmitAuditEvent(ctx, generateEvent(sessionID, 0)))
+	require.NoError(t, tt.log.EmitAuditEvent(ctx, generateEvent(sessionID, 1)))
+	require.Error(t, tt.log.EmitAuditEvent(ctx, generateEvent(sessionID, 1)))
+}
+
+func generateEvent(sessionID session.ID, index int64) apievents.AuditEvent {
+	return &apievents.AppSessionChunk{
+		Metadata: apievents.Metadata{
+			Type:        events.AppSessionChunkEvent,
+			Code:        events.AppSessionChunkCode,
+			ClusterName: "root",
+			Index:       index,
+		},
+		ServerMetadata: apievents.ServerMetadata{
+			ServerID:        uuid.New().String(),
+			ServerNamespace: apidefaults.Namespace,
+		},
+		SessionMetadata: apievents.SessionMetadata{
+			SessionID: sessionID.String(),
+		},
+		AppMetadata: apievents.AppMetadata{
+			AppURI:        "nginx",
+			AppPublicAddr: "https://nginx",
+			AppName:       "nginx",
+		},
+		SessionChunkID: uuid.New().String(),
 	}
 }
 

@@ -1,18 +1,20 @@
-/*
-Copyright 2019 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+/**
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 import Logger from 'shared/libs/logger';
 
@@ -22,7 +24,7 @@ import { W3CTraceContextPropagator } from '@opentelemetry/core';
 import webSession from 'teleport/services/websession';
 import history from 'teleport/services/history';
 import cfg, { UrlResourcesParams, UrlSshParams } from 'teleport/config';
-import { getAccessToken, getHostName } from 'teleport/services/api';
+import { getHostName } from 'teleport/services/api';
 import Tty from 'teleport/lib/term/tty';
 import TtyAddressResolver from 'teleport/lib/term/ttyAddressResolver';
 import serviceSession, {
@@ -31,7 +33,7 @@ import serviceSession, {
   ParticipantMode,
 } from 'teleport/services/session';
 import ServiceNodes from 'teleport/services/nodes';
-import serviceClusters from 'teleport/services/clusters';
+import ClustersService from 'teleport/services/clusters';
 import { StoreUserContext } from 'teleport/stores';
 import usersService from 'teleport/services/user';
 
@@ -49,6 +51,7 @@ export default class ConsoleContext {
   storeDocs = new StoreDocs();
   storeParties = new StoreParties();
   nodesService = new ServiceNodes();
+  clustersService = new ClustersService();
   storeUser = new StoreUserContext();
 
   constructor() {
@@ -117,6 +120,7 @@ export default class ConsoleContext {
       url,
       mode,
       created: new Date(),
+      latency: undefined,
     });
   }
 
@@ -174,7 +178,7 @@ export default class ConsoleContext {
   }
 
   fetchClusters() {
-    return serviceClusters.fetchClusters();
+    return this.clustersService.fetchClusters();
   }
 
   logout() {
@@ -193,7 +197,6 @@ export default class ConsoleContext {
 
     const ttyUrl = cfg.api.ttyWsAddr
       .replace(':fqdn', getHostName())
-      .replace(':token', getAccessToken())
       .replace(':clusterId', clusterId)
       .replace(':traceparent', carrier['traceparent']);
 

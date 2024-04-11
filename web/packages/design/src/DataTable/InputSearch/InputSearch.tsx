@@ -1,20 +1,22 @@
-/*
-Copyright 2021-2022 Gravitational, Inc.
+/**
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
-
-import React, { SetStateAction } from 'react';
+import React, { JSX, SetStateAction } from 'react';
 import styled from 'styled-components';
 
 import { height, space, color } from 'design/system';
@@ -28,7 +30,7 @@ export default function InputSearch({
     <WrapperBackground>
       <Wrapper>
         <StyledInput
-          placeholder="SEARCH..."
+          placeholder="Search..."
           px={3}
           value={searchValue}
           onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
@@ -56,8 +58,7 @@ const ChildWrapper = styled.div`
   display: flex;
   align-items: center;
   justify-content: center;
-  background: ${props => props.theme.colors.spotBackground[0]};
-  border-radius: 200px;
+  border-radius: 0 200px 200px 0;
 `;
 
 const ChildWrapperBackground = styled.div`
@@ -67,63 +68,42 @@ const ChildWrapperBackground = styled.div`
   display: flex;
   align-items: center;
   justify-content: center;
-  background: ${props =>
-    props.theme.type === 'dark'
-      ? props.theme.colors.levels.surface
-      : props.theme.colors.levels.deep};
-  border-radius: 200px;
+  border-left: ${props => props.theme.borders[1]}
+    ${props => props.theme.colors.spotBackground[0]};
+  border-radius: 0 200px 200px 0;
 `;
 
 const Wrapper = styled.div`
   position: relative;
   display: flex;
   overflow: hidden;
-  width: 100%;
   border-radius: 200px;
-  height: 32px;
+  height: 100%;
   background: transparent;
+  max-width: 725px;
 `;
 
 const WrapperBackground = styled.div`
   background: ${props => props.theme.colors.levels.sunken};
   border-radius: 200px;
   width: 100%;
-  height: 32px;
+  height: ${props => props.theme.space[8]}px;
+  margin-bottom: 12px;
 `;
 
 const StyledInput = styled.input`
   border: none;
   outline: none;
   box-sizing: border-box;
-  height: 100%;
-  font-size: 12px;
+  font-size: ${props => props.theme.fontSizes[3]}px;
   width: 100%;
   transition: all 0.2s;
   ${color}
   ${space}
   ${height}
-  ${fromTheme};
+  color: ${props => props.theme.colors.text.main};
+  background: ${props => props.theme.colors.spotBackground[0]};
   padding-right: 184px;
+  // should match padding-left on StyledTable &:first-child to align Search content to Table content
+  padding-left: ${props => props.theme.space[4]}px;
 `;
-
-function fromTheme(props) {
-  return {
-    color: props.theme.colors.text.main,
-    background:
-      props.theme.type === 'dark'
-        ? props.theme.colors.levels.sunken
-        : props.theme.colors.levels.deep,
-
-    '&:hover, &:focus, &:active': {
-      color: props.theme.colors.text.main,
-      background:
-        props.theme.type === 'dark'
-          ? props.theme.colors.spotBackground[0]
-          : props.theme.colors.levels.sunken,
-    },
-    '&::placeholder': {
-      color: props.theme.colors.text.muted,
-      fontSize: props.theme.fontSizes[1],
-    },
-  };
-}

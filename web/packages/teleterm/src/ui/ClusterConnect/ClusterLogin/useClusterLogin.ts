@@ -1,17 +1,19 @@
 /**
- * Copyright 2021-2022 Gravitational, Inc.
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
  *
- *     http://www.apache.org/licenses/LICENSE-2.0
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 import { useState, useEffect, useRef } from 'react';
@@ -20,15 +22,15 @@ import { useAsync } from 'shared/hooks/useAsync';
 import { useAppContext } from 'teleterm/ui/appContextProvider';
 import { assertUnreachable } from 'teleterm/ui/utils';
 import { RootClusterUri } from 'teleterm/ui/uri';
+import { cloneAbortSignal } from 'teleterm/services/tshd/cloneableClient';
 
 import type * as types from 'teleterm/ui/services/clusters/types';
-import type * as tsh from 'teleterm/services/tshd/types';
 
 export default function useClusterLogin(props: Props) {
   const { onSuccess, clusterUri } = props;
   const { clustersService } = useAppContext();
   const cluster = clustersService.findCluster(clusterUri);
-  const refAbortCtrl = useRef<tsh.TshAbortController>(null);
+  const refAbortCtrl = useRef<AbortController>(null);
   const loggedInUserName =
     props.prefill.username || cluster.loggedInUser?.name || null;
   const [shouldPromptSsoStatus, promptSsoStatus] = useState(false);
@@ -48,20 +50,23 @@ export default function useClusterLogin(props: Props) {
 
   const [loginAttempt, login, setAttempt] = useAsync(
     (params: types.LoginParams) => {
-      refAbortCtrl.current = clustersService.client.createAbortController();
+      refAbortCtrl.current = new AbortController();
       switch (params.kind) {
         case 'local':
           return clustersService.loginLocal(
             params,
-            refAbortCtrl.current.signal
+            cloneAbortSignal(refAbortCtrl.current.signal)
           );
         case 'passwordless':
           return clustersService.loginPasswordless(
             params,
-            refAbortCtrl.current.signal
+            cloneAbortSignal(refAbortCtrl.current.signal)
           );
         case 'sso':
-          return clustersService.loginSso(params, refAbortCtrl.current.signal);
+          return clustersService.loginSso(
+            params,
+            cloneAbortSignal(refAbortCtrl.current.signal)
+          );
         default:
           assertUnreachable(params);
       }

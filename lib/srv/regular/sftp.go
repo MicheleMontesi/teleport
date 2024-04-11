@@ -1,28 +1,32 @@
 /*
-Copyright 2022 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package regular
 
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
 	"os/exec"
+	"time"
 
 	"github.com/gogo/protobuf/jsonpb"
 	"github.com/gravitational/trace"
@@ -31,6 +35,7 @@ import (
 
 	"github.com/gravitational/teleport"
 	apievents "github.com/gravitational/teleport/api/types/events"
+	"github.com/gravitational/teleport/lib/events"
 	"github.com/gravitational/teleport/lib/srv"
 	"github.com/gravitational/teleport/lib/utils"
 )
@@ -40,18 +45,20 @@ import (
 const copyingGoroutines = 2
 
 type sftpSubsys struct {
-	sftpCmd   *exec.Cmd
-	serverCtx *srv.ServerContext
-	errCh     chan error
-	log       *logrus.Entry
+	log *logrus.Entry
+
+	fileTransferReq *srv.FileTransferRequest
+	sftpCmd         *exec.Cmd
+	serverCtx       *srv.ServerContext
+	errCh           chan error
 }
 
-func newSFTPSubsys() (*sftpSubsys, error) {
-	// TODO: add prometheus collectors?
+func newSFTPSubsys(fileTransferReq *srv.FileTransferRequest) (*sftpSubsys, error) {
 	return &sftpSubsys{
 		log: logrus.WithFields(logrus.Fields{
-			trace.Component: teleport.ComponentSubsystemSFTP,
+			teleport.ComponentKey: teleport.ComponentSubsystemSFTP,
 		}),
+		fileTransferReq: fileTransferReq,
 	}, nil
 }
 
@@ -64,6 +71,16 @@ func (s *sftpSubsys) Start(ctx context.Context,
 	// this connection was proxied, the proxy doesn't know if file copying
 	// is allowed for certain Nodes.
 	if !serverCtx.AllowFileCopying {
+		serverCtx.GetServer().EmitAuditEvent(context.WithoutCancel(ctx), &apievents.SFTP{
+			Metadata: apievents.Metadata{
+				Code: events.SFTPDisallowedCode,
+				Type: events.SFTPEvent,
+				Time: time.Now(),
+			},
+			UserMetadata:   serverCtx.Identity.GetUserMetadata(),
+			ServerMetadata: serverCtx.GetServerMetadata(),
+			Error:          srv.ErrNodeFileCopyingNotPermitted.Error(),
+		})
 		return srv.ErrNodeFileCopyingNotPermitted
 	}
 
@@ -113,8 +130,24 @@ func (s *sftpSubsys) Start(ctx context.Context,
 	if err != nil {
 		return trace.Wrap(err)
 	}
-	// TODO: put in cgroup?
 	execRequest.Continue()
+
+	// Send the file transfer request if applicable. The SFTP process
+	// expects the file transfer request data will end with a null byte,
+	// so if there is no request to send just send a null byte so the
+	// SFTP process can detect that no request was sent.
+	encodedReq := []byte{0x0}
+	if s.fileTransferReq != nil {
+		encodedReq, err = json.Marshal(s.fileTransferReq)
+		if err != nil {
+			return trace.Wrap(err)
+		}
+		encodedReq = append(encodedReq, 0x0)
+	}
+	_, err = chReadPipeIn.Write(encodedReq)
+	if err != nil {
+		return trace.Wrap(err)
+	}
 
 	// Copy the SSH channel to and from the anonymous pipes
 	s.errCh = make(chan error, copyingGoroutines)

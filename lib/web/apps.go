@@ -1,18 +1,20 @@
 /*
-Copyright 2020 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 // Package web implements web proxy handler that provides
 // web interface to view and connect to teleport nodes
@@ -42,7 +44,10 @@ import (
 )
 
 // clusterAppsGet returns a list of applications in a form the UI can present.
-// This includes Application Servers as well as SAML IdP Service providers.
+// Not in use since v15+.
+// Pre v15 (v14 and below), clusterAppsGet returned both App and SAML service providers.
+//
+//nolint:staticcheck // SA1019. TODO(sshah) DELETE IN 17.0
 func (h *Handler) clusterAppsGet(w http.ResponseWriter, r *http.Request, p httprouter.Params, sctx *SessionContext, site reversetunnelclient.RemoteSite) (interface{}, error) {
 	identity, err := sctx.GetIdentity()
 	if err != nil {
@@ -233,7 +238,7 @@ func (h *Handler) createAppSession(w http.ResponseWriter, r *http.Request, p htt
 	//
 	// PublicAddr and ClusterName will get encoded within the certificate and
 	// used for request routing.
-	ws, err := authClient.CreateAppSession(r.Context(), types.CreateAppSessionRequest{
+	ws, err := authClient.CreateAppSession(r.Context(), &proto.CreateAppSessionRequest{
 		Username:    ctx.GetUser(),
 		PublicAddr:  result.App.GetPublicAddr(),
 		ClusterName: result.ClusterName,
@@ -358,7 +363,7 @@ func (h *Handler) resolveApp(ctx context.Context, clt app.Getter, proxy reverset
 		return nil, trace.Wrap(err)
 	}
 
-	fqdn := ui.AssembleAppFQDN(h.auth.clusterName, h.proxyDNSName(), appClusterName, server.GetApp())
+	fqdn := utils.AssembleAppFQDN(h.auth.clusterName, h.proxyDNSName(), appClusterName, server.GetApp())
 
 	return &resolveAppResult{
 		ServerID:    server.GetName(),
@@ -427,6 +432,8 @@ func (h *Handler) proxyDNSNames() (dnsNames []string) {
 
 // appServerOrSPPageFromAppServerPage converts a ResourcePage containing AppServers to a ResourcePage containing AppServerOrSAMLIdPServiceProviders.
 // DELETE IN 15.0
+//
+//nolint:staticcheck // SA1019. To be deleted along with the API in 16.0.
 func appServerOrSPPageFromAppServerPage(appServerPage apiclient.ResourcePage[types.AppServer]) apiclient.ResourcePage[types.AppServerOrSAMLIdPServiceProvider] {
 	resources := make([]types.AppServerOrSAMLIdPServiceProvider, len(appServerPage.Resources))
 

@@ -1,37 +1,39 @@
 /*
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
  *
- * Copyright 2023 Gravitational, Inc.
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
  *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 package assistv1
 
 import (
 	"context"
+	"slices"
 
 	"github.com/gravitational/trace"
 	"github.com/sirupsen/logrus"
-	"golang.org/x/exp/slices"
 	"google.golang.org/protobuf/types/known/emptypb"
 
+	"github.com/gravitational/teleport"
 	"github.com/gravitational/teleport/api/defaults"
 	"github.com/gravitational/teleport/api/gen/proto/go/assist/v1"
 	"github.com/gravitational/teleport/api/types"
 	"github.com/gravitational/teleport/lib/ai"
 	embeddinglib "github.com/gravitational/teleport/lib/ai/embedding"
 	"github.com/gravitational/teleport/lib/authz"
+	"github.com/gravitational/teleport/lib/modules"
 	"github.com/gravitational/teleport/lib/services"
 )
 
@@ -89,7 +91,7 @@ func NewService(cfg *ServiceConfig) (*Service, error) {
 	case cfg.ResourceGetter == nil:
 		return nil, trace.BadParameter("resource getter is required")
 	case cfg.Logger == nil:
-		cfg.Logger = logrus.WithField(trace.Component, "assist.service")
+		cfg.Logger = logrus.WithField(teleport.ComponentKey, "assist.service")
 	}
 	// Embedder can be nil is the OpenAI API key is not set.
 
@@ -105,9 +107,13 @@ func NewService(cfg *ServiceConfig) (*Service, error) {
 
 // CreateAssistantConversation creates a new conversation entry in the backend.
 func (a *Service) CreateAssistantConversation(ctx context.Context, req *assist.CreateAssistantConversationRequest) (*assist.CreateAssistantConversationResponse, error) {
-	authCtx, err := authz.AuthorizeWithVerbs(ctx, a.log, a.authorizer, true, types.KindAssistant, types.VerbCreate)
+	authCtx, err := a.authorizer.Authorize(ctx)
 	if err != nil {
-		return nil, authz.ConvertAuthorizerError(ctx, a.log, err)
+		return nil, trace.Wrap(err)
+	}
+
+	if err := authCtx.CheckAccessToKind(types.KindAssistant, types.VerbCreate); err != nil {
+		return nil, trace.Wrap(err)
 	}
 
 	if userHasAccess(authCtx, req) {
@@ -120,9 +126,13 @@ func (a *Service) CreateAssistantConversation(ctx context.Context, req *assist.C
 
 // UpdateAssistantConversationInfo updates the conversation info for a conversation.
 func (a *Service) UpdateAssistantConversationInfo(ctx context.Context, req *assist.UpdateAssistantConversationInfoRequest) (*emptypb.Empty, error) {
-	authCtx, err := authz.AuthorizeWithVerbs(ctx, a.log, a.authorizer, true, types.KindAssistant, types.VerbUpdate)
+	authCtx, err := a.authorizer.Authorize(ctx)
 	if err != nil {
-		return nil, authz.ConvertAuthorizerError(ctx, a.log, err)
+		return nil, trace.Wrap(err)
+	}
+
+	if err := authCtx.CheckAccessToKind(types.KindAssistant, types.VerbUpdate); err != nil {
+		return nil, trace.Wrap(err)
 	}
 
 	if userHasAccess(authCtx, req) {
@@ -139,9 +149,13 @@ func (a *Service) UpdateAssistantConversationInfo(ctx context.Context, req *assi
 
 // GetAssistantConversations returns all conversations started by a user.
 func (a *Service) GetAssistantConversations(ctx context.Context, req *assist.GetAssistantConversationsRequest) (*assist.GetAssistantConversationsResponse, error) {
-	authCtx, err := authz.AuthorizeWithVerbs(ctx, a.log, a.authorizer, true, types.KindAssistant, types.VerbList)
+	authCtx, err := a.authorizer.Authorize(ctx)
 	if err != nil {
-		return nil, authz.ConvertAuthorizerError(ctx, a.log, err)
+		return nil, trace.Wrap(err)
+	}
+
+	if err := authCtx.CheckAccessToKind(types.KindAssistant, types.VerbList); err != nil {
+		return nil, trace.Wrap(err)
 	}
 
 	if userHasAccess(authCtx, req) {
@@ -154,9 +168,13 @@ func (a *Service) GetAssistantConversations(ctx context.Context, req *assist.Get
 
 // DeleteAssistantConversation deletes a conversation entry and associated messages from the backend.
 func (a *Service) DeleteAssistantConversation(ctx context.Context, req *assist.DeleteAssistantConversationRequest) (*emptypb.Empty, error) {
-	authCtx, err := authz.AuthorizeWithVerbs(ctx, a.log, a.authorizer, true, types.KindAssistant, types.VerbDelete)
+	authCtx, err := a.authorizer.Authorize(ctx)
 	if err != nil {
-		return nil, authz.ConvertAuthorizerError(ctx, a.log, err)
+		return nil, trace.Wrap(err)
+	}
+
+	if err := authCtx.CheckAccessToKind(types.KindAssistant, types.VerbDelete); err != nil {
+		return nil, trace.Wrap(err)
 	}
 
 	if userHasAccess(authCtx, req) {
@@ -168,9 +186,13 @@ func (a *Service) DeleteAssistantConversation(ctx context.Context, req *assist.D
 
 // GetAssistantMessages returns all messages with given conversation ID.
 func (a *Service) GetAssistantMessages(ctx context.Context, req *assist.GetAssistantMessagesRequest) (*assist.GetAssistantMessagesResponse, error) {
-	authCtx, err := authz.AuthorizeWithVerbs(ctx, a.log, a.authorizer, true, types.KindAssistant, types.VerbRead)
+	authCtx, err := a.authorizer.Authorize(ctx)
 	if err != nil {
-		return nil, authz.ConvertAuthorizerError(ctx, a.log, err)
+		return nil, trace.Wrap(err)
+	}
+
+	if err := authCtx.CheckAccessToKind(types.KindAssistant, types.VerbRead); err != nil {
+		return nil, trace.Wrap(err)
 	}
 
 	if userHasAccess(authCtx, req) {
@@ -183,9 +205,13 @@ func (a *Service) GetAssistantMessages(ctx context.Context, req *assist.GetAssis
 
 // CreateAssistantMessage adds the message to the backend.
 func (a *Service) CreateAssistantMessage(ctx context.Context, req *assist.CreateAssistantMessageRequest) (*emptypb.Empty, error) {
-	authCtx, err := authz.AuthorizeWithVerbs(ctx, a.log, a.authorizer, true, types.KindAssistant, types.VerbCreate)
+	authCtx, err := a.authorizer.Authorize(ctx)
 	if err != nil {
-		return nil, authz.ConvertAuthorizerError(ctx, a.log, err)
+		return nil, trace.Wrap(err)
+	}
+
+	if err := authCtx.CheckAccessToKind(types.KindAssistant, types.VerbCreate); err != nil {
+		return nil, trace.Wrap(err)
 	}
 
 	if userHasAccess(authCtx, req) {
@@ -197,6 +223,11 @@ func (a *Service) CreateAssistantMessage(ctx context.Context, req *assist.Create
 
 // IsAssistEnabled returns true if the assist is enabled or not on the auth level.
 func (a *Service) IsAssistEnabled(ctx context.Context, _ *assist.IsAssistEnabledRequest) (*assist.IsAssistEnabledResponse, error) {
+	if !modules.GetModules().Features().Assist {
+		// If the assist feature is not enabled on the license, the assist is not enabled.
+		return &assist.IsAssistEnabledResponse{Enabled: false}, nil
+	}
+
 	// If the embedder is not configured, the assist is not enabled as we cannot compute embeddings.
 	if a.embedder == nil {
 		return &assist.IsAssistEnabledResponse{Enabled: false}, nil
@@ -204,7 +235,7 @@ func (a *Service) IsAssistEnabled(ctx context.Context, _ *assist.IsAssistEnabled
 
 	authCtx, err := a.authorizer.Authorize(ctx)
 	if err != nil {
-		return nil, authz.ConvertAuthorizerError(ctx, a.log, err)
+		return nil, trace.Wrap(err)
 	}
 
 	// Check if this endpoint is called by a user or Proxy.
@@ -212,10 +243,9 @@ func (a *Service) IsAssistEnabled(ctx context.Context, _ *assist.IsAssistEnabled
 		checkErr := authCtx.Checker.CheckAccessToRule(
 			&services.Context{User: authCtx.User},
 			defaults.Namespace, types.KindAssistant, types.VerbRead,
-			false, /* silent */
 		)
 		if checkErr != nil {
-			return nil, authz.ConvertAuthorizerError(ctx, a.log, err)
+			return nil, trace.Wrap(err)
 		}
 	} else {
 		// This endpoint is called from Proxy to check if the assist is enabled.
@@ -237,9 +267,13 @@ func (a *Service) GetAssistantEmbeddings(ctx context.Context, msg *assist.GetAss
 		return nil, trace.BadParameter("resource kind %v is not supported", msg.Kind)
 	}
 
-	authCtx, err := authz.AuthorizeWithVerbs(ctx, a.log, a.authorizer, true, msg.Kind, types.VerbRead, types.VerbList)
+	authCtx, err := a.authorizer.Authorize(ctx)
 	if err != nil {
-		return nil, authz.ConvertAuthorizerError(ctx, a.log, err)
+		return nil, trace.Wrap(err)
+	}
+
+	if err := authCtx.CheckAccessToKind(msg.Kind, types.VerbRead, types.VerbList); err != nil {
+		return nil, trace.Wrap(err)
 	}
 
 	if a.embedder == nil {
@@ -279,7 +313,7 @@ func (a *Service) SearchUnifiedResources(ctx context.Context, msg *assist.Search
 
 	authCtx, err := a.authorizer.Authorize(ctx)
 	if err != nil {
-		return nil, authz.ConvertAuthorizerError(ctx, a.log, err)
+		return nil, trace.Wrap(err)
 	}
 
 	// Use default values for the id and content, as we only care about the embeddings.

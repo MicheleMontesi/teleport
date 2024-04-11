@@ -1,18 +1,20 @@
 /*
-Copyright 2018-2019 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package lite
 
@@ -36,10 +38,17 @@ import (
 	"github.com/mattn/go-sqlite3"
 	log "github.com/sirupsen/logrus"
 
+	"github.com/gravitational/teleport"
 	"github.com/gravitational/teleport/api/types"
 	"github.com/gravitational/teleport/api/utils"
 	"github.com/gravitational/teleport/lib/backend"
 )
+
+func init() {
+	backend.MustRegister(GetName(), func(ctx context.Context, p backend.Params) (backend.Backend, error) {
+		return New(ctx, p)
+	})
+}
 
 const (
 	// BackendName is the name of this backend.
@@ -241,7 +250,7 @@ func NewWithConfig(ctx context.Context, cfg Config) (*Backend, error) {
 	l := &Backend{
 		Config: cfg,
 		db:     db,
-		Entry:  log.WithFields(log.Fields{trace.Component: BackendName}),
+		Entry:  log.WithFields(log.Fields{teleport.ComponentKey: BackendName}),
 		clock:  cfg.Clock,
 		buf:    buf,
 		ctx:    closeCtx,
@@ -499,35 +508,39 @@ func (l *Backend) Put(ctx context.Context, i backend.Item) (*backend.Lease, erro
 
 	i.Revision = backend.CreateRevision()
 	err := l.inTransaction(ctx, func(tx *sql.Tx) error {
-		created := l.clock.Now().UTC()
-		recordID := id(created)
-		if !l.EventsOff {
-			stmt, err := tx.PrepareContext(ctx, "INSERT INTO events(type, created, kv_key, kv_modified, kv_expires, kv_value, kv_revision) values(?, ?, ?, ?, ?, ?, ?)")
-			if err != nil {
-				return trace.Wrap(err)
-			}
-			defer stmt.Close()
-
-			if _, err := stmt.ExecContext(ctx, types.OpPut, created, string(i.Key), recordID, expires(i.Expires), i.Value, i.Revision); err != nil {
-				return trace.Wrap(err)
-			}
-		}
-		stmt, err := tx.PrepareContext(ctx, "INSERT OR REPLACE INTO kv(key, modified, expires, value, revision) values(?, ?, ?, ?, ?)")
-		if err != nil {
-			return trace.Wrap(err)
-		}
-		defer stmt.Close()
-
-		if _, err := stmt.ExecContext(ctx, string(i.Key), recordID, expires(i.Expires), i.Value, i.Revision); err != nil {
-			return trace.Wrap(err)
-		}
-		return nil
+		return l.putInTransaction(ctx, i, tx)
 	})
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
 
 	return backend.NewLease(i), nil
+}
+
+func (l *Backend) putInTransaction(ctx context.Context, i backend.Item, tx *sql.Tx) error {
+	created := l.clock.Now().UTC()
+	recordID := id(created)
+	if !l.EventsOff {
+		stmt, err := tx.PrepareContext(ctx, "INSERT INTO events(type, created, kv_key, kv_modified, kv_expires, kv_value, kv_revision) values(?, ?, ?, ?, ?, ?, ?)")
+		if err != nil {
+			return trace.Wrap(err)
+		}
+		defer stmt.Close()
+
+		if _, err := stmt.ExecContext(ctx, types.OpPut, created, string(i.Key), recordID, expires(i.Expires), i.Value, i.Revision); err != nil {
+			return trace.Wrap(err)
+		}
+	}
+	stmt, err := tx.PrepareContext(ctx, "INSERT OR REPLACE INTO kv(key, modified, expires, value, revision) values(?, ?, ?, ?, ?)")
+	if err != nil {
+		return trace.Wrap(err)
+	}
+	defer stmt.Close()
+
+	if _, err := stmt.ExecContext(ctx, string(i.Key), recordID, expires(i.Expires), i.Value, i.Revision); err != nil {
+		return trace.Wrap(err)
+	}
+	return nil
 }
 
 // Update updates value in the backend

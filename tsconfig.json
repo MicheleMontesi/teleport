@@ -11,7 +11,9 @@
     "lib": ["dom", "dom.iterable", "esnext"],
     "jsx": "react-jsx",
     "module": "esnext",
-    "moduleResolution": "node",
+    "moduleResolution": "bundler",
+    "strictBindCallApply": true,
+    "noEmit": true,
     "noEmitHelpers": true,
     "resolveJsonModule": true,
     "skipLibCheck": true,
@@ -31,9 +33,10 @@
       "teleterm/*": ["web/packages/teleterm/src/*"],
       "e-teleport/*": ["e/web/teleport/src/*"],
       "e-teleterm/*": ["e/web/teleterm/src/*"],
-      "gen-proto-js/*": ["gen/proto/js/*"]
-    },
-    "outDir": "dist"
+      "gen-proto-js/*": ["gen/proto/js/*"],
+      "gen-proto-ts/*": ["gen/proto/ts/*"],
+      "access-graph": ["e/web/teleport/src/AccessGraph/Loader.tsx"],
+    }
   },
   "include": [
     "e/web/**/*.ts",
@@ -43,12 +46,12 @@
     "web/**/*.ts",
     "web/**/*.tsx",
     "web/**/*.js",
-    "web/**/*.jsx"
+    "web/**/*.jsx",
+    "../web/src/**/*.ts",
+    "../web/src/**/*.tsx"
   ],
   "references": [{ "path": "./tsconfig.node.json" }],
   "exclude": [
-    "**/vite.config.ts",
-    "web/packages/build/vite/*",
     "node_modules",
     "**/node_modules/*",
     "dist",

@@ -1,102 +1,121 @@
 /**
- * Copyright 2023 Gravitational, Inc
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
  *
- *      http://www.apache.org/licenses/LICENSE-2.0
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-import { makeRootCluster } from 'teleterm/services/tshd/testHelpers';
+import {
+  makeRootCluster,
+  makeAppGateway,
+} from 'teleterm/services/tshd/testHelpers';
 
-import * as types from '../types';
+import { VnetClient, TshdClient } from '../createClient';
+import { MockedUnaryCall } from '../cloneableClient';
 
-export class MockTshClient implements types.TshClient {
-  listRootClusters: () => Promise<types.Cluster[]>;
-  listLeafClusters = () => Promise.resolve([]);
-  getKubes: (
-    params: types.GetResourcesParams
-  ) => Promise<types.GetKubesResponse>;
-  getDatabases: (
-    params: types.GetResourcesParams
-  ) => Promise<types.GetDatabasesResponse>;
-  listDatabaseUsers: (dbUri: string) => Promise<string[]>;
-  getRequestableRoles: (
-    params: types.GetRequestableRolesParams
-  ) => Promise<types.GetRequestableRolesResponse>;
-  getServers: (
-    params: types.GetResourcesParams
-  ) => Promise<types.GetServersResponse>;
-  assumeRole: (
-    clusterUri: string,
-    requestIds: string[],
-    dropIds: string[]
-  ) => Promise<void>;
-  deleteAccessRequest: (clusterUri: string, requestId: string) => Promise<void>;
-  getAccessRequests: (clusterUri: string) => Promise<types.AccessRequest[]>;
-  getAccessRequest: (
-    clusterUri: string,
-    requestId: string
-  ) => Promise<types.AccessRequest>;
-  reviewAccessRequest: (
-    clusterUri: string,
-    params: types.ReviewAccessRequestParams
-  ) => Promise<types.AccessRequest>;
-  createAccessRequest: (
-    params: types.CreateAccessRequestParams
-  ) => Promise<types.AccessRequest>;
-  createAbortController: () => types.TshAbortController;
-  addRootCluster: (addr: string) => Promise<types.Cluster>;
-
-  listGateways: () => Promise<types.Gateway[]>;
-  createGateway: (params: types.CreateGatewayParams) => Promise<types.Gateway>;
-  removeGateway: (gatewayUri: string) => Promise<undefined>;
-  setGatewayTargetSubresourceName: (
-    gatewayUri: string,
-    targetSubresourceName: string
-  ) => Promise<types.Gateway>;
-  setGatewayLocalPort: (
-    gatewayUri: string,
-    localPort: string
-  ) => Promise<types.Gateway>;
-
-  getCluster = () => Promise.resolve(makeRootCluster());
-  getAuthSettings: (clusterUri: string) => Promise<types.AuthSettings>;
-  removeCluster = () => Promise.resolve();
-  loginLocal: (
-    params: types.LoginLocalParams,
-    abortSignal?: types.TshAbortSignal
-  ) => Promise<undefined>;
-  loginSso: (
-    params: types.LoginSsoParams,
-    abortSignal?: types.TshAbortSignal
-  ) => Promise<undefined>;
-  loginPasswordless: (
-    params: types.LoginPasswordlessParams,
-    abortSignal?: types.TshAbortSignal
-  ) => Promise<undefined>;
-  logout = () => Promise.resolve();
-  transferFile: () => undefined;
-  reportUsageEvent: () => undefined;
-
-  createConnectMyComputerRole = () => Promise.resolve({ certsReloaded: true });
+export class MockTshClient implements TshdClient {
+  listRootClusters = () => new MockedUnaryCall({ clusters: [] });
+  listLeafClusters = () => new MockedUnaryCall({ clusters: [] });
+  getKubes = () =>
+    new MockedUnaryCall({
+      agents: [],
+      totalCount: 0,
+      startKey: '',
+    });
+  getDatabases = () =>
+    new MockedUnaryCall({
+      agents: [],
+      totalCount: 0,
+      startKey: '',
+    });
+  listDatabaseUsers = () =>
+    new MockedUnaryCall({
+      users: [],
+      totalCount: 0,
+      startKey: '',
+    });
+  getRequestableRoles = () =>
+    new MockedUnaryCall({
+      roles: [],
+      applicableRoles: [],
+    });
+  getServers = () =>
+    new MockedUnaryCall({
+      agents: [],
+      totalCount: 0,
+      startKey: '',
+    });
+  getApps = () =>
+    new MockedUnaryCall({
+      agents: [],
+      totalCount: 0,
+      startKey: '',
+    });
+  assumeRole = () => new MockedUnaryCall({});
+  deleteAccessRequest = () => new MockedUnaryCall({});
+  getAccessRequests = () =>
+    new MockedUnaryCall({
+      requests: [],
+      totalCount: 0,
+      startKey: '',
+    });
+  getAccessRequest = () => new MockedUnaryCall({});
+  reviewAccessRequest = () => new MockedUnaryCall({});
+  createAccessRequest = () => new MockedUnaryCall({});
+  addCluster = () => new MockedUnaryCall(makeRootCluster());
+  listGateways = () => new MockedUnaryCall({ gateways: [] });
+  createGateway = () => new MockedUnaryCall(makeAppGateway());
+  removeGateway = () => new MockedUnaryCall({});
+  setGatewayTargetSubresourceName = () => new MockedUnaryCall(makeAppGateway());
+  setGatewayLocalPort = () => new MockedUnaryCall(makeAppGateway());
+  getCluster = () => new MockedUnaryCall(makeRootCluster());
+  getAuthSettings = () =>
+    new MockedUnaryCall({
+      localAuthEnabled: true,
+      secondFactor: 'webauthn',
+      preferredMfa: 'webauthn',
+      authProviders: [],
+      hasMessageOfTheDay: false,
+      authType: 'local',
+      allowPasswordless: false,
+      localConnectorName: '',
+    });
+  removeCluster = () => new MockedUnaryCall({});
+  login = () => new MockedUnaryCall({});
+  loginPasswordless = undefined;
+  logout = () => new MockedUnaryCall({});
+  transferFile = undefined;
+  reportUsageEvent = () => new MockedUnaryCall({});
+  createConnectMyComputerRole = () =>
+    new MockedUnaryCall({ certsReloaded: true });
   createConnectMyComputerNodeToken = () =>
-    Promise.resolve({ token: 'abc', labelsList: [] });
-  deleteConnectMyComputerToken = () => Promise.resolve();
-  waitForConnectMyComputerNodeJoin: () => Promise<types.WaitForConnectMyComputerNodeJoinResponse>;
+    new MockedUnaryCall({ token: 'abc', labelsList: [] });
+  waitForConnectMyComputerNodeJoin = () => new MockedUnaryCall({});
+  updateHeadlessAuthenticationState = () => new MockedUnaryCall({});
+  deleteConnectMyComputerNode = () => new MockedUnaryCall({});
+  getConnectMyComputerNodeName = () => new MockedUnaryCall({ name: '' });
+  listUnifiedResources = () =>
+    new MockedUnaryCall({ resources: [], nextKey: '' });
+  getUserPreferences = () => new MockedUnaryCall({});
+  updateUserPreferences = () => new MockedUnaryCall({});
+  getSuggestedAccessLists = () => new MockedUnaryCall({ accessLists: [] });
+  promoteAccessRequest = () => new MockedUnaryCall({});
+  updateTshdEventsServerAddress = () => new MockedUnaryCall({});
+  authenticateWebDevice = () => new MockedUnaryCall({});
+}
 
-  updateHeadlessAuthenticationState: (
-    params: types.UpdateHeadlessAuthenticationStateParams
-  ) => Promise<void>;
-  deleteConnectMyComputerNode = () => Promise.resolve();
-  getConnectMyComputerNodeName = () => Promise.resolve('');
-
-  listUnifiedResources = async () => ({ resources: [], nextKey: '' });
+export class MockVnetClient implements VnetClient {
+  start = () => new MockedUnaryCall({});
+  stop = () => new MockedUnaryCall({});
 }

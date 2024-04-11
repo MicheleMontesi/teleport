@@ -1,18 +1,20 @@
 /*
-Copyright 2015-2021 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 // Package test contains a backend acceptance test suite that is backend implementation independent
 // each backend will use the suite to test itself
@@ -24,6 +26,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -367,6 +370,16 @@ func testDeleteRange(t *testing.T, newBackend Constructor) {
 		item.Revision = lease.Revision
 	}
 
+	// Some Backends (e.g. DynamoDB) have a limit on the number of items that can
+	// be deleted in a single operation. This test is designed to be run with
+	// a backend that has a limit of 25 items per delete operation.
+	for i := 0; i < 100; i++ {
+		item := &backend.Item{Key: prefix(fmt.Sprintf("/prefix/c/cn%d", i)), Value: []byte(fmt.Sprintf("val cn%d", i))}
+		lease, err := uut.Create(ctx, *item)
+		require.NoError(t, err, "Failed creating value: %q => %q", item.Key, item.Value)
+		item.Revision = lease.Revision
+	}
+
 	err = uut.DeleteRange(ctx, prefix("/prefix/c"), backend.RangeEnd(prefix("/prefix/c")))
 	require.NoError(t, err)
 
@@ -550,6 +563,14 @@ func testKeepAlive(t *testing.T, newBackend Constructor) {
 // testEvents tests scenarios with event watches
 func testEvents(t *testing.T, newBackend Constructor) {
 	const eventTimeout = 10 * time.Second
+	var ttlDeleteTimeout = eventTimeout
+	// TELEPORT_BACKEND_TEST_TTL_DELETE_TIMEOUT may be set to extend the time waited
+	// for TTL deletion to occur. This is useful for backends where TTL deletion is
+	// handled externally and may take longer than the default of 10 seconds.
+	if d, err := time.ParseDuration(os.Getenv("TELEPORT_BACKEND_TEST_TTL_DELETE_TIMEOUT")); err == nil {
+		ttlDeleteTimeout = d
+		t.Logf("TTL delete timeout overridden by envvar: %s", d)
+	}
 
 	uut, clock, err := newBackend()
 	require.NoError(t, err)
@@ -618,7 +639,7 @@ func testEvents(t *testing.T, newBackend Constructor) {
 	require.Error(t, err)
 
 	// Make sure a DELETE event is emitted.
-	requireEvent(t, watcher, types.OpDelete, item.Key, eventTimeout)
+	requireEvent(t, watcher, types.OpDelete, item.Key, ttlDeleteTimeout)
 }
 
 // testFetchLimit tests fetch max items size limit.
@@ -643,7 +664,7 @@ func testFetchLimit(t *testing.T, newBackend Constructor) {
 
 	result, err := uut.GetRange(ctx, prefix("/db"), backend.RangeEnd(prefix("/db")), backend.NoLimit)
 	require.NoError(t, err)
-	require.Equal(t, itemsCount, len(result.Items))
+	require.Len(t, result.Items, itemsCount)
 }
 
 // testLimit tests limit.
@@ -684,7 +705,7 @@ func testLimit(t *testing.T, newBackend Constructor) {
 
 	result, err := uut.GetRange(ctx, prefix("/db"), backend.RangeEnd(prefix("/db")), 2)
 	require.NoError(t, err)
-	require.Equal(t, 2, len(result.Items))
+	require.Len(t, result.Items, 2)
 }
 
 // requireEvent asserts that a given event type with the given key is emitted

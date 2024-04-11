@@ -1,16 +1,20 @@
-// Copyright 2023 Gravitational, Inc
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package userloginstate
 
@@ -22,6 +26,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"google.golang.org/protobuf/types/known/emptypb"
 
+	"github.com/gravitational/teleport"
 	userloginstatev1 "github.com/gravitational/teleport/api/gen/proto/go/teleport/userloginstate/v1"
 	"github.com/gravitational/teleport/api/types"
 	conv "github.com/gravitational/teleport/api/types/userloginstate/convert/v1"
@@ -54,7 +59,7 @@ func (c *ServiceConfig) checkAndSetDefaults() error {
 	}
 
 	if c.Logger == nil {
-		c.Logger = logrus.WithField(trace.Component, "user_login_state_crud_service")
+		c.Logger = logrus.WithField(teleport.ComponentKey, "user_login_state_crud_service")
 	}
 
 	if c.Clock == nil {
@@ -89,8 +94,12 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 
 // GetUserLoginStates returns a list of all user login states.
 func (s *Service) GetUserLoginStates(ctx context.Context, _ *userloginstatev1.GetUserLoginStatesRequest) (*userloginstatev1.GetUserLoginStatesResponse, error) {
-	_, err := authz.AuthorizeWithVerbs(ctx, s.log, s.authorizer, true, types.KindUserLoginState, types.VerbRead, types.VerbList)
+	authCtx, err := s.authorizer.Authorize(ctx)
 	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	if err := authCtx.CheckAccessToKind(types.KindUserLoginState, types.VerbRead, types.VerbList); err != nil {
 		return nil, trace.Wrap(err)
 	}
 
@@ -111,8 +120,12 @@ func (s *Service) GetUserLoginStates(ctx context.Context, _ *userloginstatev1.Ge
 
 // GetUserLoginState returns the specified user login state resource.
 func (s *Service) GetUserLoginState(ctx context.Context, req *userloginstatev1.GetUserLoginStateRequest) (*userloginstatev1.UserLoginState, error) {
-	_, err := authz.AuthorizeWithVerbs(ctx, s.log, s.authorizer, true, types.KindUserLoginState, types.VerbRead)
+	authCtx, err := s.authorizer.Authorize(ctx)
 	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	if err := authCtx.CheckAccessToKind(types.KindUserLoginState, types.VerbRead); err != nil {
 		return nil, trace.Wrap(err)
 	}
 
@@ -126,8 +139,12 @@ func (s *Service) GetUserLoginState(ctx context.Context, req *userloginstatev1.G
 
 // UpsertUserLoginState creates or updates a user login state resource.
 func (s *Service) UpsertUserLoginState(ctx context.Context, req *userloginstatev1.UpsertUserLoginStateRequest) (*userloginstatev1.UserLoginState, error) {
-	_, err := authz.AuthorizeWithVerbs(ctx, s.log, s.authorizer, true, types.KindUserLoginState, types.VerbCreate, types.VerbUpdate)
+	authCtx, err := s.authorizer.Authorize(ctx)
 	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	if err := authCtx.CheckAccessToKind(types.KindUserLoginState, types.VerbCreate, types.VerbUpdate); err != nil {
 		return nil, trace.Wrap(err)
 	}
 
@@ -146,8 +163,12 @@ func (s *Service) UpsertUserLoginState(ctx context.Context, req *userloginstatev
 
 // DeleteUserLoginState removes the specified user login state resource.
 func (s *Service) DeleteUserLoginState(ctx context.Context, req *userloginstatev1.DeleteUserLoginStateRequest) (*emptypb.Empty, error) {
-	_, err := authz.AuthorizeWithVerbs(ctx, s.log, s.authorizer, true, types.KindUserLoginState, types.VerbDelete)
+	authCtx, err := s.authorizer.Authorize(ctx)
 	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	if err := authCtx.CheckAccessToKind(types.KindUserLoginState, types.VerbDelete); err != nil {
 		return nil, trace.Wrap(err)
 	}
 
@@ -161,8 +182,12 @@ func (s *Service) DeleteUserLoginState(ctx context.Context, req *userloginstatev
 
 // DeleteAllUserLoginStates removes all user login states.
 func (s *Service) DeleteAllUserLoginStates(ctx context.Context, _ *userloginstatev1.DeleteAllUserLoginStatesRequest) (*emptypb.Empty, error) {
-	_, err := authz.AuthorizeWithVerbs(ctx, s.log, s.authorizer, true, types.KindUserLoginState, types.VerbDelete)
+	authCtx, err := s.authorizer.Authorize(ctx)
 	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	if err := authCtx.CheckAccessToKind(types.KindUserLoginState, types.VerbDelete); err != nil {
 		return nil, trace.Wrap(err)
 	}
 

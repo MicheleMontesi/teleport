@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/gravitational/trace"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v2"
 
@@ -372,8 +373,8 @@ func TestMarshallCreateHostUserModeJSON(t *testing.T) {
 	}{
 		{input: CreateHostUserMode_HOST_USER_MODE_OFF, expected: "off"},
 		{input: CreateHostUserMode_HOST_USER_MODE_UNSPECIFIED, expected: ""},
-		{input: CreateHostUserMode_HOST_USER_MODE_DROP, expected: "drop"},
 		{input: CreateHostUserMode_HOST_USER_MODE_KEEP, expected: "keep"},
+		{input: CreateHostUserMode_HOST_USER_MODE_INSECURE_DROP, expected: "insecure-drop"},
 	} {
 		got, err := json.Marshal(&tc.input)
 		require.NoError(t, err)
@@ -388,8 +389,8 @@ func TestMarshallCreateHostUserModeYAML(t *testing.T) {
 	}{
 		{input: CreateHostUserMode_HOST_USER_MODE_OFF, expected: "\"off\""},
 		{input: CreateHostUserMode_HOST_USER_MODE_UNSPECIFIED, expected: "\"\""},
-		{input: CreateHostUserMode_HOST_USER_MODE_DROP, expected: "drop"},
 		{input: CreateHostUserMode_HOST_USER_MODE_KEEP, expected: "keep"},
+		{input: CreateHostUserMode_HOST_USER_MODE_INSECURE_DROP, expected: "insecure-drop"},
 	} {
 		got, err := yaml.Marshal(&tc.input)
 		require.NoError(t, err)
@@ -404,10 +405,10 @@ func TestUnmarshallCreateHostUserModeJSON(t *testing.T) {
 	}{
 		{expected: CreateHostUserMode_HOST_USER_MODE_OFF, input: "\"off\""},
 		{expected: CreateHostUserMode_HOST_USER_MODE_UNSPECIFIED, input: "\"\""},
-		{expected: CreateHostUserMode_HOST_USER_MODE_DROP, input: "\"drop\""},
 		{expected: CreateHostUserMode_HOST_USER_MODE_KEEP, input: "\"keep\""},
 		{expected: CreateHostUserMode_HOST_USER_MODE_KEEP, input: 3},
 		{expected: CreateHostUserMode_HOST_USER_MODE_OFF, input: 1},
+		{expected: CreateHostUserMode_HOST_USER_MODE_INSECURE_DROP, input: 4},
 	} {
 		var got CreateHostUserMode
 		err := json.Unmarshal([]byte(fmt.Sprintf("%v", tc.input)), &got)
@@ -424,12 +425,97 @@ func TestUnmarshallCreateHostUserModeYAML(t *testing.T) {
 		{expected: CreateHostUserMode_HOST_USER_MODE_OFF, input: "\"off\""},
 		{expected: CreateHostUserMode_HOST_USER_MODE_OFF, input: "off"},
 		{expected: CreateHostUserMode_HOST_USER_MODE_UNSPECIFIED, input: "\"\""},
-		{expected: CreateHostUserMode_HOST_USER_MODE_DROP, input: "drop"},
 		{expected: CreateHostUserMode_HOST_USER_MODE_KEEP, input: "keep"},
+		{expected: CreateHostUserMode_HOST_USER_MODE_INSECURE_DROP, input: "insecure-drop"},
 	} {
 		var got CreateHostUserMode
 		err := yaml.Unmarshal([]byte(tc.input), &got)
 		require.NoError(t, err)
 		require.Equal(t, tc.expected, got)
+	}
+}
+
+func TestRoleV6_CheckAndSetDefaults(t *testing.T) {
+	t.Parallel()
+	requireBadParameterContains := func(contains string) require.ErrorAssertionFunc {
+		return func(t require.TestingT, err error, msgAndArgs ...interface{}) {
+			require.True(t, trace.IsBadParameter(err))
+			require.ErrorContains(t, err, contains)
+		}
+	}
+	newRole := func(t *testing.T, spec RoleSpecV6) *RoleV6 {
+		return &RoleV6{
+			Metadata: Metadata{
+				Name: "test",
+			},
+			Spec: spec,
+		}
+	}
+
+	tests := []struct {
+		name         string
+		role         *RoleV6
+		requireError require.ErrorAssertionFunc
+	}{
+		{
+			name: "spiffe: valid",
+			role: newRole(t, RoleSpecV6{
+				Allow: RoleConditions{
+					SPIFFE: []*SPIFFERoleCondition{{Path: "/test"}},
+				},
+			}),
+			requireError: require.NoError,
+		},
+		{
+			name: "spiffe: valid regex path",
+			role: newRole(t, RoleSpecV6{
+				Allow: RoleConditions{
+					SPIFFE: []*SPIFFERoleCondition{{Path: `^\/svc\/foo\/.*\/bar$`}},
+				},
+			}),
+			requireError: require.NoError,
+		},
+		{
+			name: "spiffe: missing path",
+			role: newRole(t, RoleSpecV6{
+				Allow: RoleConditions{
+					SPIFFE: []*SPIFFERoleCondition{{Path: ""}},
+				},
+			}),
+			requireError: requireBadParameterContains("path: should be non-empty"),
+		},
+		{
+			name: "spiffe: path not prepended",
+			role: newRole(t, RoleSpecV6{
+				Allow: RoleConditions{
+					SPIFFE: []*SPIFFERoleCondition{{Path: "foo"}},
+				},
+			}),
+			requireError: requireBadParameterContains("path: should start with /"),
+		},
+		{
+			name: "spiffe: invalid ip cidr",
+			role: newRole(t, RoleSpecV6{
+				Allow: RoleConditions{
+					SPIFFE: []*SPIFFERoleCondition{
+						{
+							Path: "/foo",
+							IPSANs: []string{
+								"10.0.0.1/24",
+								"llama",
+							},
+						},
+					},
+				},
+			}),
+			requireError: requireBadParameterContains("validating ip_sans[1]: invalid CIDR address: llama"),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.role.CheckAndSetDefaults()
+			tt.requireError(t, err)
+		})
 	}
 }

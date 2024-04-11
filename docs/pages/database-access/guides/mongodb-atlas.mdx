@@ -6,6 +6,15 @@ videoBanner: mu_ZKTjnFJ8
 
 (!docs/pages/includes/database-access/db-introduction.mdx  dbType="MongoDB Atlas cluster" dbConfigure="MongoDB Atlas with mutual TLS authentication or AWS IAM" dbName="MongoDB Atlas" !)
 
+## How it works
+
+The Teleport Database Service communicates with MongoDB Atlas using mutual TLS.
+You configure MongoDB Atlas to trust the Teleport certificate authority for
+database clients, and Teleport to trust the Let's Encrypt CA, which signs
+certificates for MongoDB Atlas. When a user connects to MongoDB Atlas via
+Teleport, the Teleport Database Service authenticates using a certificate and
+forwards user traffic to MongoDB Atlas.
+
 <Tabs>
 <TabItem scope={["oss", "enterprise"]} label="Self-Hosted">
 ![Teleport Database Access MongoDB Self-Hosted](../../../img/database-access/guides/mongodbatlas_selfhosted.png)
@@ -317,14 +326,7 @@ $ tsh db ls
 To retrieve credentials for a database and connect to it:
 
 ```code
-$ tsh db connect mongodb-atlas
-```
-
-You can optionally specify the database name and the user to use by default
-when connecting to the database instance:
-
-```code
-$ tsh db connect --db-user=alice mongodb-atlas
+$ tsh db connect --db-user=alice --db-name dev mongodb-atlas
 ```
 </TabItem>
 <TabItem label="AWS IAM authentication">
@@ -332,14 +334,14 @@ To retrieve credentials for a database and connect to it, you must provide the
 database username in the `role/<role-name>` format:
 
 ```code
-$ tsh db connect --db-user=role/teleport-access mongodb-atlas
+$ tsh db connect --db-user=role/teleport-access --db-name dev mongodb-atlas
 ```
 
 Alternatively, you provide the full ARN as the database username when connecting
 to the database instance:
 
 ```code
-$ tsh db connect --db-user=arn:aws:iam::111111111111:role/teleport-access mongodb-atlas
+$ tsh db connect --db-user=arn:aws:iam::111111111111:role/teleport-access --db-name dev mongodb-atlas
 ```
 </TabItem>
 </Tabs>

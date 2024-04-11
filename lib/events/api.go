@@ -1,18 +1,20 @@
 /*
-Copyright 2015-2020 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package events
 
@@ -422,6 +424,13 @@ const (
 	// DatabaseSessionStartEvent is emitted when a database client attempts
 	// to connect to a database.
 	DatabaseSessionStartEvent = "db.session.start"
+	// DatabaseSessionUserCreateEvent is emitted after provisioning new database user.
+	DatabaseSessionUserCreateEvent = "db.session.user.create"
+	// DatabaseSessionUserDeactivateEvent is emitted after disabling/deleting the auto-provisioned database user.
+	DatabaseSessionUserDeactivateEvent = "db.session.user.deactivate"
+	// DatabaseSessionPermissionsUpdateEvent is emitted after assigning
+	// the auto-provisioned database user permissions.
+	DatabaseSessionPermissionsUpdateEvent = "db.session.permissions.update"
 	// DatabaseSessionEndEvent is emitted when a database client disconnects
 	// from a database.
 	DatabaseSessionEndEvent = "db.session.end"
@@ -431,6 +440,7 @@ const (
 	// DatabaseSessionQueryFailedEvent is emitted when database client's request
 	// to execute a database query/command was unsuccessful.
 	DatabaseSessionQueryFailedEvent = "db.session.query.failed"
+
 	// DatabaseSessionPostgresParseEvent is emitted when a Postgres client
 	// creates a prepared statement using extended query protocol.
 	DatabaseSessionPostgresParseEvent = "db.session.postgres.statements.parse"
@@ -627,9 +637,27 @@ const (
 	// Device enroll tokens are issued by either a device admin or during
 	// client-side auto-enrollment.
 	DeviceEnrollTokenCreateEvent = "device.token.create"
+	// DeviceWebTokenCreateEvent is emitted when a new device web token is issued.
+	// Device web tokens are issued during Web login for users that own a suitable
+	// trusted device.
+	// Tokens are spent in exchange for a single on-behalf-of device
+	// authentication attempt.
+	DeviceWebTokenCreateEvent = "device.webtoken.create"
+	// DeviceAuthenticateConfirmEvent is emitted when a device web authentication
+	// attempt is confirmed (via the ConfirmDeviceWebAuthentication RPC).
+	// A confirmed web authentication means the WebSession itself now holds
+	// augmented TLS and SSH certificates.
+	DeviceAuthenticateConfirmEvent = "device.authenticate.confirm"
 
 	// BotJoinEvent is emitted when a bot joins
 	BotJoinEvent = "bot.join"
+	// BotCreateEvent is emitted when a bot is created
+	BotCreateEvent = "bot.create"
+	// BotUpdateEvent is emitted when a bot is updated
+	BotUpdateEvent = "bot.update"
+	// BotDeleteEvent is emitted when a bot is deleted
+	BotDeleteEvent = "bot.delete"
+
 	// InstanceJoinEvent is emitted when an instance joins
 	InstanceJoinEvent = "instance.join"
 
@@ -668,6 +696,12 @@ const (
 	// OktaAssignmentCleanupEvent is emitted when an assignment is cleaned up.
 	OktaAssignmentCleanupEvent = "okta.assignment.cleanup"
 
+	// OktaAccessListSyncEvent is emitted when an access list synchronization has completed.
+	OktaAccessListSyncEvent = "okta.access_list.sync"
+
+	// OktaUserSyncEvent is emitted when an access list synchronization has completed.
+	OktaUserSyncEvent = "okta.user.sync"
+
 	// AccessListCreateEvent is emitted when an access list is created.
 	AccessListCreateEvent = "access_list.create"
 
@@ -700,6 +734,29 @@ const (
 
 	// SecReportsReportRunEvent is emitted when a security report is run.
 	SecReportsReportRunEvent = "secreports.report.run"
+
+	// ExternalAuditStorageEnableEvent is emitted when External Audit Storage is
+	// enabled.
+	ExternalAuditStorageEnableEvent = "external_audit_storage.enable"
+	// ExternalAuditStorageDisableEvent is emitted when External Audit Storage is
+	// disabled.
+	ExternalAuditStorageDisableEvent = "external_audit_storage.disable"
+
+	// CreateMFAAuthChallengeEvent is emitted when an MFA auth challenge is created.
+	CreateMFAAuthChallengeEvent = "mfa_auth_challenge.create"
+
+	// ValidateMFAAuthResponseEvent is emitted when an MFA auth challenge is validated.
+	ValidateMFAAuthResponseEvent = "mfa_auth_challenge.validate"
+
+	// SPIFFESVIDIssuedEvent is emitted when a SPIFFE SVID is issued.
+	SPIFFESVIDIssuedEvent = "spiffe.svid.issued"
+
+	// AuthPreferenceUpdateEvent is emitted when a user updates the cluster authentication preferences.
+	AuthPreferenceUpdateEvent = "auth_preference.update"
+	// ClusterNetworkingConfigUpdateEvent is emitted when a user updates the cluster networking configuration.
+	ClusterNetworkingConfigUpdateEvent = "cluster_networking_config.update"
+	// SessionRecordingConfigUpdateEvent is emitted when a user updates the cluster session recording configuration.
+	SessionRecordingConfigUpdateEvent = "session_recording_config.update"
 )
 
 const (

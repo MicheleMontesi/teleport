@@ -1,17 +1,19 @@
 /**
- * Copyright 2023 Gravitational, Inc
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
  *
- *      http://www.apache.org/licenses/LICENSE-2.0
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 import React, { ReactElement, useCallback, useEffect } from 'react';
@@ -20,12 +22,13 @@ import {
   makeSuccessAttempt,
   mapAttempt,
   useAsync,
+  Attempt,
 } from 'shared/hooks/useAsync';
 import { Text } from 'design';
 import * as icons from 'design/Icon';
 
 import { useSearchContext } from '../SearchContext';
-import { ParametrizedAction } from '../actions';
+import { ParametrizedAction, Parameter } from '../actions';
 
 import { IconAndContent, NonInteractiveItem, ResultList } from './ResultList';
 import { actionPicker } from './pickers';
@@ -47,11 +50,12 @@ export function ParameterPicker(props: ParameterPickerProps) {
   const [suggestionsAttempt, getSuggestions] = useAsync(
     props.action.parameter.getSuggestions
   );
-  const inputSuggestionAttempt = makeSuccessAttempt(inputValue && [inputValue]);
-  const $suggestionsError =
-    suggestionsAttempt.status === 'error' ? (
-      <SuggestionsError statusText={suggestionsAttempt.statusText} />
-    ) : null;
+  const inputSuggestionAttempt = makeSuccessAttempt(
+    inputValue &&
+      !props.action.parameter.allowOnlySuggestions && [
+        { value: inputValue, displayText: inputValue },
+      ]
+  );
 
   useEffect(() => {
     getSuggestions();
@@ -60,16 +64,25 @@ export function ParameterPicker(props: ParameterPickerProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const attempt = mapAttempt(suggestionsAttempt, suggestions =>
-    suggestions.filter(
-      v =>
-        v.toLocaleLowerCase().includes(inputValue.toLocaleLowerCase()) &&
-        v !== inputValue
-    )
+  const matchingSuggestionsAttempt = mapAttempt(
+    suggestionsAttempt,
+    suggestions =>
+      suggestions.filter(
+        v =>
+          v.displayText
+            .toLocaleLowerCase()
+            .includes(inputValue.toLocaleLowerCase()) &&
+          v.displayText !== inputValue
+      )
   );
 
+  const $suggestionsMessage = getSuggestionsMessage({
+    matchingSuggestionsAttempt,
+    parameter: props.action.parameter,
+  });
+
   const onPick = useCallback(
-    (item: string) => {
+    (item: Parameter) => {
       props.action.perform(item);
 
       resetInput();
@@ -87,16 +100,18 @@ export function ParameterPicker(props: ParameterPickerProps) {
   return (
     <PickerContainer>
       {props.input}
-      <ResultList<string>
-        attempts={[inputSuggestionAttempt, attempt]}
-        ExtraTopComponent={$suggestionsError}
+      <ResultList<Parameter>
+        attempts={[inputSuggestionAttempt, matchingSuggestionsAttempt]}
+        ExtraTopComponent={$suggestionsMessage}
         onPick={onPick}
         onBack={onBack}
         addWindowEventListener={addWindowEventListener}
         render={item => ({
-          key: item,
+          key: item.value,
           Component: (
-            <Highlight text={item} keywords={[inputValue]}></Highlight>
+            <Text typography="body1" fontSize={1}>
+              <Highlight text={item.displayText} keywords={[inputValue]} />
+            </Text>
           ),
         })}
       />
@@ -104,13 +119,53 @@ export function ParameterPicker(props: ParameterPickerProps) {
   );
 }
 
-export const SuggestionsError = ({ statusText }: { statusText: string }) => (
+export const SuggestionsError = ({
+  statusText,
+  allowOnlySuggestions,
+}: {
+  statusText: string;
+  allowOnlySuggestions?: boolean;
+}) => (
   <NonInteractiveItem>
     <IconAndContent Icon={icons.Warning} iconColor="warning.main">
       <Text typography="body1">
-        Could not fetch suggestions. Type in the desired value to continue.
+        Could not fetch suggestions.{' '}
+        {!allowOnlySuggestions && 'Type in the desired value to continue.'}
       </Text>
       <Text typography="body2">{statusText}</Text>
     </IconAndContent>
   </NonInteractiveItem>
 );
+
+export const NoSuggestionsAvailable = ({ message }: { message: string }) => (
+  <NonInteractiveItem>
+    <IconAndContent Icon={icons.Info} iconColor="text.slightlyMuted">
+      <Text typography="body1">{message}</Text>
+    </IconAndContent>
+  </NonInteractiveItem>
+);
+
+function getSuggestionsMessage({
+  matchingSuggestionsAttempt,
+  parameter,
+}: {
+  matchingSuggestionsAttempt: Attempt<Parameter[]>;
+  parameter?: ParametrizedAction['parameter'];
+}) {
+  if (matchingSuggestionsAttempt.status === 'error') {
+    return (
+      <SuggestionsError statusText={matchingSuggestionsAttempt.statusText} />
+    );
+  }
+  if (
+    parameter.allowOnlySuggestions &&
+    matchingSuggestionsAttempt.status === 'success' &&
+    matchingSuggestionsAttempt.data.length === 0
+  ) {
+    return (
+      <NoSuggestionsAvailable
+        message={parameter.noSuggestionsAvailableMessage}
+      />
+    );
+  }
+}

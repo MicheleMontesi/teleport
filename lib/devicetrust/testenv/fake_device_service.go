@@ -1,16 +1,20 @@
-// Copyright 2022 Gravitational, Inc
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package testenv
 
@@ -22,6 +26,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"fmt"
+	"slices"
 	"sync"
 
 	"github.com/google/uuid"
@@ -41,6 +46,11 @@ type storedDevice struct {
 	enrollToken string // stored separately from the device
 }
 
+type storedWebToken struct {
+	expectedDeviceID string
+	id, token        string
+}
+
 type FakeDeviceService struct {
 	devicepb.UnimplementedDeviceTrustServiceServer
 
@@ -52,10 +62,41 @@ type FakeDeviceService struct {
 	mu                  sync.Mutex
 	devices             []storedDevice
 	devicesLimitReached bool
+	deviceWebTokens     []storedWebToken
 }
 
 func newFakeDeviceService() *FakeDeviceService {
 	return &FakeDeviceService{}
+}
+
+// CreateDeviceWebTokenForTesting creates a fake [devicepb.DeviceWebToken] for
+// testing.
+// The returned token can be used for a successful [AuthenticateDevice] call.
+func (s *FakeDeviceService) CreateDeviceWebTokenForTesting(expectedDeviceID string) (*devicepb.DeviceWebToken, error) {
+	// "True" device web token creation requires quite a bit more and calculates
+	// the expected device itself.
+	// For the purposes of this fake this is good enough to give us confidence
+	// that the client-side ceremony is passing all the right inputs.
+	if expectedDeviceID == "" {
+		return nil, trace.BadParameter("expectedDeviceID required")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	id := uuid.NewString()
+	token := uuid.NewString()
+
+	s.deviceWebTokens = append(s.deviceWebTokens, storedWebToken{
+		expectedDeviceID: expectedDeviceID,
+		id:               id,
+		token:            token,
+	})
+
+	return &devicepb.DeviceWebToken{
+		Id:    id,
+		Token: token,
+	}, nil
 }
 
 // SetDevicesLimitReached simulates a server where the devices limit was already
@@ -250,7 +291,7 @@ func (s *FakeDeviceService) EnrollDevice(stream devicepb.DeviceTrustService_Enro
 	case devicepb.OSType_OS_TYPE_MACOS:
 		cred, pub, err = enrollMacOS(stream, initReq)
 		// err handled below
-	case devicepb.OSType_OS_TYPE_WINDOWS:
+	case devicepb.OSType_OS_TYPE_LINUX, devicepb.OSType_OS_TYPE_WINDOWS:
 		cred, err = enrollTPM(stream, initReq)
 		// err handled below
 	default:
@@ -442,10 +483,19 @@ func (s *FakeDeviceService) AuthenticateDevice(stream devicepb.DeviceTrustServic
 		return trace.Wrap(err)
 	}
 
+	// Validate/spent the device web token, if present.
+	hasWebToken := false
+	if webToken := initReq.DeviceWebToken; webToken != nil {
+		if err := s.spendDeviceWebToken(webToken, dev); err != nil {
+			return trace.Wrap(err)
+		}
+		hasWebToken = true
+	}
+
 	switch dev.pb.OsType {
 	case devicepb.OSType_OS_TYPE_MACOS:
 		err = authenticateDeviceMacOS(dev, stream)
-	case devicepb.OSType_OS_TYPE_WINDOWS:
+	case devicepb.OSType_OS_TYPE_LINUX, devicepb.OSType_OS_TYPE_WINDOWS:
 		err = authenticateDeviceTPM(stream)
 	default:
 		err = fmt.Errorf("unrecognized os type %q", dev.pb.OsType)
@@ -454,15 +504,44 @@ func (s *FakeDeviceService) AuthenticateDevice(stream devicepb.DeviceTrustServic
 		return trace.Wrap(err)
 	}
 
+	newCerts := &devicepb.UserCertificates{}
+	if !hasWebToken {
+		newCerts.X509Der = []byte("<insert augmented X.509 cert here")
+		newCerts.SshAuthorizedKey = []byte("<insert augmented SSH cert here")
+	}
+
 	err = stream.Send(&devicepb.AuthenticateDeviceResponse{
 		Payload: &devicepb.AuthenticateDeviceResponse_UserCertificates{
-			UserCertificates: &devicepb.UserCertificates{
-				X509Der:          []byte("<insert augmented X.509 cert here"),
-				SshAuthorizedKey: []byte("<insert augmented SSH cert here"),
-			},
+			UserCertificates: newCerts,
 		},
 	})
 	return trace.Wrap(err)
+}
+
+func (s *FakeDeviceService) spendDeviceWebToken(webToken *devicepb.DeviceWebToken, dev *storedDevice) error {
+	const invalidWebTokenMessage = "invalid device web token"
+
+	for i, token := range s.deviceWebTokens {
+		if token.id != webToken.Id {
+			continue
+		}
+
+		// Spend token regardless of outcome.
+		s.deviceWebTokens = slices.Delete(s.deviceWebTokens, i, i+1)
+
+		// Validate token info.
+		switch {
+		case token.token != webToken.Token:
+			return trace.AccessDenied(invalidWebTokenMessage)
+		case token.expectedDeviceID != dev.pb.Id:
+			return trace.AccessDenied(invalidWebTokenMessage)
+		}
+
+		return nil // Valid token.
+	}
+
+	// Token ID not found.
+	return trace.AccessDenied(invalidWebTokenMessage)
 }
 
 func authenticateDeviceMacOS(dev *storedDevice, stream devicepb.DeviceTrustService_AuthenticateDeviceServer) error {

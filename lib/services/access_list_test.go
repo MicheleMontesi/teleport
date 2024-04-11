@@ -1,18 +1,20 @@
 /*
-Copyright 2023 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package services
 
@@ -25,6 +27,7 @@ import (
 	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/require"
 
+	"github.com/gravitational/teleport/api/types"
 	"github.com/gravitational/teleport/api/types/accesslist"
 	"github.com/gravitational/teleport/api/types/header"
 	"github.com/gravitational/teleport/api/types/trait"
@@ -138,9 +141,11 @@ func TestAccessListMarshal(t *testing.T) {
 			},
 		},
 	)
+
 	require.NoError(t, err)
 	data, err := MarshalAccessList(expected)
 	require.NoError(t, err)
+
 	actual, err := UnmarshalAccessList(data)
 	require.NoError(t, err)
 	require.Equal(t, expected, actual)
@@ -220,9 +225,7 @@ func TestIsAccessListOwner(t *testing.T) {
 					"otrait2": {"ovalue3", "ovalue4"},
 				},
 			},
-			errAssertionFunc: func(t require.TestingT, err error, i ...any) {
-				require.True(t, trace.IsAccessDenied(err))
-			},
+			errAssertionFunc: requireAccessDenied,
 		},
 		{
 			name: "is owner with missing roles",
@@ -234,9 +237,7 @@ func TestIsAccessListOwner(t *testing.T) {
 					"otrait2": {"ovalue3", "ovalue4"},
 				},
 			},
-			errAssertionFunc: func(t require.TestingT, err error, i ...any) {
-				require.True(t, trace.IsAccessDenied(err))
-			},
+			errAssertionFunc: requireAccessDenied,
 		},
 		{
 			name: "is owner with missing traits",
@@ -248,9 +249,7 @@ func TestIsAccessListOwner(t *testing.T) {
 					"otrait2": {"ovalue3"},
 				},
 			},
-			errAssertionFunc: func(t require.TestingT, err error, i ...any) {
-				require.True(t, trace.IsAccessDenied(err))
-			},
+			errAssertionFunc: requireAccessDenied,
 		},
 	}
 
@@ -260,26 +259,40 @@ func TestIsAccessListOwner(t *testing.T) {
 			t.Parallel()
 
 			accessList := newAccessList(t)
+
 			test.errAssertionFunc(t, IsAccessListOwner(test.identity, accessList))
 		})
 	}
 }
 
-// testMembersGetter implements AccessListMembersGetter for testing.
-type testMembersGetter struct {
+// testMembersAndLockGetter implements AccessListMembersGetter and LockGetter for testing.
+type testMembersAndLockGetter struct {
 	members map[string]map[string]*accesslist.AccessListMember
+	locks   map[string]types.Lock
 }
 
 // ListAccessListMembers returns a paginated list of all access list members.
-func (t *testMembersGetter) ListAccessListMembers(ctx context.Context, accessList string, _ int, _ string) (members []*accesslist.AccessListMember, nextToken string, err error) {
+func (t *testMembersAndLockGetter) ListAccessListMembers(ctx context.Context, accessList string, _ int, _ string) (members []*accesslist.AccessListMember, nextToken string, err error) {
 	for _, member := range t.members[accessList] {
 		members = append(members, member)
 	}
 	return members, "", nil
 }
 
+// ListAllAccessListMembers returns a paginated list of all access list members for all access lists.
+func (t *testMembersAndLockGetter) ListAllAccessListMembers(ctx context.Context, pageSize int, pageToken string) ([]*accesslist.AccessListMember, string, error) {
+	var allMembers []*accesslist.AccessListMember
+	for _, members := range t.members {
+		for _, member := range members {
+			allMembers = append(allMembers, member)
+		}
+	}
+
+	return allMembers, "", nil
+}
+
 // GetAccessListMember returns the specified access list member resource.
-func (t *testMembersGetter) GetAccessListMember(ctx context.Context, accessList string, memberName string) (*accesslist.AccessListMember, error) {
+func (t *testMembersAndLockGetter) GetAccessListMember(ctx context.Context, accessList string, memberName string) (*accesslist.AccessListMember, error) {
 	members, ok := t.members[accessList]
 	if !ok {
 		return nil, trace.NotFound("not found")
@@ -293,12 +306,41 @@ func (t *testMembersGetter) GetAccessListMember(ctx context.Context, accessList 
 	return member, nil
 }
 
-func TestIsAccessListMember(t *testing.T) {
+// GetLock gets a lock by name.
+func (t *testMembersAndLockGetter) GetLock(_ context.Context, name string) (types.Lock, error) {
+	if t.locks == nil {
+		return nil, trace.NotFound("not found")
+	}
+
+	lock, ok := t.locks[name]
+	if !ok {
+		return nil, trace.NotFound("not found")
+	}
+
+	return lock, nil
+}
+
+// GetLocks gets all/in-force locks that match at least one of the targets when specified.
+func (t *testMembersAndLockGetter) GetLocks(ctx context.Context, inForceOnly bool, targets ...types.LockTarget) ([]types.Lock, error) {
+	locks := make([]types.Lock, 0, len(t.locks))
+	for _, lock := range t.locks {
+		locks = append(locks, lock)
+	}
+	return locks, nil
+}
+
+func requireAccessDenied(t require.TestingT, err error, i ...interface{}) {
+	require.Error(t, err)
+	require.True(t, trace.IsAccessDenied(err), "expected AccessDenied, got %T: %s", err, err.Error())
+}
+
+func TestIsAccessListMemberChecker(t *testing.T) {
 	tests := []struct {
 		name             string
 		identity         tlsca.Identity
 		memberCtx        context.Context
 		currentTime      time.Time
+		locks            map[string]types.Lock
 		errAssertionFunc require.ErrorAssertionFunc
 	}{
 		{
@@ -313,6 +355,24 @@ func TestIsAccessListMember(t *testing.T) {
 			},
 			currentTime:      time.Date(2023, 2, 1, 0, 0, 0, 0, time.UTC),
 			errAssertionFunc: require.NoError,
+		},
+		{
+			name: "is locked member",
+			identity: tlsca.Identity{
+				Username: member1,
+				Groups:   []string{"mrole1", "mrole2"},
+				Traits: map[string][]string{
+					"mtrait1": {"mvalue1", "mvalue2"},
+					"mtrait2": {"mvalue3", "mvalue4"},
+				},
+			},
+			locks: map[string]types.Lock{
+				"test-lock": newUserLock(t, "test-lock", member1),
+			},
+			currentTime: time.Date(2023, 2, 1, 0, 0, 0, 0, time.UTC),
+			errAssertionFunc: func(t require.TestingT, err error, i ...interface{}) {
+				require.ErrorIs(t, err, trace.AccessDenied("user %s is currently locked", member1))
+			},
 		},
 		{
 			name: "is not a member",
@@ -339,10 +399,8 @@ func TestIsAccessListMember(t *testing.T) {
 					"mtrait2": {"mvalue3", "mvalue4"},
 				},
 			},
-			currentTime: time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC),
-			errAssertionFunc: func(t require.TestingT, err error, i ...interface{}) {
-				require.True(t, trace.IsAccessDenied(err))
-			},
+			currentTime:      time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC),
+			errAssertionFunc: requireAccessDenied,
 		},
 		{
 			name: "member has no expiration",
@@ -367,10 +425,21 @@ func TestIsAccessListMember(t *testing.T) {
 					"mtrait2": {"mvalue3", "mvalue4"},
 				},
 			},
-			currentTime: time.Date(2023, 2, 1, 0, 0, 0, 0, time.UTC),
-			errAssertionFunc: func(t require.TestingT, err error, i ...interface{}) {
-				require.True(t, trace.IsAccessDenied(err))
+			currentTime:      time.Date(2023, 2, 1, 0, 0, 0, 0, time.UTC),
+			errAssertionFunc: requireAccessDenied,
+		},
+		{
+			name: "is member with no expiration and missing roles",
+			identity: tlsca.Identity{
+				Username: member3,
+				Groups:   []string{"mrole1"},
+				Traits: map[string][]string{
+					"mtrait1": {"mvalue1", "mvalue2"},
+					"mtrait2": {"mvalue3", "mvalue4"},
+				},
 			},
+			currentTime:      time.Date(2023, 2, 1, 0, 0, 0, 0, time.UTC),
+			errAssertionFunc: requireAccessDenied,
 		},
 		{
 			name: "is member with missing traits",
@@ -382,10 +451,21 @@ func TestIsAccessListMember(t *testing.T) {
 					"mtrait2": {"mvalue3"},
 				},
 			},
-			currentTime: time.Date(2023, 2, 1, 0, 0, 0, 0, time.UTC),
-			errAssertionFunc: func(t require.TestingT, err error, i ...interface{}) {
-				require.True(t, trace.IsAccessDenied(err))
+			currentTime:      time.Date(2023, 2, 1, 0, 0, 0, 0, time.UTC),
+			errAssertionFunc: requireAccessDenied,
+		},
+		{
+			name: "is member with no expiration and missing traits",
+			identity: tlsca.Identity{
+				Username: member3,
+				Groups:   []string{"mrole1", "mrole2"},
+				Traits: map[string][]string{
+					"mtrait1": {"mvalue1"},
+					"mtrait2": {"mvalue3"},
+				},
 			},
+			currentTime:      time.Date(2023, 2, 1, 0, 0, 0, 0, time.UTC),
+			errAssertionFunc: requireAccessDenied,
 		},
 	}
 
@@ -407,64 +487,10 @@ func TestIsAccessListMember(t *testing.T) {
 				}
 				memberMap[accessListName][member.Spec.Name] = member
 			}
-			getter := &testMembersGetter{members: memberMap}
+			getter := &testMembersAndLockGetter{members: memberMap, locks: test.locks}
 
-			test.errAssertionFunc(t, IsAccessListMember(ctx, test.identity, clockwork.NewFakeClockAt(test.currentTime), accessList, getter))
-		})
-	}
-}
-
-func TestSelectNextReviewDate(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name              string
-		frequency         accesslist.ReviewFrequency
-		dayOfMonth        accesslist.ReviewDayOfMonth
-		currentReviewDate time.Time
-		expected          time.Time
-	}{
-		{
-			name:              "one month, first day",
-			frequency:         accesslist.OneMonth,
-			dayOfMonth:        accesslist.FirstDayOfMonth,
-			currentReviewDate: time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC),
-			expected:          time.Date(2023, 2, 1, 0, 0, 0, 0, time.UTC),
-		},
-		{
-			name:              "one month, fifteenth day",
-			frequency:         accesslist.OneMonth,
-			dayOfMonth:        accesslist.FifteenthDayOfMonth,
-			currentReviewDate: time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC),
-			expected:          time.Date(2023, 2, 15, 0, 0, 0, 0, time.UTC),
-		},
-		{
-			name:              "one month, last day",
-			frequency:         accesslist.OneMonth,
-			dayOfMonth:        accesslist.LastDayOfMonth,
-			currentReviewDate: time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC),
-			expected:          time.Date(2023, 2, 28, 0, 0, 0, 0, time.UTC),
-		},
-		{
-			name:              "six months, last day",
-			frequency:         accesslist.SixMonths,
-			dayOfMonth:        accesslist.LastDayOfMonth,
-			currentReviewDate: time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC),
-			expected:          time.Date(2023, 7, 31, 0, 0, 0, 0, time.UTC),
-		},
-	}
-
-	for _, test := range tests {
-		test := test
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			accessList := newAccessList(t)
-			accessList.Spec.Audit.NextAuditDate = test.currentReviewDate
-			accessList.Spec.Audit.Recurrence = accesslist.Recurrence{
-				Frequency:  test.frequency,
-				DayOfMonth: test.dayOfMonth,
-			}
-			require.Equal(t, test.expected, SelectNextReviewDate(accessList))
+			checker := NewAccessListMembershipChecker(clockwork.NewFakeClockAt(test.currentTime), getter, getter)
+			test.errAssertionFunc(t, checker.IsAccessListMember(ctx, test.identity, accessList))
 		})
 	}
 }
@@ -761,3 +787,16 @@ spec:
     review_frequency_changed: 3 months
     review_day_of_month_changed: "15"
 `
+
+func newUserLock(t *testing.T, name, user string) types.Lock {
+	t.Helper()
+
+	lock, err := types.NewLock(name, types.LockSpecV2{
+		Target: types.LockTarget{
+			User: user,
+		},
+	})
+	require.NoError(t, err)
+
+	return lock
+}

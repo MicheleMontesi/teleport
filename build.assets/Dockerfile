@@ -46,23 +46,24 @@ RUN git clone --depth=1 https://github.com/PJK/libcbor.git -b v0.10.2 && \
 
 # Install openssl.
 # install_sw install only binaries, skips docs.
-RUN git clone --depth=1 https://github.com/openssl/openssl.git -b openssl-3.0.12 && \
+RUN git clone --depth=1 https://github.com/openssl/openssl.git -b openssl-3.0.13 && \
     cd openssl && \
-    [ "$(git rev-parse HEAD)" = 'c3cc0f1386b0544383a61244a4beeb762b67498f' ] && \
-    ./config --release --libdir=/usr/local/lib && \
+    [ "$(git rev-parse HEAD)" = '85cf92f55d9e2ac5aacf92bedd33fb890b9f8b4c' ] && \
+    ./config --release -fPIC --libdir=/usr/local/lib && \
     make -j"$(nproc)" && \
     make install_sw
 
 # Install libfido2.
 # Depends on libcbor, libcrypto (OpenSSL 3.x), libudev and zlib1g-dev.
 # Keep the version below synced with devbox.json
-RUN git clone --depth=1 https://github.com/Yubico/libfido2.git -b 1.13.0 && \
+RUN git clone --depth=1 https://github.com/Yubico/libfido2.git -b 1.14.0 && \
     cd libfido2 && \
-    [ "$(git rev-parse HEAD)" = '486a8f8667e42f55cee2bba301b41433cacec830' ] && \
+    [ "$(git rev-parse HEAD)" = '1a9d335c8f0e821f9eff27482fdda96e59a4f577' ] && \
     CFLAGS=-pthread cmake \
         -DBUILD_EXAMPLES=OFF \
         -DBUILD_MANPAGES=OFF \
         -DBUILD_TOOLS=OFF \
+        -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
         -DCMAKE_BUILD_TYPE=Release . && \
     grep 'CRYPTO_VERSION:INTERNAL=3\.0\.' CMakeCache.txt && \
     make && \
@@ -80,11 +81,14 @@ RUN apt-get update -y --fix-missing && \
         libelf-dev
 
 ARG LIBBPF_VERSION
+# BUILD_STATIC_ONLY - builds only static libraries without shared ones
+# EXTRA_CFLAGS - additional CFLAGS to pass to the compiler. fPIC is required so the library code can be moved around in memory
+# DESTDIR - where to install the library
+# V=1 - verbose build
 RUN mkdir -p /opt && cd /opt &&  \
     curl -fsSL https://github.com/libbpf/libbpf/archive/refs/tags/v${LIBBPF_VERSION}.tar.gz | tar xz && \
     cd /opt/libbpf-${LIBBPF_VERSION}/src && \
-    make &&  \
-    BUILD_STATIC_ONLY=y DESTDIR=/opt/libbpf make install install_uapi_headers
+    BUILD_STATIC_ONLY=y EXTRA_CFLAGS=-fPIC DESTDIR=/opt/libbpf V=1 make install install_uapi_headers
 
 ## BUILDBOX ###################################################################
 #
@@ -108,6 +112,7 @@ FROM ubuntu:22.04 AS buildbox
 COPY locale.gen /etc/locale.gen
 COPY profile /etc/profile
 COPY gpg/docker.gpg .
+COPY gpg/hashicorp.gpg .
 ENV LANGUAGE="en_US.UTF-8" \
     LANG="en_US.UTF-8" \
     LC_ALL="en_US.UTF-8" \
@@ -167,11 +172,16 @@ RUN apt-get -y update && \
     gpg --dearmor -o /etc/apt/keyrings/docker.gpg docker.gpg && \
     chmod a+r /etc/apt/keyrings/docker.gpg && \
     echo \
-    "deb [arch="$(dpkg --print-architecture)" signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+    "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
     "$(. /etc/os-release && echo "$VERSION_CODENAME")" stable" | \
     tee /etc/apt/sources.list.d/docker.list > /dev/null && \
     apt-get update && \
     apt-get install -y docker-ce-cli && \
+    gpg --dearmor -o /usr/share/keyrings/hashicorp.gpg hashicorp.gpg && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/hashicorp.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | \
+    tee /etc/apt/sources.list.d/hashicorp.list > /dev/null && \
+    apt-get update && apt-get install terraform -y --no-install-recommends && \
+    # Manually install the wasm-opt binary from the binaryen package on ARM64.
     if [ "$BUILDARCH" = "arm64" ]; then apt-get install -y binaryen; fi && \
     pip3 --no-cache-dir install yamllint && \
     dpkg-reconfigure locales && \
@@ -182,9 +192,9 @@ RUN apt-get -y update && \
 # Code Signing Certificate needs us to use osslsigncode >= 2.6, which
 # allows the use of legacy OpenSSL algorithms. This is not yet provided
 # by Ubuntu, so we will have to fetch it ourselves.
-RUN --mount=type=bind,target=/context \
+RUN --mount=type=bind,source=download-hashes/osslsigncode.sha256,target=/context/osslsigncode.sha256 \
     curl -L https://github.com/mtrojnar/osslsigncode/releases/download/2.6/osslsigncode-2.6-ubuntu-22.04.zip -o osslsigncode.zip \
-    && sha256sum --strict -c /context/download-hashes/osslsigncode.sha256 \
+    && sha256sum --strict -c /context/osslsigncode.sha256 \
     && unzip -d /tmp/osslsigncode osslsigncode.zip \
     && install -m 0755 /tmp/osslsigncode/bin/osslsigncode /usr/bin \
     && rm -rf /tmp/osslsigncode \
@@ -215,11 +225,12 @@ RUN curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs | sh -s -- -y --p
     cargo --version && \
     rustc --version && \
     rustup component add rustfmt clippy && \
+    rustup target add wasm32-unknown-unknown && \
     if [ "$BUILDARCH" = "amd64" ]; then rustup target add aarch64-unknown-linux-gnu; fi
 
 ARG WASM_PACK_VERSION
 # Install wasm-pack for targeting WebAssembly from Rust.
-RUN cargo install wasm-pack --version ${WASM_PACK_VERSION}
+RUN cargo install wasm-pack --locked --version ${WASM_PACK_VERSION}
 
 # Switch back to root for the remaining instructions and keep it as the default
 # user.
@@ -260,7 +271,7 @@ RUN git clone --depth=1 https://github.com/bats-core/bats-core.git -b v1.2.1 && 
     rm -r bats-core
 
 # Install shellcheck.
-RUN scversion='v0.9.0' && \
+RUN scversion='v0.10.0' && \
     curl -fsSL "https://github.com/koalaman/shellcheck/releases/download/$scversion/shellcheck-$scversion.linux.$(if [ "$BUILDARCH" = "amd64" ]; then echo "x86_64"; else echo "aarch64"; fi).tar.xz" | \
         tar -xJv && \
     cp "shellcheck-$scversion/shellcheck" /usr/local/bin/ && \
@@ -307,13 +318,14 @@ RUN go install "github.com/gogo/protobuf/protoc-gen-gogofast@$GOGO_PROTO_TAG"
 RUN go install github.com/google/addlicense@v1.0.0
 
 # Install GCI.
-RUN go install github.com/daixiang0/gci@v0.11.0
+RUN go install github.com/daixiang0/gci@v0.12.3
 
 # Install gotestsum.
 RUN go install gotest.tools/gotestsum@v1.10.1
 
 # Install golangci-lint.
-RUN VERSION='v1.55.1'; \
+ARG GOLANGCI_LINT_VERSION # eg, v1.56.1
+RUN VERSION="$GOLANGCI_LINT_VERSION"; \
     curl -fsSL "https://raw.githubusercontent.com/golangci/golangci-lint/$VERSION/install.sh" | \
     sh -s -- -b "$(go env GOPATH)/bin" "$VERSION"
 
@@ -337,14 +349,14 @@ COPY --from=libfido2 \
     /usr/local/lib/libcrypto.a \
     /usr/local/lib/libcrypto.so.3 \
     /usr/local/lib/libfido2.a \
-    /usr/local/lib/libfido2.so.1.13.0 \
+    /usr/local/lib/libfido2.so.1.14.0 \
     /usr/local/lib/libssl.a \
     /usr/local/lib/libssl.so.3 \
     /usr/local/lib/libudev.a \
     /usr/local/lib/
 RUN cd /usr/local/lib && \
     ln -s libcrypto.so.3 libcrypto.so && \
-    ln -s libfido2.so.1.13.0 libfido2.so.1 && \
+    ln -s libfido2.so.1.14.0 libfido2.so.1 && \
     ln -s libfido2.so.1 libfido2.so && \
     ln -s libssl.so.3 libssl.so && \
     ldconfig

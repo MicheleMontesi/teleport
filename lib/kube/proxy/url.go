@@ -1,18 +1,20 @@
 /*
-Copyright 2020 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package proxy
 
@@ -24,6 +26,7 @@ import (
 	"strings"
 
 	"github.com/gravitational/trace"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 
 	"github.com/gravitational/teleport/api/types"
@@ -236,7 +239,7 @@ func getResourceFromRequest(req *http.Request, kubeDetails *kubeDetails) (*types
 	case apiResource.resourceName == "" && verb == types.KubeVerbCreate:
 		// If the request is a create request, extract the resource name from the request body.
 		var err error
-		if apiResource.resourceName, err = extractResourceNameFromPostRequest(req, codecFactory); err != nil {
+		if apiResource.resourceName, err = extractResourceNameFromPostRequest(req, codecFactory, kubeDetails.getObjectGVK(apiResource)); err != nil {
 			return nil, apiResource, trace.Wrap(err)
 		}
 	}
@@ -254,7 +257,11 @@ func getResourceFromRequest(req *http.Request, kubeDetails *kubeDetails) (*types
 // and decodes it into a Kubernetes object. It then extracts the resource name
 // from the object.
 // The body is then reset to the original request body using a new buffer.
-func extractResourceNameFromPostRequest(req *http.Request, codecs *serializer.CodecFactory) (string, error) {
+func extractResourceNameFromPostRequest(
+	req *http.Request,
+	codecs *serializer.CodecFactory,
+	defaults *schema.GroupVersionKind,
+) (string, error) {
 	if req.Body == nil {
 		return "", trace.BadParameter("request body is empty")
 	}
@@ -277,7 +284,7 @@ func extractResourceNameFromPostRequest(req *http.Request, codecs *serializer.Co
 	}
 	req.Body = io.NopCloser(newBody)
 	// decode memory rw body.
-	obj, err := decodeAndSetGVK(decoder, newBody.Bytes())
+	obj, err := decodeAndSetGVK(decoder, newBody.Bytes(), defaults)
 	if err != nil {
 		return "", trace.Wrap(err)
 	}

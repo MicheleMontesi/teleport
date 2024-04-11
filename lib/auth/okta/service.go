@@ -1,16 +1,20 @@
-// Copyright 2023 Gravitational, Inc
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+/*
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package okta
 
@@ -21,6 +25,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"google.golang.org/protobuf/types/known/emptypb"
 
+	"github.com/gravitational/teleport"
 	oktapb "github.com/gravitational/teleport/api/gen/proto/go/teleport/okta/v1"
 	"github.com/gravitational/teleport/api/types"
 	"github.com/gravitational/teleport/lib/authz"
@@ -53,7 +58,7 @@ func (c *ServiceConfig) CheckAndSetDefaults() error {
 	}
 
 	if c.Logger == nil {
-		c.Logger = logrus.New().WithField(trace.Component, "okta_crud_service")
+		c.Logger = logrus.New().WithField(teleport.ComponentKey, "okta_crud_service")
 	}
 
 	if c.Authorizer == nil {
@@ -107,8 +112,12 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 
 // ListOktaImportRules returns a paginated list of all Okta import rule resources.
 func (s *Service) ListOktaImportRules(ctx context.Context, req *oktapb.ListOktaImportRulesRequest) (*oktapb.ListOktaImportRulesResponse, error) {
-	_, err := authz.AuthorizeWithVerbs(ctx, s.log, s.authorizer, true, types.KindOktaImportRule, types.VerbRead, types.VerbList)
+	authCtx, err := s.authorizer.Authorize(ctx)
 	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	if err := authCtx.CheckAccessToKind(types.KindOktaImportRule, types.VerbRead, types.VerbList); err != nil {
 		return nil, trace.Wrap(err)
 	}
 
@@ -134,8 +143,12 @@ func (s *Service) ListOktaImportRules(ctx context.Context, req *oktapb.ListOktaI
 
 // GetOktaImportRule returns the specified Okta import rule resources.
 func (s *Service) GetOktaImportRule(ctx context.Context, req *oktapb.GetOktaImportRuleRequest) (*types.OktaImportRuleV1, error) {
-	_, err := authz.AuthorizeWithVerbs(ctx, s.log, s.authorizer, true, types.KindOktaImportRule, types.VerbRead)
+	authCtx, err := s.authorizer.Authorize(ctx)
 	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	if err := authCtx.CheckAccessToKind(types.KindOktaImportRule, types.VerbRead); err != nil {
 		return nil, trace.Wrap(err)
 	}
 	importRule, err := s.oktaImportRules.GetOktaImportRule(ctx, req.GetName())
@@ -153,8 +166,12 @@ func (s *Service) GetOktaImportRule(ctx context.Context, req *oktapb.GetOktaImpo
 
 // CreateOktaImportRule creates a new Okta import rule resource.
 func (s *Service) CreateOktaImportRule(ctx context.Context, req *oktapb.CreateOktaImportRuleRequest) (*types.OktaImportRuleV1, error) {
-	_, err := authz.AuthorizeWithVerbs(ctx, s.log, s.authorizer, true, types.KindOktaImportRule, types.VerbCreate)
+	authCtx, err := s.authorizer.Authorize(ctx)
 	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	if err := authCtx.CheckAccessToKind(types.KindOktaImportRule, types.VerbCreate); err != nil {
 		return nil, trace.Wrap(err)
 	}
 	returnedRule, err := s.oktaImportRules.CreateOktaImportRule(ctx, req.GetImportRule())
@@ -170,8 +187,12 @@ func (s *Service) CreateOktaImportRule(ctx context.Context, req *oktapb.CreateOk
 
 // UpdateOktaImportRule updates an existing Okta import rule resource.
 func (s *Service) UpdateOktaImportRule(ctx context.Context, req *oktapb.UpdateOktaImportRuleRequest) (*types.OktaImportRuleV1, error) {
-	_, err := authz.AuthorizeWithVerbs(ctx, s.log, s.authorizer, true, types.KindOktaImportRule, types.VerbUpdate)
+	authCtx, err := s.authorizer.Authorize(ctx)
 	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	if err := authCtx.CheckAccessToKind(types.KindOktaImportRule, types.VerbUpdate); err != nil {
 		return nil, trace.Wrap(err)
 	}
 	returnedRule, err := s.oktaImportRules.UpdateOktaImportRule(ctx, req.GetImportRule())
@@ -187,8 +208,12 @@ func (s *Service) UpdateOktaImportRule(ctx context.Context, req *oktapb.UpdateOk
 
 // DeleteOktaImportRule removes the specified Okta import rule resource.
 func (s *Service) DeleteOktaImportRule(ctx context.Context, req *oktapb.DeleteOktaImportRuleRequest) (*emptypb.Empty, error) {
-	_, err := authz.AuthorizeWithVerbs(ctx, s.log, s.authorizer, true, types.KindOktaImportRule, types.VerbDelete)
+	authCtx, err := s.authorizer.Authorize(ctx)
 	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	if err := authCtx.CheckAccessToKind(types.KindOktaImportRule, types.VerbDelete); err != nil {
 		return nil, trace.Wrap(err)
 	}
 	return &emptypb.Empty{}, trace.Wrap(s.oktaImportRules.DeleteOktaImportRule(ctx, req.GetName()))
@@ -196,8 +221,12 @@ func (s *Service) DeleteOktaImportRule(ctx context.Context, req *oktapb.DeleteOk
 
 // DeleteAllOktaImportRules removes all Okta import rules.
 func (s *Service) DeleteAllOktaImportRules(ctx context.Context, _ *oktapb.DeleteAllOktaImportRulesRequest) (*emptypb.Empty, error) {
-	_, err := authz.AuthorizeWithVerbs(ctx, s.log, s.authorizer, true, types.KindOktaImportRule, types.VerbDelete)
+	authCtx, err := s.authorizer.Authorize(ctx)
 	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	if err := authCtx.CheckAccessToKind(types.KindOktaImportRule, types.VerbDelete); err != nil {
 		return nil, trace.Wrap(err)
 	}
 	return &emptypb.Empty{}, trace.Wrap(s.oktaImportRules.DeleteAllOktaImportRules(ctx))
@@ -205,8 +234,12 @@ func (s *Service) DeleteAllOktaImportRules(ctx context.Context, _ *oktapb.Delete
 
 // ListOktaAssignments returns a paginated list of all Okta assignment resources.
 func (s *Service) ListOktaAssignments(ctx context.Context, req *oktapb.ListOktaAssignmentsRequest) (*oktapb.ListOktaAssignmentsResponse, error) {
-	_, err := authz.AuthorizeWithVerbs(ctx, s.log, s.authorizer, true, types.KindOktaAssignment, types.VerbList, types.VerbRead)
+	authCtx, err := s.authorizer.Authorize(ctx)
 	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	if err := authCtx.CheckAccessToKind(types.KindOktaAssignment, types.VerbList, types.VerbRead); err != nil {
 		return nil, trace.Wrap(err)
 	}
 
@@ -232,8 +265,12 @@ func (s *Service) ListOktaAssignments(ctx context.Context, req *oktapb.ListOktaA
 
 // GetOktaAssignment returns the specified Okta assignment resources.
 func (s *Service) GetOktaAssignment(ctx context.Context, req *oktapb.GetOktaAssignmentRequest) (*types.OktaAssignmentV1, error) {
-	_, err := authz.AuthorizeWithVerbs(ctx, s.log, s.authorizer, true, types.KindOktaAssignment, types.VerbRead)
+	authCtx, err := s.authorizer.Authorize(ctx)
 	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	if err := authCtx.CheckAccessToKind(types.KindOktaAssignment, types.VerbRead); err != nil {
 		return nil, trace.Wrap(err)
 	}
 	assignment, err := s.oktaAssignments.GetOktaAssignment(ctx, req.GetName())
@@ -251,8 +288,12 @@ func (s *Service) GetOktaAssignment(ctx context.Context, req *oktapb.GetOktaAssi
 
 // CreateOktaAssignment creates a new Okta assignment resource.
 func (s *Service) CreateOktaAssignment(ctx context.Context, req *oktapb.CreateOktaAssignmentRequest) (*types.OktaAssignmentV1, error) {
-	_, err := authz.AuthorizeWithVerbs(ctx, s.log, s.authorizer, true, types.KindOktaAssignment, types.VerbCreate)
+	authCtx, err := s.authorizer.Authorize(ctx)
 	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	if err := authCtx.CheckAccessToKind(types.KindOktaAssignment, types.VerbCreate); err != nil {
 		return nil, trace.Wrap(err)
 	}
 	returnedAssignment, err := s.oktaAssignments.CreateOktaAssignment(ctx, req.GetAssignment())
@@ -268,8 +309,12 @@ func (s *Service) CreateOktaAssignment(ctx context.Context, req *oktapb.CreateOk
 
 // UpdateOktaAssignment updates an existing Okta assignment resource.
 func (s *Service) UpdateOktaAssignment(ctx context.Context, req *oktapb.UpdateOktaAssignmentRequest) (*types.OktaAssignmentV1, error) {
-	_, err := authz.AuthorizeWithVerbs(ctx, s.log, s.authorizer, true, types.KindOktaAssignment, types.VerbUpdate)
+	authCtx, err := s.authorizer.Authorize(ctx)
 	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	if err := authCtx.CheckAccessToKind(types.KindOktaAssignment, types.VerbUpdate); err != nil {
 		return nil, trace.Wrap(err)
 	}
 	returnedAssignment, err := s.oktaAssignments.UpdateOktaAssignment(ctx, req.GetAssignment())
@@ -285,8 +330,12 @@ func (s *Service) UpdateOktaAssignment(ctx context.Context, req *oktapb.UpdateOk
 
 // UpdateOktaAssignmentStatus will update the status for an Okta assignment.
 func (s *Service) UpdateOktaAssignmentStatus(ctx context.Context, req *oktapb.UpdateOktaAssignmentStatusRequest) (*emptypb.Empty, error) {
-	_, err := authz.AuthorizeWithVerbs(ctx, s.log, s.authorizer, true, types.KindOktaAssignment, types.VerbUpdate)
+	authCtx, err := s.authorizer.Authorize(ctx)
 	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	if err := authCtx.CheckAccessToKind(types.KindOktaAssignment, types.VerbUpdate); err != nil {
 		return nil, trace.Wrap(err)
 	}
 	err = s.oktaAssignments.UpdateOktaAssignmentStatus(ctx, req.GetName(), types.OktaAssignmentStatusProtoToString(req.GetStatus()),
@@ -296,8 +345,12 @@ func (s *Service) UpdateOktaAssignmentStatus(ctx context.Context, req *oktapb.Up
 
 // DeleteOktaAssignment removes the specified Okta assignment resource.
 func (s *Service) DeleteOktaAssignment(ctx context.Context, req *oktapb.DeleteOktaAssignmentRequest) (*emptypb.Empty, error) {
-	_, err := authz.AuthorizeWithVerbs(ctx, s.log, s.authorizer, true, types.KindOktaAssignment, types.VerbDelete)
+	authCtx, err := s.authorizer.Authorize(ctx)
 	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	if err := authCtx.CheckAccessToKind(types.KindOktaAssignment, types.VerbDelete); err != nil {
 		return nil, trace.Wrap(err)
 	}
 	return &emptypb.Empty{}, trace.Wrap(s.oktaAssignments.DeleteOktaAssignment(ctx, req.GetName()))
@@ -305,8 +358,12 @@ func (s *Service) DeleteOktaAssignment(ctx context.Context, req *oktapb.DeleteOk
 
 // DeleteAllOktaAssignments removes all Okta assignments.
 func (s *Service) DeleteAllOktaAssignments(ctx context.Context, _ *oktapb.DeleteAllOktaAssignmentsRequest) (*emptypb.Empty, error) {
-	_, err := authz.AuthorizeWithVerbs(ctx, s.log, s.authorizer, true, types.KindOktaAssignment, types.VerbDelete)
+	authCtx, err := s.authorizer.Authorize(ctx)
 	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	if err := authCtx.CheckAccessToKind(types.KindOktaAssignment, types.VerbDelete); err != nil {
 		return nil, trace.Wrap(err)
 	}
 	return &emptypb.Empty{}, trace.Wrap(s.oktaAssignments.DeleteAllOktaAssignments(ctx))

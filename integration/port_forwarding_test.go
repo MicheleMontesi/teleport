@@ -1,24 +1,27 @@
 /*
-Copyright 2021 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package integration
 
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -72,6 +75,24 @@ func waitForSessionToBeEstablished(ctx context.Context, namespace string, site a
 				return ss, nil
 			}
 		}
+	}
+}
+
+// testPingLocalServer checks whether or not an HTTP server is serving on
+// localhost at the given port.
+func testPingLocalServer(t *testing.T, port int, expectSuccess bool) {
+	addr := fmt.Sprintf("http://%s:%d/", "localhost", port)
+	r, err := http.Get(addr)
+
+	if r != nil {
+		r.Body.Close()
+	}
+
+	if expectSuccess {
+		require.NoError(t, err)
+		require.NotNil(t, r)
+	} else {
+		require.Error(t, err)
 	}
 }
 
@@ -212,18 +233,33 @@ func testPortForwarding(t *testing.T, suite *integrationTestSuite) {
 
 			site := instance.GetSiteAPI(helpers.Site)
 
-			// ...and a running dummy server
-			remoteSvr := httptest.NewServer(http.HandlerFunc(
+			// ...and a pair of running dummy servers
+			handler := http.HandlerFunc(
 				func(w http.ResponseWriter, _ *http.Request) {
 					w.WriteHeader(http.StatusOK)
 					w.Write([]byte("Hello, World"))
-				}))
+				})
+			remoteListener, err := net.Listen("tcp", "127.0.0.1:0")
+			require.NoError(t, err)
+			remoteSvr := httptest.NewUnstartedServer(handler)
+			remoteSvr.Listener = remoteListener
+			remoteSvr.Start()
 			defer remoteSvr.Close()
 
+			localListener, err := net.Listen("tcp", "127.0.0.1:0")
+			require.NoError(t, err)
+			localSvr := httptest.NewUnstartedServer(handler)
+			localSvr.Listener = localListener
+			localSvr.Start()
+			defer localSvr.Close()
+
 			// ... and a client connection that was launched with port
-			// forwarding enabled to that dummy server
-			localPort := newPortValue()
-			remotePort, err := extractPort(remoteSvr)
+			// forwarding enabled to the dummy servers
+			localClientPort := newPortValue()
+			remoteServerPort, err := extractPort(remoteSvr)
+			require.NoError(t, err)
+			remoteClientPort := newPortValue()
+			localServerPort, err := extractPort(localSvr)
 			require.NoError(t, err)
 
 			nodeSSHPort := helpers.Port(t, instance.SSH)
@@ -237,9 +273,17 @@ func testPortForwarding(t *testing.T, suite *integrationTestSuite) {
 			cl.Config.LocalForwardPorts = []client.ForwardedPort{
 				{
 					SrcIP:    "127.0.0.1",
-					SrcPort:  localPort,
+					SrcPort:  localClientPort,
 					DestHost: "localhost",
-					DestPort: remotePort,
+					DestPort: remoteServerPort,
+				},
+			}
+			cl.Config.RemoteForwardPorts = []client.ForwardedPort{
+				{
+					SrcIP:    "localhost",
+					SrcPort:  remoteClientPort,
+					DestHost: "127.0.0.1",
+					DestPort: localServerPort,
 				},
 			}
 			term := NewTerminal(250)
@@ -257,20 +301,13 @@ func testPortForwarding(t *testing.T, suite *integrationTestSuite) {
 			require.NoError(t, err)
 
 			// When everything is *finally* set up, and I attempt to use the
-			// forwarded connection
-			localURL := fmt.Sprintf("http://%s:%d/", "localhost", localPort)
-			r, err := http.Get(localURL)
-
-			if r != nil {
-				r.Body.Close()
-			}
-
-			if tt.expectSuccess {
-				require.NoError(t, err)
-				require.NotNil(t, r)
-			} else {
-				require.Error(t, err)
-			}
+			// forwarded connections
+			t.Run("local forwarding", func(t *testing.T) {
+				testPingLocalServer(t, localClientPort, tt.expectSuccess)
+			})
+			t.Run("remote forwarding", func(t *testing.T) {
+				testPingLocalServer(t, remoteClientPort, tt.expectSuccess)
+			})
 		})
 	}
 }

@@ -1,18 +1,20 @@
 /*
-Copyright 2021 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 package common
 
@@ -59,15 +61,20 @@ func onConfig(cf *CLIConf) error {
 	// destination (possibly their ssh config file) may get polluted with
 	// invalid output. Instead, rely on the normal error messages (which are
 	// sent to stderr) and expect the user to log in manually.
-	proxyClient, err := tc.ConnectToProxy(cf.Context)
+	clusterClient, err := tc.ConnectToCluster(cf.Context)
 	if err != nil {
 		return trace.Wrap(err)
 	}
-	defer proxyClient.Close()
+	defer clusterClient.Close()
 
-	rootClusterName, rootErr := proxyClient.RootClusterName(cf.Context)
-	leafClusters, leafErr := proxyClient.GetLeafClusters(cf.Context)
-	if err := trace.NewAggregate(rootErr, leafErr); err != nil {
+	rootAuthClient, err := clusterClient.ConnectToRootCluster(cf.Context)
+	if err != nil {
+		return trace.Wrap(err)
+	}
+	defer rootAuthClient.Close()
+
+	leafClusters, err := rootAuthClient.GetRemoteClusters(cf.Context)
+	if err != nil {
 		return trace.Wrap(err)
 	}
 
@@ -82,17 +89,16 @@ func onConfig(cf *CLIConf) error {
 
 	var sb strings.Builder
 	if err := writeSSHConfig(&sb, &openssh.SSHConfigParameters{
-		AppName:          openssh.TshApp,
-		ClusterNames:     append([]string{rootClusterName}, leafClustersNames...),
-		KnownHostsPath:   knownHostsPath,
-		IdentityFilePath: identityFilePath,
-		CertificateFilePath: keypaths.SSHCertPath(keysDir, proxyHost,
-			tc.Config.Username, rootClusterName),
-		ProxyHost:      proxyHost,
-		ProxyPort:      proxyPort,
-		ExecutablePath: cf.executablePath,
-		Username:       cf.NodeLogin,
-		Port:           int(cf.NodePort),
+		AppName:             openssh.TshApp,
+		ClusterNames:        append([]string{clusterClient.RootClusterName()}, leafClustersNames...),
+		KnownHostsPath:      knownHostsPath,
+		IdentityFilePath:    identityFilePath,
+		CertificateFilePath: keypaths.SSHCertPath(keysDir, proxyHost, tc.Config.Username, clusterClient.RootClusterName()),
+		ProxyHost:           proxyHost,
+		ProxyPort:           proxyPort,
+		ExecutablePath:      cf.executablePath,
+		Username:            cf.NodeLogin,
+		Port:                int(cf.NodePort),
 	}, nil); err != nil {
 		return trace.Wrap(err)
 	}

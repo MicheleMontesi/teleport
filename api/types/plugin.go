@@ -27,6 +27,20 @@ import (
 // PluginType represents the type of the plugin
 type PluginType string
 
+// AllPluginTypes is a list of all plugins known to Teleport.
+var AllPluginTypes = []PluginType{
+	PluginTypeServiceNow,
+	PluginTypeSlack,
+	PluginTypeOpenAI,
+	PluginTypeOkta,
+	PluginTypeJamf,
+	PluginTypeJira,
+	PluginTypeOpsgenie,
+	PluginTypePagerDuty,
+	PluginTypeMattermost,
+	PluginTypeDiscord,
+}
+
 const (
 	// PluginTypeUnknown is returned when no plugin type matches.
 	PluginTypeUnknown PluginType = ""
@@ -74,6 +88,7 @@ type Plugin interface {
 	GetType() PluginType
 	SetCredentials(PluginCredentials) error
 	SetStatus(PluginStatus) error
+	GetGeneration() string
 }
 
 // PluginCredentials are the credentials embedded in Plugin
@@ -399,6 +414,11 @@ func (p *PluginV1) SetStatus(status PluginStatus) error {
 	return nil
 }
 
+// GetGeneration returns the plugin generation.
+func (p *PluginV1) GetGeneration() string {
+	return p.Spec.Generation
+}
+
 // GetType implements Plugin
 func (p *PluginV1) GetType() PluginType {
 	switch p.Spec.Settings.(type) {
@@ -440,6 +460,24 @@ func (s *PluginSlackAccessSettings) CheckAndSetDefaults() error {
 func (s *PluginOktaSettings) CheckAndSetDefaults() error {
 	if s.OrgUrl == "" {
 		return trace.BadParameter("org_url must be set")
+	}
+
+	// If sync settings is not set, upgrade the legacy values to a
+	// to a new SyncSettings block
+	if s.SyncSettings == nil {
+		// TODO(mdwn): Remove upgrade once modifications have been made in enterprise.
+		s.SyncSettings = &PluginOktaSyncSettings{
+			SyncUsers:      s.EnableUserSync,
+			SsoConnectorId: s.SsoConnectorId,
+		}
+	}
+
+	if s.SyncSettings.SyncUsers && s.SyncSettings.SsoConnectorId == "" {
+		return trace.BadParameter("sso_connector_id must be set when user sync enabled")
+	}
+
+	if s.SyncSettings.SyncAccessLists && len(s.SyncSettings.DefaultOwners) == 0 {
+		return trace.BadParameter("default owners must be set when access list import is enabled")
 	}
 
 	return nil

@@ -1,18 +1,20 @@
 /*
-Copyright 2015-2020 Gravitational, Inc.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Teleport
+ * Copyright (C) 2023  Gravitational, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 // Package regular implements SSH server that supports multiplexing
 // tunneling, SSH connections proxying and only supports Key based auth
@@ -24,13 +26,16 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"os"
 	"os/user"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"syscall"
+	"time"
 
 	"github.com/gravitational/trace"
 	"github.com/jonboulle/clockwork"
@@ -55,7 +60,6 @@ import (
 	"github.com/gravitational/teleport/lib/labels"
 	"github.com/gravitational/teleport/lib/limiter"
 	"github.com/gravitational/teleport/lib/proxy"
-	restricted "github.com/gravitational/teleport/lib/restrictedsession"
 	"github.com/gravitational/teleport/lib/reversetunnel"
 	"github.com/gravitational/teleport/lib/reversetunnelclient"
 	"github.com/gravitational/teleport/lib/service/servicecfg"
@@ -67,10 +71,11 @@ import (
 	"github.com/gravitational/teleport/lib/sshutils/x11"
 	"github.com/gravitational/teleport/lib/teleagent"
 	"github.com/gravitational/teleport/lib/utils"
+	"github.com/gravitational/teleport/lib/utils/uds"
 )
 
 var log = logrus.WithFields(logrus.Fields{
-	trace.Component: teleport.ComponentNode,
+	teleport.ComponentKey: teleport.ComponentNode,
 })
 
 // Server implements SSH server that uses configuration backend and
@@ -172,9 +177,6 @@ type Server struct {
 	// ebpf is the service used for enhanced session recording.
 	ebpf bpf.BPF
 
-	// restrictedMgr is the service used for restricting access to kernel objects
-	restrictedMgr restricted.Manager
-
 	// onHeartbeat is a callback for heartbeat status.
 	onHeartbeat func(error)
 
@@ -240,6 +242,10 @@ type Server struct {
 	proxySigner PROXYHeaderSigner
 	// caGetter is used to get host CA of the cluster to verify signed PROXY headers
 	caGetter CertAuthorityGetter
+
+	// remoteForwardingMap holds the remote port forwarding listeners that need
+	// to be closed when forwarding finishes, keyed by listen addr.
+	remoteForwardingMap utils.SyncMap[string, io.Closer]
 }
 
 // TargetMetadata returns metadata about the server.
@@ -292,11 +298,6 @@ func (s *Server) GetBPF() bpf.BPF {
 	return s.ebpf
 }
 
-// GetRestrictedSessionManager returns the manager for restricting user activity.
-func (s *Server) GetRestrictedSessionManager() restricted.Manager {
-	return s.restrictedMgr
-}
-
 // GetLockWatcher gets the server's lock watcher.
 func (s *Server) GetLockWatcher() *services.LockWatcher {
 	return s.lockWatcher
@@ -346,7 +347,18 @@ func (s *Server) close() {
 // Close closes listening socket and stops accepting connections
 func (s *Server) Close() error {
 	s.close()
-	return s.srv.Close()
+	// Close the server first so we don't accept any new forwarding connections
+	// after we've closed them all.
+	errors := []error{s.srv.Close()}
+	s.remoteForwardingMap.Range(func(_ string, closer io.Closer) bool {
+		if closer != nil {
+			if err := closer.Close(); err != nil {
+				errors = append(errors, err)
+			}
+		}
+		return true
+	})
+	return trace.NewAggregate(errors...)
 }
 
 // Shutdown performs graceful shutdown
@@ -361,8 +373,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 	// wait until connections drain off
 	err := s.srv.Shutdown(ctx)
-	s.close()
-	return err
+	return trace.NewAggregate(err, s.Close())
 }
 
 // Start starts server
@@ -601,13 +612,6 @@ func SetBPF(ebpf bpf.BPF) ServerOption {
 	}
 }
 
-func SetRestrictedSessionManager(m restricted.Manager) ServerOption {
-	return func(s *Server) error {
-		s.restrictedMgr = m
-		return nil
-	}
-}
-
 func SetOnHeartbeat(fn func(error)) ServerOption {
 	return func(s *Server) error {
 		s.onHeartbeat = fn
@@ -813,8 +817,8 @@ func New(
 	}
 
 	s.Entry = logrus.WithFields(logrus.Fields{
-		trace.Component:       component,
-		trace.ComponentFields: logrus.Fields{},
+		teleport.ComponentKey:    component,
+		teleport.ComponentFields: logrus.Fields{},
 	})
 
 	if s.GetCreateHostUser() {
@@ -1014,21 +1018,16 @@ func (s *Server) getRole() types.SystemRole {
 func (s *Server) getStaticLabels() map[string]string {
 	labels := make(map[string]string, len(s.labels))
 	if s.cloudLabels != nil {
-		for k, v := range s.cloudLabels.Get() {
-			labels[k] = v
-		}
+		maps.Copy(labels, s.cloudLabels.Get())
 	}
 	// Let labels sent over ics override labels from instance metadata.
 	if s.inventoryHandle != nil {
-		for k, v := range s.inventoryHandle.GetUpstreamLabels(proto.LabelUpdateKind_SSHServerCloudLabels) {
-			labels[k] = v
-		}
+		maps.Copy(labels, s.inventoryHandle.GetUpstreamLabels(proto.LabelUpdateKind_SSHServerCloudLabels))
 	}
 
 	// Let static labels override any other labels.
-	for k, v := range s.labels {
-		labels[k] = v
-	}
+	maps.Copy(labels, s.labels)
+
 	return labels
 }
 
@@ -1109,6 +1108,236 @@ func (s *Server) getServerResource() (types.Resource, error) {
 	return s.getServerInfo(), nil
 }
 
+// getDirectTCPIPForwarder sets up a connection-level subprocess that handles forwarding connections. Subsequent
+// calls from the same connection context reuse the same forwarder.
+func (s *Server) getDirectTCPIPForwardDialer(scx *srv.ServerContext) (sshutils.TCPIPForwardDialer, error) {
+	if d, ok := scx.Parent().GetDirectTCPIPForwardDialer(); ok {
+		return d, nil
+	}
+
+	proc, err := s.startForwardingSubprocess(scx)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	// set up a dial function that sends the address + fd as a unix datagram message. the forwarder subprocess
+	// interprets all such messages in this way, and will dial the specified address and proxy all traffic
+	// to the desired endpoint.
+	dialer := func(addr string) (net.Conn, error) {
+		local, remote, err := uds.NewSocketpair(uds.SocketTypeStream)
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+		defer remote.Close()
+
+		remoteFD, err := remote.File()
+		if err != nil {
+			local.Close()
+			return nil, trace.Wrap(err)
+		}
+		defer remoteFD.Close()
+
+		_, _, err = proc.Conn.WriteWithFDs([]byte(addr), []*os.File{remoteFD})
+		if err != nil {
+			local.Close()
+			return nil, trace.Wrap(err)
+		}
+
+		return local, nil
+	}
+
+	// try to register with the parent context.
+	if other, ok := scx.Parent().TrySetDirectTCPIPForwardDialer(dialer); !ok {
+		// another forwarder was concurrently created. this isn't actually a problem, multiple forwarders
+		// being registered is harmless, but it does result in slightly higher resource utilization, so its
+		// preferable to use the existing forwarder and close ours in the background.
+		go proc.Close()
+		return other, nil
+	}
+
+	// successfully registered this dialer, add closer to context.
+	scx.Parent().AddCloser(proc)
+
+	return dialer, nil
+}
+
+// listenTCPIP creates a new listener in the forwarding process.
+func (s *Server) listenTCPIP(scx *srv.ServerContext, addr string) (*net.TCPListener, error) {
+	proc, err := s.getTCPIPForwardProcess(scx)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	// Create a socket to receive new connections on.
+	localConn, remoteConn, err := uds.NewSocketpair(uds.SocketTypeDatagram)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	defer localConn.Close()
+	defer remoteConn.Close()
+	remoteFD, err := remoteConn.File()
+	if err != nil {
+		localConn.Close()
+		return nil, trace.Wrap(err)
+	}
+	defer remoteFD.Close()
+	_, _, err = proc.Conn.WriteWithFDs([]byte(addr), []*os.File{remoteFD})
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	// The forwarding process may have chosen its own port, so we need to get the
+	// new listen address.
+	fileCh := make(chan *os.File)
+	// Read addr in another goroutine so we can cancel it if the forwarding process
+	// stops.
+	go func() {
+		defer close(fileCh)
+
+		fbuf := make([]*os.File, 1)
+		if _, fn, _ := localConn.ReadWithFDs(nil, fbuf); fn == 0 {
+			fileCh <- nil
+		}
+		select {
+		case fileCh <- fbuf[0]:
+		case <-proc.Done:
+			fbuf[0].Close()
+		}
+	}()
+
+	var listenerFD *os.File
+	select {
+	case <-proc.Done:
+		localConn.Close()
+		return nil, trace.Errorf("forwarding process is closed")
+	case listenerFD = <-fileCh:
+	}
+
+	if listenerFD == nil {
+		return nil, trace.BadParameter("forwarding process did not return a listener")
+	}
+	if err := validateListenerSocket(scx, localConn.UnixConn, listenerFD); err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	listener, err := net.FileListener(listenerFD)
+	tcpListener, ok := listener.(*net.TCPListener)
+	if !ok {
+		return nil, trace.BadParameter("listener is not a TCPListener")
+	}
+	return tcpListener, trace.Wrap(err)
+}
+
+func controlSyscallConn(conn syscall.Conn, f func(fd uintptr) error) error {
+	syscallConn, err := conn.SyscallConn()
+	if err != nil {
+		return trace.Wrap(err)
+	}
+	if cErr := syscallConn.Control(func(fd uintptr) {
+		err = f(fd)
+	}); cErr != nil {
+		return trace.Wrap(cErr)
+	}
+	return trace.Wrap(err)
+}
+
+// getDirectTCPIPForwarder sets up a connection-level subprocess that handles
+// remote forwarding connections. Subsequent calls from the same connection
+// context reuse the same forwarder.
+func (s *Server) getTCPIPForwardProcess(scx *srv.ServerContext) (*sshutils.TCPIPForwardProcess, error) {
+	if proc, ok := scx.Parent().GetTCPIPForwardProcess(); ok {
+		return proc, nil
+	}
+
+	proc, err := s.startForwardingSubprocess(scx)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
+	// Try to register with the parent context.
+	if otherProc, ok := scx.Parent().TrySetTCPIPForwardProcess(proc); !ok {
+		// Another forwarder was concurrently created. this isn't actually a problem, multiple forwarders
+		// being registered is harmless, but it does result in slightly higher resource utilization, so its
+		// preferable to use the existing forwarder and close ours in the background.
+		go proc.Close()
+		return otherProc, nil
+	}
+
+	scx.Parent().AddCloser(proc)
+	return proc, nil
+}
+
+// startForwardingSubprocess launches the forwarding process. It returns a
+// conn to communicate with the process and a close func to close the process
+// when finished.
+func (s *Server) startForwardingSubprocess(scx *srv.ServerContext) (*sshutils.TCPIPForwardProcess, error) {
+	// Create the socket to communicate over.
+	remoteConn, localConn, err := uds.NewSocketpair(uds.SocketTypeDatagram)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+	defer remoteConn.Close()
+	remoteFD, err := remoteConn.File()
+	if err != nil {
+		localConn.Close()
+		return nil, trace.Wrap(err)
+	}
+	defer remoteFD.Close()
+
+	// Create command to re-exec Teleport which will handle forwarding. The
+	// reason it's not done directly is because the PAM stack needs to be called
+	// from the child process.
+	cmd, err := srv.ConfigureCommand(scx, remoteFD)
+	if err != nil {
+		localConn.Close()
+		return nil, trace.Wrap(err)
+	}
+
+	// Propagate stderr from the spawned Teleport process to log any errors.
+	cmd.Stderr = os.Stderr
+
+	// Start the child process that will be used to listen for connections.
+	if err := cmd.Start(); err != nil {
+		localConn.Close()
+		return nil, trace.Wrap(err)
+	}
+
+	cdone := make(chan struct{})
+	var explicitlyClosed atomic.Bool
+
+	go func() {
+		defer close(cdone)
+		defer localConn.Close()
+		// Ensure unexpected cmd failures get logged.
+		if err := cmd.Wait(); err != nil && !explicitlyClosed.Load() {
+			s.Logger.Warnf("Remote forwarder process exited early with unexpected error: %v", err)
+		}
+	}()
+
+	processCloser := utils.CloseFunc(func() error {
+		// Set flag indicating that the exit of the child is expected (changes logging behavior).
+		explicitlyClosed.Store(true)
+		localConn.Close()
+
+		// We expect closing the conn to cause the child process to exit, but it's
+		// best to verify.
+		select {
+		case <-cdone:
+		case <-time.After(time.Second * 3):
+			// forcibly kill the child.
+			s.Logger.Warn("Forcibly terminating remote forwarder subprocess.")
+			cmd.Process.Kill()
+		}
+		return nil
+	})
+
+	return &sshutils.TCPIPForwardProcess{
+		Conn:   localConn,
+		Done:   cdone,
+		Closer: processCloser,
+	}, nil
+}
+
 // serveAgent will build the a sock path for this user and serve an SSH agent on unix socket.
 func (s *Server) serveAgent(ctx *srv.ServerContext) error {
 	// gather information about user and process. this will be used to set the
@@ -1151,7 +1380,7 @@ func (s *Server) serveAgent(ctx *srv.ServerContext) error {
 // req.Reply(false, nil).
 //
 // For more details: https://tools.ietf.org/html/rfc4254.html#page-4
-func (s *Server) HandleRequest(ctx context.Context, r *ssh.Request) {
+func (s *Server) HandleRequest(ctx context.Context, ccx *sshutils.ConnectionContext, r *ssh.Request) {
 	switch r.Type {
 	case teleport.KeepAliveReqType:
 		s.handleKeepAlive(r)
@@ -1160,7 +1389,28 @@ func (s *Server) HandleRequest(ctx context.Context, r *ssh.Request) {
 	case teleport.VersionRequest:
 		s.handleVersionRequest(r)
 	case teleport.TerminalSizeRequest:
-		s.termHandlers.HandleTerminalSize(r)
+		if err := s.termHandlers.HandleTerminalSize(r); err != nil {
+			s.Logger.WithError(err).Warn("failed to handle terminal size request")
+			if r.WantReply {
+				if err := r.Reply(false, nil); err != nil {
+					s.Logger.Warnf("Failed to reply to %q request: %v", r.Type, err)
+				}
+			}
+		}
+	case teleport.TCPIPForwardRequest:
+		if err := s.handleTCPIPForwardRequest(ctx, ccx, r); err != nil {
+			s.Logger.WithError(err).Warn("failed to handle tcpip forward request")
+			if err := r.Reply(false, nil); err != nil {
+				s.Logger.Warnf("Failed to reply to %q request: %v", r.Type, err)
+			}
+		}
+	case teleport.CancelTCPIPForwardRequest:
+		if err := s.handleCancelTCPIPForwardRequest(ctx, ccx, r); err != nil {
+			s.Logger.WithError(err).Warn("failed to handle cancel tcpip forward request")
+			if err := r.Reply(false, nil); err != nil {
+				s.Logger.Warnf("Failed to reply to %q request: %v", r.Type, err)
+			}
+		}
 	default:
 		if r.WantReply {
 			if err := r.Reply(false, nil); err != nil {
@@ -1195,22 +1445,6 @@ func (s *Server) HandleNewChan(ctx context.Context, ccx *sshutils.ConnectionCont
 	channelType := nch.ChannelType()
 	if s.proxyMode {
 		switch channelType {
-		// Channels of type "tracing-request" are sent to determine if ssh tracing envelopes
-		// are supported. Accepting the channel indicates to clients that they may wrap their
-		// ssh payload with tracing context.
-		case tracessh.TracingChannel:
-			ch, _, err := nch.Accept()
-			if err != nil {
-				s.Logger.Warnf("Unable to accept channel: %v", err)
-				if err := nch.Reject(ssh.ConnectionFailed, fmt.Sprintf("unable to accept channel: %v", err)); err != nil {
-					s.Logger.Warnf("Failed to reject channel: %v", err)
-				}
-				return
-			}
-			if err := ch.Close(); err != nil {
-				s.Logger.Warnf("Unable to close %q channel: %v", nch.ChannelType(), err)
-			}
-			return
 		// Channels of type "direct-tcpip", for proxies, it's equivalent
 		// of teleport proxy: subsystem
 		case teleport.ChanDirectTCPIP:
@@ -1248,22 +1482,6 @@ func (s *Server) HandleNewChan(ctx context.Context, ccx *sshutils.ConnectionCont
 	}
 
 	switch channelType {
-	// Channels of type "tracing-request" are sent to determine if ssh tracing envelopes
-	// are supported. Accepting the channel indicates to clients that they may wrap their
-	// ssh payload with tracing context.
-	case tracessh.TracingChannel:
-		ch, _, err := nch.Accept()
-		if err != nil {
-			if err := nch.Reject(ssh.ConnectionFailed, err.Error()); err != nil {
-				s.Logger.Warnf("Unable to reject %q channel: %v", nch.ChannelType(), err)
-			}
-			return
-		}
-
-		if err := ch.Close(); err != nil {
-			s.Logger.Warnf("Unable to close %q channel: %v", nch.ChannelType(), err)
-		}
-		return
 	// Channels of type "session" handle requests that are involved in running
 	// commands on a server, subsystem requests, and agent forwarding.
 	case teleport.ChanSession:
@@ -1346,7 +1564,7 @@ func (s *Server) HandleNewChan(ctx context.Context, ccx *sshutils.ConnectionCont
 // canPortForward determines if port forwarding is allowed for the current
 // user/role/node combo. Returns nil if port forwarding is allowed, non-nil
 // if denied.
-func (s *Server) canPortForward(scx *srv.ServerContext, channel ssh.Channel) error {
+func (s *Server) canPortForward(scx *srv.ServerContext) error {
 	// Is the node configured to allow port forwarding?
 	if !s.allowTCPForwarding {
 		return trace.AccessDenied("node does not allow port forwarding")
@@ -1387,9 +1605,9 @@ func (s *Server) handleDirectTCPIPRequest(ctx context.Context, ccx *sshutils.Con
 	}
 	scx.IsTestStub = s.isTestStub
 	scx.AddCloser(channel)
-	scx.ChannelType = teleport.ChanDirectTCPIP
-	scx.SrcAddr = net.JoinHostPort(req.Orig, strconv.Itoa(int(req.OrigPort)))
-	scx.DstAddr = net.JoinHostPort(req.Host, strconv.Itoa(int(req.Port)))
+	scx.ExecType = teleport.ChanDirectTCPIP
+	scx.SrcAddr = sshutils.JoinHostPort(req.Orig, req.OrigPort)
+	scx.DstAddr = sshutils.JoinHostPort(req.Host, req.Port)
 	scx.SetAllowFileCopying(s.allowFileCopying)
 	defer scx.Close()
 
@@ -1397,7 +1615,23 @@ func (s *Server) handleDirectTCPIPRequest(ctx context.Context, ccx *sshutils.Con
 
 	// Bail out now if TCP port forwarding is not allowed for this node/user/role
 	// combo
-	if err = s.canPortForward(scx, channel); err != nil {
+	if err = s.canPortForward(scx); err != nil {
+		writeStderr(channel, err.Error())
+		return
+	}
+
+	dialFunc, err := s.getDirectTCPIPForwardDialer(scx)
+	if err != nil {
+		if errors.Is(err, trace.NotFound(user.UnknownUserError(scx.Identity.Login).Error())) || errors.Is(err, trace.BadParameter("unknown user")) {
+			// user does not exist for the provided login. Terminate the connection.
+			s.Logger.Warnf("Forwarding data via direct-tcpip channel failed. Terminating connection because user %q does not exist", scx.Identity.Login)
+			if err := ccx.ServerConn.Close(); err != nil {
+				s.Logger.Warnf("Unable to terminate connection: %v", err)
+			}
+			return
+		}
+
+		s.Logger.WithError(err).Error("Forwarding data via direct-tcpip channel failed")
 		writeStderr(channel, err.Error())
 		return
 	}
@@ -1405,82 +1639,32 @@ func (s *Server) handleDirectTCPIPRequest(ctx context.Context, ccx *sshutils.Con
 	scx.Debugf("Opening direct-tcpip channel from %v to %v.", scx.SrcAddr, scx.DstAddr)
 	defer scx.Debugf("Closing direct-tcpip channel from %v to %v.", scx.SrcAddr, scx.DstAddr)
 
-	// Create command to re-exec Teleport which will perform a net.Dial. The
-	// reason it's not done directly because the PAM stack needs to be called
-	// from the child process.
-	cmd, err := srv.ConfigureCommand(scx)
-	if err != nil {
-		writeStderr(channel, err.Error())
-		return
-	}
-	// Propagate stderr from the spawned Teleport process to log any errors.
-	cmd.Stderr = os.Stderr
-
-	// Create a pipe for std{in,out} that will be used to transfer data between
-	// parent and child.
-	pr, err := cmd.StdoutPipe()
-	if err != nil {
-		s.Logger.Errorf("Failed to setup stdout pipe: %v", err)
-		writeStderr(channel, err.Error())
-		return
-	}
-	pw, err := cmd.StdinPipe()
-	if err != nil {
-		s.Logger.Errorf("Failed to setup stdin pipe: %v", err)
-		writeStderr(channel, err.Error())
-		return
-	}
-
-	// Start the child process that will be used to make the actual connection
-	// to the target host.
-	err = cmd.Start()
+	conn, err := dialFunc(scx.DstAddr)
 	if err != nil {
 		writeStderr(channel, err.Error())
 		return
 	}
 
-	if err := utils.ProxyConn(ctx, utils.CombineReadWriteCloser(pr, pw), channel); err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, os.ErrClosed) {
+	if err := utils.ProxyConn(ctx, conn, channel); err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, os.ErrClosed) {
 		s.Logger.Warnf("Connection problem in direct-tcpip channel: %v %T.", trace.DebugReport(err), err)
 	}
 
-	// Emit a port forwarding event if the command exited successfully.
-	if err := cmd.Wait(); err == nil {
-		if err := s.EmitAuditEvent(s.ctx, &apievents.PortForward{
-			Metadata: apievents.Metadata{
-				Type: events.PortForwardEvent,
-				Code: events.PortForwardCode,
-			},
-			UserMetadata: scx.Identity.GetUserMetadata(),
-			ConnectionMetadata: apievents.ConnectionMetadata{
-				LocalAddr:  scx.ServerConn.LocalAddr().String(),
-				RemoteAddr: scx.ServerConn.RemoteAddr().String(),
-			},
-			Addr: scx.DstAddr,
-			Status: apievents.Status{
-				Success: true,
-			},
-		}); err != nil {
-			s.Logger.WithError(err).Warn("Failed to emit port forward event.")
-		}
-		return
-	}
-
-	// Get the error to see why the child process failed and
-	// determine the correct course of action.
-	err = scx.GetChildError()
-	switch {
-	case err == nil:
-		s.Logger.Warn("Forwarding data via direct-tcpip channel failed for unknown reason")
-		return
-	// The user does not exist for the provided login. Terminate the connection.
-	case errors.Is(err, trace.NotFound(user.UnknownUserError(scx.Identity.Login).Error())),
-		errors.Is(err, trace.BadParameter("unknown user")):
-		s.Logger.Warnf("Forwarding data via direct-tcpip channel failed. Terminating connection because user %q does not exist", scx.Identity.Login)
-		if err := ccx.ServerConn.Close(); err != nil {
-			s.Logger.Warnf("Unable to terminate connection: %v", err)
-		}
-	default:
-		s.Logger.WithError(err).Error("Forwarding data via direct-tcpip channel failed")
+	if err := s.EmitAuditEvent(s.ctx, &apievents.PortForward{
+		Metadata: apievents.Metadata{
+			Type: events.PortForwardEvent,
+			Code: events.PortForwardCode,
+		},
+		UserMetadata: scx.Identity.GetUserMetadata(),
+		ConnectionMetadata: apievents.ConnectionMetadata{
+			LocalAddr:  scx.ServerConn.LocalAddr().String(),
+			RemoteAddr: scx.ServerConn.RemoteAddr().String(),
+		},
+		Addr: scx.DstAddr,
+		Status: apievents.Status{
+			Success: true,
+		},
+	}); err != nil {
+		s.Logger.WithError(err).Warn("Failed to emit port forward event.")
 	}
 }
 
@@ -1511,7 +1695,7 @@ func (s *Server) handleSessionRequests(ctx context.Context, ccx *sshutils.Connec
 	}
 	scx.IsTestStub = s.isTestStub
 	scx.AddCloser(ch)
-	scx.ChannelType = teleport.ChanSession
+	scx.ExecType = teleport.ChanSession
 	scx.SetAllowFileCopying(s.allowFileCopying)
 	defer scx.Close()
 
@@ -1612,8 +1796,6 @@ func (s *Server) dispatch(ctx context.Context, ch ssh.Channel, req *ssh.Request,
 	// other than our own custom "subsystems" and environment manipulation.
 	if s.proxyMode {
 		switch req.Type {
-		case tracessh.TracingRequest:
-			return nil
 		case sshutils.SubsystemRequest:
 			return s.handleSubsystem(ctx, ch, req, serverContext)
 		case sshutils.EnvRequest:
@@ -1650,8 +1832,6 @@ func (s *Server) dispatch(ctx context.Context, ch ssh.Channel, req *ssh.Request,
 	// subset of all the possible request types.
 	if serverContext.JoinOnly {
 		switch req.Type {
-		case tracessh.TracingRequest:
-			return nil
 		case sshutils.PTYRequest:
 			return s.termHandlers.HandlePTYReq(ctx, ch, req, serverContext)
 		case sshutils.ShellRequest:
@@ -1690,8 +1870,6 @@ func (s *Server) dispatch(ctx context.Context, ch ssh.Channel, req *ssh.Request,
 		}
 	}
 	switch req.Type {
-	case tracessh.TracingRequest:
-		return nil
 	case sshutils.ExecRequest:
 		if err := s.termHandlers.SessionRegistry.TryCreateHostUser(serverContext); err != nil {
 			return trace.Wrap(err)
@@ -1928,15 +2106,14 @@ func (s *Server) handleEnvs(ch ssh.Channel, req *ssh.Request, ctx *srv.ServerCon
 
 // handleKeepAlive accepts and replies to keepalive@openssh.com requests.
 func (s *Server) handleKeepAlive(req *ssh.Request) {
-	s.Logger.Debugf("Received %q: WantReply: %v", req.Type, req.WantReply)
-
 	// only reply if the sender actually wants a response
-	if req.WantReply {
-		err := req.Reply(true, nil)
-		if err != nil {
-			s.Logger.Warnf("Unable to reply to %q request: %v", req.Type, err)
-			return
-		}
+	if !req.WantReply {
+		return
+	}
+
+	if err := req.Reply(true, nil); err != nil {
+		s.Logger.Warnf("Unable to reply to %q request: %v", req.Type, err)
+		return
 	}
 
 	s.Logger.Debugf("Replied to %q", req.Type)
@@ -2090,6 +2267,114 @@ func (s *Server) handleProxyJump(ctx context.Context, ccx *sshutils.ConnectionCo
 	}
 }
 
+// createForwardingContext creates a server context for a user intending to
+// port forward. It returns an error if the user is not allowed to port forward.
+func (s *Server) createForwardingContext(ctx context.Context, ccx *sshutils.ConnectionContext, r *ssh.Request) (context.Context, *srv.ServerContext, error) {
+	req, err := sshutils.ParseTCPIPForwardReq(r.Payload)
+	if err != nil {
+		return nil, nil, trace.Wrap(err)
+	}
+	identityContext, err := s.authHandlers.CreateIdentityContext(ccx.ServerConn)
+	if err != nil {
+		return nil, nil, trace.Wrap(err)
+	}
+
+	// On regular server in "normal" mode "tcpip-forward" requests from
+	// SessionJoinPrincipal should be rejected, otherwise it's possible to use
+	// the "-teleport-internal-join" user to bypass RBAC.
+	if identityContext.Login == teleport.SSHSessionJoinPrincipal {
+		log.Errorf("Request rejected, %q with SessionJoinPrincipal in forward node must be blocked", r.Type)
+		err := trace.AccessDenied("attempted %q request in join-only mode", r.Type)
+		if replyErr := r.Reply(false, []byte(utils.FormatErrorWithNewline(err))); replyErr != nil {
+			s.Logger.Warnf("Failed to reply to %q request: %v", r.Type, err)
+		}
+		// Disable default reply by caller, we already handled it.
+		r.WantReply = false
+		return nil, nil, err
+	}
+
+	// Create context for this request.
+	ctx, scx, err := srv.NewServerContext(ctx, ccx, s, identityContext)
+	if err != nil {
+		return nil, nil, trace.Wrap(err)
+	}
+	listenAddr := sshutils.JoinHostPort(req.Addr, req.Port)
+	scx.IsTestStub = s.isTestStub
+	scx.ExecType = teleport.TCPIPForwardRequest
+	scx.SrcAddr = listenAddr
+	scx.DstAddr = ccx.NetConn.RemoteAddr().String()
+	scx.SetAllowFileCopying(s.allowFileCopying)
+
+	if err := s.canPortForward(scx); err != nil {
+		scx.Close()
+		return nil, nil, trace.Wrap(err)
+	}
+	return ctx, scx, nil
+}
+
+// handleTCPIPForwardRequest handles remote port forwarding requests.
+func (s *Server) handleTCPIPForwardRequest(ctx context.Context, ccx *sshutils.ConnectionContext, r *ssh.Request) error {
+	ctx, scx, err := s.createForwardingContext(ctx, ccx, r)
+	if err != nil {
+		return trace.Wrap(err)
+	}
+	defer scx.Close()
+	listener, err := s.listenTCPIP(scx, scx.SrcAddr)
+	if err != nil {
+		return trace.Wrap(err)
+	}
+
+	// Set the src addr again since it may have been updated with a new port.
+	scx.SrcAddr = listener.Addr().String()
+	event := scx.GetPortForwardEvent()
+	if err := s.EmitAuditEvent(ctx, &event); err != nil {
+		s.Logger.WithError(err).Warn("Failed to emit audit event.")
+	}
+	if err := sshutils.StartRemoteListener(ctx, scx.ConnectionContext.ServerConn, scx.SrcAddr, listener); err != nil {
+		return trace.Wrap(err)
+	}
+
+	// Report addr back to the client.
+	if r.WantReply {
+		var payload []byte
+		req, err := sshutils.ParseTCPIPForwardReq(r.Payload)
+		if err != nil {
+			return trace.Wrap(err)
+		}
+		if req.Port == 0 {
+			payload = ssh.Marshal(struct {
+				Port uint32
+			}{Port: uint32(listener.Addr().(*net.TCPAddr).Port)})
+		}
+
+		if err := r.Reply(true, payload); err != nil {
+			s.Logger.Warnf("Failed to reply to %q request: %v", r.Type, err)
+		}
+	}
+
+	s.remoteForwardingMap.Store(scx.SrcAddr, listener)
+	return nil
+}
+
+// handleCancelTCPIPForwardRequest handles canceling a previously requested
+// remote forwarded port.
+func (s *Server) handleCancelTCPIPForwardRequest(ctx context.Context, ccx *sshutils.ConnectionContext, r *ssh.Request) error {
+	_, scx, err := s.createForwardingContext(ctx, ccx, r)
+	if err != nil {
+		return trace.Wrap(err)
+	}
+	defer scx.Close()
+
+	listener, ok := s.remoteForwardingMap.LoadAndDelete(scx.SrcAddr)
+	if !ok {
+		return trace.NotFound("no remote forwarding listener at %v", scx.SrcAddr)
+	}
+	if err := r.Reply(true, nil); err != nil {
+		s.Logger.Warnf("Failed to reply to %q request: %v", r.Type, err)
+	}
+	return trace.Wrap(listener.Close())
+}
+
 func (s *Server) replyError(ch ssh.Channel, req *ssh.Request, err error) {
 	s.Logger.WithError(err).Errorf("failure handling SSH %q request", req.Type)
 	// Terminate the error with a newline when writing to remote channel's
@@ -2111,20 +2396,38 @@ func (s *Server) parseSubsystemRequest(req *ssh.Request, ctx *srv.ServerContext)
 		return nil, trace.BadParameter("failed to parse subsystem request: %v", err)
 	}
 
+	if s.proxyMode {
+		switch {
+		case strings.HasPrefix(r.Name, "proxy:"):
+			return parseProxySubsys(r.Name, s, ctx)
+		case strings.HasPrefix(r.Name, "proxysites"):
+			return parseProxySitesSubsys(r.Name, s)
+		default:
+			return nil, trace.BadParameter("unrecognized subsystem: %v", r.Name)
+		}
+	}
+
 	switch {
-	case s.proxyMode && strings.HasPrefix(r.Name, "proxy:"):
-		return parseProxySubsys(r.Name, s, ctx)
-	case s.proxyMode && strings.HasPrefix(r.Name, "proxysites"):
-		return parseProxySitesSubsys(r.Name, s)
 	// DELETE IN 15.0.0 (deprecated, tsh will not be using this anymore)
 	case r.Name == teleport.GetHomeDirSubsystem:
 		return newHomeDirSubsys(), nil
 	case r.Name == teleport.SFTPSubsystem:
-		if err := ctx.CheckSFTPAllowed(s.reg); err != nil {
+		err := ctx.CheckSFTPAllowed(s.reg)
+		if err != nil {
+			s.EmitAuditEvent(context.Background(), &apievents.SFTP{
+				Metadata: apievents.Metadata{
+					Code: events.SFTPDisallowedCode,
+					Type: events.SFTPEvent,
+					Time: time.Now(),
+				},
+				UserMetadata:   ctx.Identity.GetUserMetadata(),
+				ServerMetadata: ctx.GetServerMetadata(),
+				Error:          err.Error(),
+			})
 			return nil, trace.Wrap(err)
 		}
 
-		return newSFTPSubsys()
+		return newSFTPSubsys(ctx.ConsumeApprovedFileTransferRequest())
 	default:
 		return nil, trace.BadParameter("unrecognized subsystem: %v", r.Name)
 	}
